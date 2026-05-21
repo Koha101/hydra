@@ -1005,6 +1005,15 @@ async function handleListIntercept(msg: Message): Promise<void> {
 // Inbound Discord message handling
 // ---------------------------------------------------------------------------
 
+client.on('threadDelete', thread => {
+  const sessionId = threadToSession.get(thread.id)
+  if (!sessionId) return
+  const info = sessions.get(sessionId)
+  if (!info) return
+  process.stderr.write(`discord daemon: thread ${thread.id} deleted, killing session ${info.tmuxName}\n`)
+  void killSession(info, 'thread deleted')
+})
+
 client.on('messageCreate', msg => {
   if (msg.author.bot) return
   handleInbound(msg).catch(e => process.stderr.write(`discord daemon: handleInbound failed: ${e}\n`))
