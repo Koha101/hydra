@@ -109,3 +109,41 @@ Downloads land in `~/.claude/channels/discord/inbox/`.
 
 Same path for attachments on historical messages found via `fetch_messages`
 (messages with attachments are marked `+Natt`).
+
+## Daemon + Bridge Architecture
+
+The monolithic `server.ts` has been split into a daemon+bridge architecture that supports spawning multiple isolated Claude sessions from Discord.
+
+```
+Discord Gateway → daemon.ts (tmux: discord-daemon)
+  ├─ command intercepts: spawn/kill/list
+  ├─ unix socket → bridge.ts → byte   (main session)
+  ├─ unix socket → bridge.ts → spark  (spawned)
+  └─ unix socket → bridge.ts → pixel  (spawned)
+```
+
+- **`daemon.ts`** — standalone process holding the Discord gateway. Routes messages, executes tools, manages session lifecycle.
+- **`bridge.ts`** — thin MCP channel relay. Each Claude session spawns one to connect to the daemon via unix socket.
+- **`server.ts`** — legacy monolithic server, kept for rollback.
+
+### Starting
+
+```bash
+./start-daemon.sh      # starts daemon (tmux: discord-daemon)
+./start-byte-v2.sh     # starts main session (tmux: byte) — requires daemon
+```
+
+### Spawning sessions from Discord
+
+| Command | Action |
+|---------|--------|
+| `spawn: <topic>` | Create a new session with a thread |
+| `new session: <topic>` | Same thing |
+| `kill: <name>` | Kill a session by name |
+| `/sessions` | List active sessions |
+
+Sessions get cute names (spark, pixel, nova, drift...) and run in their own tmux sessions with isolated context windows. 30 min idle TTL. Session state persists to `sessions.json` and survives daemon restarts.
+
+### Rollback
+
+To revert to the monolithic architecture: kill daemon + byte, run `~/start-byte.sh` (uses `server.ts` directly, no daemon).
