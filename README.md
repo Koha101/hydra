@@ -7,6 +7,7 @@ When the bot receives a message, the MCP server forwards it to Claude and provid
 ## Prerequisites
 
 - [Bun](https://bun.sh) — the MCP server runs on Bun. Install with `curl -fsSL https://bun.sh/install | bash`.
+- [tmux](https://github.com/tmux/tmux) — sessions run in tmux. Install with `brew install tmux`.
 
 ## Quick Setup
 > Default pairing flow for a single-user DM bot. See [ACCESS.md](./ACCESS.md) for groups and multi-user setups.
