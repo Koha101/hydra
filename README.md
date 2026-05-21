@@ -124,6 +124,8 @@ Discord Gateway → daemon.ts (tmux: discord-daemon)
 
 - **`daemon.ts`** — standalone process holding the Discord gateway. Routes messages, executes tools, manages session lifecycle.
 - **`bridge.ts`** — thin MCP channel relay. Each Claude session spawns one to connect to the daemon via unix socket.
+- **`server.ts`** — legacy monolithic server, kept for rollback.
+
 ### Starting
 
 ```bash
@@ -141,3 +143,7 @@ Discord Gateway → daemon.ts (tmux: discord-daemon)
 | `/sessions` | List active sessions |
 
 Sessions get cute names (spark, pixel, nova, drift...) and run in their own tmux sessions with isolated context windows. 30 min idle TTL. Session state persists to `sessions.json` and survives daemon restarts.
+
+### Rollback
+
+To revert to the monolithic architecture: kill daemon + byte, run `~/start-byte.sh` (uses `server.ts` directly, no daemon).
