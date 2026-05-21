@@ -930,13 +930,15 @@ async function handleSpawnIntercept(msg: Message, topic: string, access: Access)
   try {
     const result = await doSpawnSession(topic, msg.channelId, msg.id)
 
-    const reply = result.url
-      ? `Spawned session **${result.name}** — ${result.url}`
-      : `Spawned session **${result.name}**`
-
-    const ch = await fetchTextChannel(msg.channelId)
-    if ('send' in ch) {
-      await (ch as any).send({ content: reply, reply: { messageReference: msg.id, failIfNotExists: false } })
+    // Only reply in DMs (guild channels already have the thread visible)
+    if (msg.channel.isDMBased()) {
+      const reply = result.url
+        ? `Spawned session **${result.name}** — ${result.url}`
+        : `Spawned session **${result.name}**`
+      const ch = await fetchTextChannel(msg.channelId)
+      if ('send' in ch) {
+        await (ch as any).send({ content: reply, reply: { messageReference: msg.id, failIfNotExists: false } })
+      }
     }
 
     // Notify main session so byte knows
