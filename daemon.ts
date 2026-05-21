@@ -63,9 +63,7 @@ const SOCK_PATH = join(STATE_DIR, 'daemon.sock')
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 
 const CLAUDE_CONFIG = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude-personal')
-const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS ?? String(30 * 60 * 1000), 10)
 const DEFAULT_SESSION_CHANNEL = process.env.DEFAULT_SESSION_CHANNEL ?? '1506825982127112252'
-const TTL_CHECK_INTERVAL_MS = 60_000
 
 // Load ~/.claude/channels/discord/.env into process.env. Real env wins.
 try {
@@ -853,19 +851,6 @@ async function killSession(info: SessionInfo, reason: string): Promise<void> {
   sessions.delete(info.sessionId)
   persistSessions()
 }
-
-// TTL auto-cleanup
-const ttlTimer = setInterval(() => {
-  const now = Date.now()
-  for (const [sessionId, info] of sessions) {
-    if (sessionId === 'main') continue // Never kill the main session
-    if (now - info.lastActive > SESSION_TTL_MS) {
-      process.stderr.write(`discord daemon: session ${sessionId} timed out (idle ${Math.round((now - info.lastActive) / 60000)}m)\n`)
-      void killSession(info, 'session timed out (idle too long)')
-    }
-  }
-}, TTL_CHECK_INTERVAL_MS)
-ttlTimer.unref()
 
 // ---------------------------------------------------------------------------
 // Permission handling (mirrors server.ts)
