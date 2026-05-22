@@ -464,6 +464,7 @@ type SessionInfo = {
   createdAt: number
   lastActive: number
   tmuxName: string
+  listening: boolean
 }
 
 /** sessionId -> SessionInfo */
@@ -600,7 +601,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   }
 
   const now = Date.now()
-  sessions.set(sessionId, { sessionId, topic, threadId, createdAt: now, lastActive: now, tmuxName })
+  sessions.set(sessionId, { sessionId, topic, threadId, createdAt: now, lastActive: now, tmuxName, listening: false })
   threadToSession.set(threadId, sessionId)
   persistSessions()
 
@@ -1091,14 +1092,48 @@ async function handleInbound(msg: Message): Promise<void> {
       return
     }
 
-    // Messages in session-mapped threads bypass the gate entirely
+    // Messages in session-mapped threads bypass the gate, but only route if:
+    // 1. Session is in "listening" mode (toggle with listen/pause)
+    // 2. Message starts with the session name
+    // 3. Message replies to one of the bot's messages
     if (msg.channel.isThread()) {
       const mappedSession = threadToSession.get(msg.channelId)
       if (mappedSession) {
         const info = sessions.get(mappedSession)
         if (info) {
-          info.lastActive = Date.now()
-          void deliverToSession(msg, mappedSession, access)
+          // listen/pause toggle
+          const listenMatch = msg.content.match(/^(listen|pause)\s*$/i)
+          if (listenMatch) {
+            info.listening = listenMatch[1].toLowerCase() === 'listen'
+            persistSessions()
+            void msg.react(info.listening ? '👂' : '⏸️').catch(() => {})
+            return
+          }
+
+          const shouldRoute =
+            info.listening ||
+            msg.content.toLowerCase().startsWith(info.tmuxName) ||
+            (msg.reference?.messageId && recentSentIds.has(msg.reference.messageId))
+
+          if (shouldRoute) {
+            info.lastActive = Date.now()
+            void deliverToSession(msg, mappedSession, access)
+            return
+          }
+
+          // Check reply-to by fetching the referenced message (fallback for older messages not in recentSentIds)
+          if (msg.reference?.messageId) {
+            try {
+              const ref = await msg.fetchReference()
+              if (ref.author.id === client.user?.id) {
+                info.lastActive = Date.now()
+                void deliverToSession(msg, mappedSession, access)
+                return
+              }
+            } catch {}
+          }
+
+          // Not addressed to this session — ignore
           return
         }
       }
