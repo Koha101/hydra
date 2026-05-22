@@ -989,6 +989,61 @@ async function handleListIntercept(msg: Message): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Deliver a message directly to a session (bypasses gate)
+// ---------------------------------------------------------------------------
+
+async function deliverToSession(msg: Message, targetSessionId: string, access: Access): Promise<void> {
+  if ('sendTyping' in msg.channel) {
+    void msg.channel.sendTyping().catch(() => {})
+  }
+  if (access.ackReaction) {
+    void msg.react(access.ackReaction).catch(() => {})
+  }
+
+  const atts: string[] = []
+  for (const att of msg.attachments.values()) {
+    const kb = (att.size / 1024).toFixed(0)
+    atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
+  }
+  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+
+  let threadContext: Record<string, string> = {}
+  if (msg.channel.isThread()) {
+    try {
+      const starter = await msg.channel.fetchStarterMessage()
+      if (starter) {
+        threadContext = {
+          thread_name: msg.channel.name,
+          thread_starter_user: starter.author.username,
+          thread_starter_content: starter.content.slice(0, 500),
+          thread_starter_id: starter.id,
+        }
+      }
+    } catch {}
+  }
+
+  const meta: Record<string, string> = {
+    chat_id: msg.channelId,
+    message_id: msg.id,
+    user: msg.author.username,
+    user_id: msg.author.id,
+    ts: msg.createdAt.toISOString(),
+    ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
+    ...threadContext,
+  }
+
+  const bridge = getBridgeForSession(targetSessionId)
+  if (bridge) {
+    sendToBridge(bridge, { type: 'notification', content, meta })
+  } else if (targetSessionId !== 'main') {
+    const mainBridge = getBridgeForSession('main')
+    if (mainBridge) {
+      sendToBridge(mainBridge, { type: 'notification', content, meta })
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Inbound Discord message handling
 // ---------------------------------------------------------------------------
 
@@ -1034,6 +1089,19 @@ async function handleInbound(msg: Message): Promise<void> {
     if (listMatch) {
       void handleListIntercept(msg)
       return
+    }
+
+    // Messages in session-mapped threads bypass the gate entirely
+    if (msg.channel.isThread()) {
+      const mappedSession = threadToSession.get(msg.channelId)
+      if (mappedSession) {
+        const info = sessions.get(mappedSession)
+        if (info) {
+          info.lastActive = Date.now()
+          void deliverToSession(msg, mappedSession, access)
+          return
+        }
+      }
     }
   }
 
