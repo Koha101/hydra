@@ -1113,9 +1113,9 @@ async function handleInbound(msg: Message): Promise<void> {
   }
 
   // Ack reaction
-  const access = result.access
-  if (access.ackReaction) {
-    void msg.react(access.ackReaction).catch(() => {})
+  const gatedAccess = result.access
+  if (gatedAccess.ackReaction) {
+    void msg.react(gatedAccess.ackReaction).catch(() => {})
   }
 
   // Attachment listing
