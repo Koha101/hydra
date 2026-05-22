@@ -1057,6 +1057,19 @@ client.on('threadDelete', thread => {
   void killSession(info, 'thread deleted')
 })
 
+client.on('messageDelete', msg => {
+  // If the deleted message had a thread mapped to a session, kill it
+  if (!msg.hasThread) return
+  const threadId = msg.thread?.id
+  if (!threadId) return
+  const sessionId = threadToSession.get(threadId)
+  if (!sessionId) return
+  const info = sessions.get(sessionId)
+  if (!info) return
+  process.stderr.write(`discord daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
+  void killSession(info, 'anchor message deleted')
+})
+
 client.on('messageCreate', msg => {
   if (msg.author.bot) return
   handleInbound(msg).catch(e => process.stderr.write(`discord daemon: handleInbound failed: ${e}\n`))
