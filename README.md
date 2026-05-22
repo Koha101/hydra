@@ -127,8 +127,4 @@ Same path for attachments on historical messages found via `fetch_messages`
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
 
-Sessions get cute names (spark, pixel, nova, drift...) and run in their own tmux sessions with isolated context windows. 30 min idle TTL. Session state persists to `sessions.json` and survives daemon restarts.
-
-## Rollback
-
-To revert to the monolithic architecture: kill daemon + byte, run `~/start-byte.sh` (uses `server.ts` directly, no daemon).
+Sessions get cute names (spark, pixel, nova, drift...) and run in their own tmux sessions with isolated context windows. Session state persists to `sessions.json` and survives daemon restarts.
