@@ -1007,6 +1007,37 @@ client.on('messageCreate', msg => {
 })
 
 async function handleInbound(msg: Message): Promise<void> {
+  // Command intercepts run before the gate — they only need the sender to be
+  // in allowFrom (skip mention requirement so commands work in any channel).
+  const access = loadAccess()
+  const senderId = msg.author.id
+  const isAllowed = access.allowFrom.includes(senderId)
+
+  if (isAllowed) {
+    const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*(.+)/i)
+    if (spawnMatch) {
+      const topic = spawnMatch[1].trim()
+      if (topic) {
+        void handleSpawnIntercept(msg, topic, access)
+        return
+      }
+    }
+
+    const killMatch = msg.content.match(/^(?:kill session:|kill:|\/kill)\s*(.+)/i)
+    if (killMatch) {
+      const name = killMatch[1].trim()
+      void handleKillIntercept(msg, name)
+      return
+    }
+
+    const listMatch = msg.content.match(/^(?:\/sessions|list sessions)\s*$/i)
+    if (listMatch) {
+      void handleListIntercept(msg)
+      return
+    }
+  }
+
+  // Normal gate for everything else (checks mention, channel policy, etc.)
   const result = await gate(msg)
 
   if (result.action === 'drop') return
@@ -1020,31 +1051,6 @@ async function handleInbound(msg: Message): Promise<void> {
     } catch (err) {
       process.stderr.write(`discord daemon: failed to send pairing code: ${err}\n`)
     }
-    return
-  }
-
-  // Spawn intercept: detect trigger patterns before routing to any session.
-  const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*(.+)/i)
-  if (spawnMatch) {
-    const topic = spawnMatch[1].trim()
-    if (topic) {
-      void handleSpawnIntercept(msg, topic, result.access)
-      return
-    }
-  }
-
-  // Kill intercept: "kill: <name>", "/kill <name>", "kill session: <name>"
-  const killMatch = msg.content.match(/^(?:kill session:|kill:|\/kill)\s*(.+)/i)
-  if (killMatch) {
-    const name = killMatch[1].trim()
-    void handleKillIntercept(msg, name)
-    return
-  }
-
-  // List intercept: "/sessions" or "list sessions"
-  const listMatch = msg.content.match(/^(?:\/sessions|list sessions)\s*$/i)
-  if (listMatch) {
-    void handleListIntercept(msg)
     return
   }
 
