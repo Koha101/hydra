@@ -525,6 +525,9 @@ type BridgeConn = {
 
 /** sessionId -> BridgeConn */
 const bridges = new Map<string, BridgeConn>()
+/** Queued messages for sessions whose bridge is temporarily disconnected */
+const messageQueues = new Map<string, Array<Record<string, unknown>>>()
+const MAX_QUEUE_SIZE = 50
 
 function sendToBridge(bridge: BridgeConn, msg: Record<string, unknown>): void {
   try {
@@ -532,6 +535,35 @@ function sendToBridge(bridge: BridgeConn, msg: Record<string, unknown>): void {
   } catch (err) {
     process.stderr.write(`discord daemon: failed to write to bridge ${bridge.sessionId}: ${err}\n`)
   }
+}
+
+function sendOrQueue(sessionId: string, msg: Record<string, unknown>): void {
+  const bridge = bridges.get(sessionId)
+  if (bridge) {
+    sendToBridge(bridge, msg)
+  } else {
+    // Bridge temporarily disconnected — queue for delivery on reconnect
+    let queue = messageQueues.get(sessionId)
+    if (!queue) {
+      queue = []
+      messageQueues.set(sessionId, queue)
+    }
+    if (queue.length < MAX_QUEUE_SIZE) {
+      queue.push(msg)
+    }
+  }
+}
+
+function flushQueue(sessionId: string): void {
+  const queue = messageQueues.get(sessionId)
+  if (!queue || queue.length === 0) return
+  const bridge = bridges.get(sessionId)
+  if (!bridge) return
+  process.stderr.write(`discord daemon: flushing ${queue.length} queued message(s) for ${sessionId}\n`)
+  for (const msg of queue) {
+    sendToBridge(bridge, msg)
+  }
+  messageQueues.delete(sessionId)
 }
 
 function getBridgeForSession(sessionId: string): BridgeConn | undefined {
@@ -1033,15 +1065,7 @@ async function deliverToSession(msg: Message, targetSessionId: string, access: A
     ...threadContext,
   }
 
-  const bridge = getBridgeForSession(targetSessionId)
-  if (bridge) {
-    sendToBridge(bridge, { type: 'notification', content, meta })
-  } else if (targetSessionId !== 'main') {
-    const mainBridge = getBridgeForSession('main')
-    if (mainBridge) {
-      sendToBridge(mainBridge, { type: 'notification', content, meta })
-    }
-  }
+  sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,20 +1318,7 @@ async function handleInbound(msg: Message): Promise<void> {
     }
   }
 
-  const bridge = getBridgeForSession(targetSessionId)
-  if (!bridge) {
-    // No bridge connected for this session — if it's a spawned session, try main
-    if (targetSessionId !== 'main') {
-      const mainBridge = getBridgeForSession('main')
-      if (mainBridge) {
-        sendToBridge(mainBridge, { type: 'notification', content, meta })
-      }
-    }
-    // If main isn't connected either, message is lost (same as server.ts when CC is disconnected)
-    return
-  }
-
-  sendToBridge(bridge, { type: 'notification', content, meta })
+  sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,6 +1348,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
 
       bridges.set(sessionId, conn)
       sendToBridge(conn, { type: 'registered', sessionId })
+      flushQueue(sessionId)
       process.stderr.write(`discord daemon: bridge registered for session ${sessionId}\n`)
       break
     }
