@@ -875,7 +875,9 @@ async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: 
     const result = await doSpawnSession(topic, msg.channelId, msg.id)
 
     if (msg.isDM) {
-      const reply = result.url
+      // Slack DMs support threads natively — the session thread is already visible,
+      // so skip the URL. Discord DMs redirect to a guild channel, so the URL helps.
+      const reply = (result.url && gateway.platform === 'discord')
         ? `Spawned session **${result.name}** — ${result.url}`
         : `Spawned session **${result.name}**`
       await gateway.send(msg.channelId, reply, { replyTo: msg.id })
