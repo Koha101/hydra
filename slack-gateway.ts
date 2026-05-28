@@ -191,6 +191,22 @@ export class SlackGateway implements ChatGateway {
     this.buttonClickHandler = handler
   }
 
+  /** Parse composite thread IDs (channelId:threadTs) into channel + thread_ts */
+  private parseChannelId(id: string): { channel: string; threadTs?: string } {
+    // Slack timestamps contain a dot (e.g. 1779979488.572029)
+    // Composite format: C0B6KKFNH4N:1779979488.572029
+    const colonIdx = id.indexOf(':')
+    if (colonIdx > 0) {
+      const maybeCh = id.slice(0, colonIdx)
+      const maybeTs = id.slice(colonIdx + 1)
+      // Validate: channel IDs start with C/D/G, timestamps contain a dot
+      if (/^[CDG]/.test(maybeCh) && maybeTs.includes('.')) {
+        return { channel: maybeCh, threadTs: maybeTs }
+      }
+    }
+    return { channel: id }
+  }
+
   async send(channelId: string, text: string, opts?: {
     replyTo?: string
     files?: string[]
@@ -198,12 +214,19 @@ export class SlackGateway implements ChatGateway {
   }): Promise<SentMessage> {
     if (!this.app) throw new Error('not connected')
 
+    const parsed = this.parseChannelId(channelId)
+
     const payload: Record<string, unknown> = {
-      channel: channelId,
+      channel: parsed.channel,
       text,
     }
 
-    // Reply in thread
+    // If channelId was a composite thread ID, always reply in that thread
+    if (parsed.threadTs) {
+      payload.thread_ts = parsed.threadTs
+    }
+
+    // Explicit replyTo overrides
     if (opts?.replyTo) {
       payload.thread_ts = opts.replyTo
     }
@@ -231,10 +254,10 @@ export class SlackGateway implements ChatGateway {
           const content = readFileSync(filePath)
           const fileName = filePath.split('/').pop() ?? 'file'
           await this.app.client.files.uploadV2({
-            channel_id: channelId,
+            channel_id: parsed.channel,
             file: content,
             filename: fileName,
-            thread_ts: opts?.replyTo,
+            thread_ts: opts?.replyTo ?? parsed.threadTs,
           })
         } catch (err) {
           process.stderr.write(`slack gateway: file upload failed for ${filePath}: ${err}\n`)
@@ -250,8 +273,9 @@ export class SlackGateway implements ChatGateway {
 
   async edit(channelId: string, messageId: string, text: string): Promise<string> {
     if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
     const result = await this.app.client.chat.update({
-      channel: channelId,
+      channel,
       ts: messageId,
       text,
     })
@@ -260,11 +284,10 @@ export class SlackGateway implements ChatGateway {
 
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.app) throw new Error('not connected')
-    // Slack uses emoji names without colons, e.g. "eyes" not ":eyes:" or "👀"
-    // Convert unicode emoji to slack name if needed
+    const { channel } = this.parseChannelId(channelId)
     const name = this.emojiToSlackName(emoji)
     await this.app.client.reactions.add({
-      channel: channelId,
+      channel,
       timestamp: messageId,
       name,
     })
@@ -277,13 +300,14 @@ export class SlackGateway implements ChatGateway {
 
   async fetchChannel(id: string): Promise<ChannelInfo> {
     if (!this.app) throw new Error('not connected')
-    const result = await this.app.client.conversations.info({ channel: id })
+    const parsed = this.parseChannelId(id)
+    const result = await this.app.client.conversations.info({ channel: parsed.channel })
     const ch = result.channel!
     const isDM = ch.is_im ?? false
     return {
       id,
       isDM,
-      isThread: false, // Slack threads aren't separate channels
+      isThread: !!parsed.threadTs,
       parentId: null,
       recipientId: isDM ? (ch as any).user ?? '' : '',
       sendable: true,
@@ -292,10 +316,18 @@ export class SlackGateway implements ChatGateway {
 
   async fetchMessages(channelId: string, limit: number): Promise<FetchedMessage[]> {
     if (!this.app) throw new Error('not connected')
-    const result = await this.app.client.conversations.history({
-      channel: channelId,
-      limit: Math.min(limit, 100),
-    })
+    const parsed = this.parseChannelId(channelId)
+    // If it's a thread, fetch thread replies instead of channel history
+    const result = parsed.threadTs
+      ? await this.app.client.conversations.replies({
+          channel: parsed.channel,
+          ts: parsed.threadTs,
+          limit: Math.min(limit, 100),
+        })
+      : await this.app.client.conversations.history({
+          channel: parsed.channel,
+          limit: Math.min(limit, 100),
+        })
 
     const messages = (result.messages ?? []).reverse()
     const fetched: FetchedMessage[] = []
@@ -327,6 +359,7 @@ export class SlackGateway implements ChatGateway {
     files?: string[]
   }): Promise<ThreadInfo> {
     if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
 
     // In Slack, threads are replies to a parent message.
     // If messageId is given, reply in that thread. Otherwise post a new parent message.
@@ -337,7 +370,7 @@ export class SlackGateway implements ChatGateway {
     } else {
       // Post a parent message that acts as the thread anchor
       const anchor = await this.app.client.chat.postMessage({
-        channel: channelId,
+        channel,
         text: `*${name}*`,
       })
       threadTs = anchor.ts!
@@ -347,7 +380,7 @@ export class SlackGateway implements ChatGateway {
     let messageId: string | undefined
     if (opts?.text) {
       const reply = await this.app.client.chat.postMessage({
-        channel: channelId,
+        channel,
         text: opts.text,
         thread_ts: threadTs,
       })
@@ -362,7 +395,7 @@ export class SlackGateway implements ChatGateway {
           const content = readFileSync(filePath)
           const fileName = filePath.split('/').pop() ?? 'file'
           await this.app.client.files.uploadV2({
-            channel_id: channelId,
+            channel_id: channel,
             file: content,
             filename: fileName,
             thread_ts: threadTs,
@@ -373,18 +406,19 @@ export class SlackGateway implements ChatGateway {
       }
     }
 
-    const url = this.buildMessageUrl(channelId, threadTs)
+    const url = this.buildMessageUrl(channel, threadTs)
     // In Slack, the "thread ID" is the parent message timestamp
-    // We encode it as channelId:threadTs for the daemon to use
-    return { id: `${channelId}:${threadTs}`, url }
+    // We encode it as channel:threadTs for the daemon to use
+    return { id: `${channel}:${threadTs}`, url }
   }
 
   async downloadAttachments(channelId: string, messageId: string, inboxDir: string): Promise<DownloadedFile[]> {
     if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
 
     // Fetch the specific message
     const result = await this.app.client.conversations.history({
-      channel: channelId,
+      channel,
       latest: messageId,
       inclusive: true,
       limit: 1,
