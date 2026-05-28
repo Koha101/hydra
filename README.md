@@ -143,7 +143,7 @@ Spawn isolated Claude sessions from chat:
 | `/sessions` | List active sessions |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
 
-Sessions get cute names (spark, pixel, nova...), run in tmux, and auto-cleanup after 30 min idle. State persists across daemon restarts.
+Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts. Kill them manually with `kill: <name>`.
 
 ## Files
 
