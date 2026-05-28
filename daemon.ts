@@ -557,7 +557,8 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
 
   const escapedTopic = topic.replace(/'/g, "'\\''")
   const channelFlag = `plugin:discord@claude-plugins-official`
-  const spawnCwd = process.env.SPAWN_CWD ?? join(homedir(), 'trading')
+  const spawnCwd = process.env.SPAWN_CWD
+  if (!spawnCwd) throw new Error('SPAWN_CWD env var is required — set it to the working directory for spawned sessions')
   const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ${spawnCwd} && export SESSION_ID=${sessionId} && export DAEMON_SOCK=${SOCK_PATH} && export CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} && claude --model "claude-opus-4-6[1m]" --channels ${channelFlag} --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
 
   try {
