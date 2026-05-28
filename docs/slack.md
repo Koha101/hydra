@@ -89,18 +89,49 @@ Create an access.json with your Slack user ID:
 }
 ```
 
-## 5. Start
+## 5. Enable the bridge plugin
 
-```bash
-# If running alongside Discord, use a separate state dir:
-DISCORD_STATE_DIR=~/.claude/channels/slack ./start-daemon.sh
+The bridge runs as the `discord@claude-plugins-official` plugin (the name is historical — it's platform-agnostic). Add it to `enabledPlugins` in your Claude config:
 
-# Or set CHAT_PLATFORM in .env and use the default:
-./start-daemon.sh
-./start-byte-v2.sh
+```jsonc
+// In ~/.claude/settings.json (or whichever CLAUDE_CONFIG_DIR you use)
+{
+  "enabledPlugins": {
+    "discord@claude-plugins-official": true
+    // ... other plugins
+  }
+}
 ```
 
-## 6. Message the bot
+Then copy bridge.ts into the plugin cache:
+
+```bash
+cp ~/trading/discord-bot-custom/bridge.ts \
+  $CLAUDE_CONFIG_DIR/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts
+```
+
+**Important:** If your Claude account has a native Slack MCP integration (claude.ai → Settings → Connected Apps), disable it — otherwise Claude will use that instead of the bridge.
+
+## 6. Start
+
+```bash
+# Start the Slack daemon (separate state dir from Discord):
+DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLATFORM=slack \
+  bun run daemon.ts
+
+# Or in tmux:
+tmux new-session -d -s slack-daemon \
+  "cd ~/trading/discord-bot-custom && DISCORD_STATE_DIR=$HOME/.claude/channels/slack CHAT_PLATFORM=slack bun run daemon.ts"
+
+# Start Claude with the Slack daemon socket:
+# IMPORTANT: use `export` so DAEMON_SOCK is inherited by the bridge subprocess
+cd ~/your-project && \
+  export DAEMON_SOCK=$HOME/.claude/channels/slack/daemon.sock && \
+  export CLAUDE_CONFIG_DIR=$HOME/.claude && \
+  claude --channels plugin:discord@claude-plugins-official
+```
+
+## 7. Message the bot
 
 DM Byte in Slack, or @mention it in a channel that's in your `groups` config.
 

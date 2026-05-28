@@ -107,16 +107,28 @@ See [ACCESS.md](./ACCESS.md) for full reference.
 
 ### Running both platforms simultaneously
 
+Each platform needs its own daemon (separate state dir + socket) and its own Claude session. They can use different `CLAUDE_CONFIG_DIR` values for separate logins.
+
 ```bash
 # Discord daemon (default state dir)
 ./start-daemon.sh
+./start-byte-v2.sh  # uses CLAUDE_CONFIG_DIR=~/.claude-personal
 
-# Slack daemon (separate state dir)
+# Slack daemon (separate state dir + socket)
 DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLATFORM=slack \
   bun run daemon.ts
 
-# Each needs its own access.json with platform-specific user IDs
+# Slack Claude session (different config dir, different cwd)
+export DAEMON_SOCK=~/.claude/channels/slack/daemon.sock
+export CLAUDE_CONFIG_DIR=~/.claude
+claude --channels plugin:discord@claude-plugins-official
 ```
+
+**Requirements for each platform:**
+- Its own `access.json` with platform-specific user IDs
+- `discord@claude-plugins-official` enabled in the `CLAUDE_CONFIG_DIR`'s `settings.json`
+- bridge.ts copied into the `CLAUDE_CONFIG_DIR`'s plugin cache
+- `DAEMON_SOCK` must be `export`ed so the bridge subprocess inherits it
 
 ## Tools
 
