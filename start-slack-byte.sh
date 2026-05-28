@@ -1,11 +1,12 @@
 #!/bin/bash
 # Start Slack Byte (Claude Code Slack bot) using the daemon+bridge architecture.
 # Requires the Slack daemon to be running first.
-SESSION="slack-byte"
+SESSION="${BYTE_SESSION_NAME:-slack-byte}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOCK="$HOME/.claude/channels/slack/daemon.sock"
+SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/slack/daemon.sock}"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-DM_CHANNEL="D0B6KKFNH4N"
+DM_CHANNEL="${BYTE_CHANNEL:-D0B6KKFNH4N}"
+CWD="${BYTE_CWD:-$HOME/angellist}"
 
 # Check daemon is running
 if [ ! -S "$SOCK" ]; then
@@ -35,7 +36,7 @@ echo "$(date): synced bridge.ts into plugin cache" >> ~/slack-byte-restarts.log
 
 # Start slack-byte
 tmux new-session -d -s "$SESSION" \
-  "cd ~/angellist && export DAEMON_SOCK=$SOCK && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
   \"You just restarted with a fresh context. You are Byte running on Slack. Read your memory files, then send a greeting to Slack DM ${DM_CHANNEL} using reply(chat_id=${DM_CHANNEL}).\""
 
 echo "$(date): Slack Byte started (daemon+bridge)" >> ~/slack-byte-restarts.log

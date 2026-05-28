@@ -1,11 +1,12 @@
 #!/bin/bash
 # Start Byte (Claude Code Discord bot) using the daemon+bridge architecture.
 # Requires the daemon to be running first (start-daemon.sh).
-SESSION="byte"
-CHANNEL="1487715706043629658"
+SESSION="${BYTE_SESSION_NAME:-byte}"
+CHANNEL="${BYTE_CHANNEL:-1487715706043629658}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOCK="$HOME/.claude/channels/discord/daemon.sock"
+SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/discord/daemon.sock}"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude-personal}"
+CWD="${BYTE_CWD:-$HOME/trading}"
 
 # Check daemon is running
 if [ ! -S "$SOCK" ]; then
@@ -35,7 +36,7 @@ echo "$(date): synced bridge.ts into plugin cache as server.ts" >> ~/byte-restar
 
 # Start byte with --channels (bridge connects to daemon via unix socket)
 tmux new-session -d -s "$SESSION" \
-  "cd ~/trading && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
   \"You just restarted with a fresh context. Read your memory files, then send a message to Discord channel ${CHANNEL} letting them know you're back online.\""
 
 echo "$(date): Byte v2 started (daemon+bridge)" >> ~/byte-restarts.log
