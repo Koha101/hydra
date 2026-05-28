@@ -518,7 +518,9 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
       const ch = await gateway.fetchChannel(targetChannelId)
       if (ch.isThread) {
         threadId = ch.id
-      } else if (ch.isDM) {
+      } else if (ch.isDM && gateway.platform === 'discord') {
+        // Discord DMs don't support threads — redirect to a guild channel.
+        // Slack DMs support threads natively, so keep the DM as target.
         targetChannelId = DEFAULT_SESSION_CHANNEL
       }
     } catch {

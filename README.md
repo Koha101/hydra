@@ -1,130 +1,158 @@
-# Discord
+# Hydra
 
-Connect a Discord bot to your Claude Code with an MCP server.
+Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or both simultaneously via MCP.
 
-When the bot receives a message, the MCP server forwards it to Claude and provides tools to reply, react, and edit messages.
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐
+│  Discord    │     │   Slack     │
+│  Gateway    │     │  Gateway    │
+│ (discord.js)│     │(@slack/bolt)│
+└──────┬──────┘     └──────┬──────┘
+       │                   │
+       └────────┬──────────┘
+                │
+       ┌────────▼────────┐
+       │     Daemon      │     Single process per platform.
+       │  (daemon.ts)    │     Holds gateway connection,
+       │                 │     routes messages, manages
+       │  unix socket    │     sessions and access control.
+       └────────┬────────┘
+                │  newline-delimited JSON
+       ┌────────▼────────┐
+       │    Bridge       │     Thin MCP relay. One per
+       │  (bridge.ts)    │     Claude session. Platform-
+       │                 │     agnostic — doesn't import
+       │  stdio ↔ socket │     any chat SDK.
+       └────────┬────────┘
+                │  MCP (stdio)
+       ┌────────▼────────┐
+       │   Claude Code   │     Full Claude with tools,
+       │                 │     memory, file access, etc.
+       └─────────────────┘
+```
+
+**Key design decisions:**
+- **One gateway connection per platform.** Prevents token race conditions (Discord) and simplifies state.
+- **Daemon ↔ Bridge separation.** The daemon is long-lived; Claude sessions come and go. The bridge reconnects automatically.
+- **Platform selection via env var.** Set `CHAT_PLATFORM=discord` or `CHAT_PLATFORM=slack`. Default: `discord`.
+- **Simultaneous platforms.** Run two daemons on different `DISCORD_STATE_DIR` paths for Discord + Slack at the same time.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) — the MCP server runs on Bun. Install with `curl -fsSL https://bun.sh/install | bash`.
-- [tmux](https://github.com/tmux/tmux) — sessions run in tmux. Install with `brew install tmux`.
+- [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
+- [tmux](https://github.com/tmux/tmux) — `brew install tmux`
 
-## Quick Setup
-> Default pairing flow for a single-user DM bot. See [ACCESS.md](./ACCESS.md) for groups and multi-user setups.
-
-**1. Create a Discord application and bot.**
-
-Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**. Give it a name.
-
-Navigate to **Bot** in the sidebar. Give your bot a username.
-
-Scroll down to **Privileged Gateway Intents** and enable **Message Content Intent** — without this the bot receives messages with empty content.
-
-**2. Generate a bot token.**
-
-Still on the **Bot** page, scroll up to **Token** and press **Reset Token**. Copy the token — it's only shown once. Hold onto it for step 5.
-
-**3. Invite the bot to a server.**
-
-Discord won't let you DM a bot unless you share a server with it.
-
-Navigate to **OAuth2** → **URL Generator**. Select the `bot` scope. Under **Bot Permissions**, enable:
-
-- View Channels
-- Send Messages
-- Send Messages in Threads
-- Read Message History
-- Attach Files
-- Add Reactions
-
-Integration type: **Guild Install**. Copy the **Generated URL**, open it, and add the bot to any server you're in.
-
-> For DM-only use you technically need zero permissions — but enabling them now saves a trip back when you want guild channels later.
-
-**4. Install the plugin.**
-
-These are Claude Code commands — run `claude` to start a session first.
-
-Install the plugin:
-```
-/plugin install discord@claude-plugins-official
-```
-
-**5. Give the server the token.**
-
-```
-/discord:configure MTIz...
-```
-
-Writes `DISCORD_BOT_TOKEN=...` to `~/.claude/channels/discord/.env`. You can also write that file by hand, or set the variable in your shell environment — shell takes precedence.
-
-> To run multiple bots on one machine (different tokens, separate allowlists), point `DISCORD_STATE_DIR` at a different directory per instance.
-
-**6. Relaunch with the channel flag.**
-
-The server won't connect without this — exit your session and start a new one:
-
-```sh
-claude --channels plugin:discord@claude-plugins-official
-```
-
-**7. Pair.**
-
-With Claude Code running from the previous step, DM your bot on Discord — it replies with a pairing code. If the bot doesn't respond, make sure your session is running with `--channels`. In your Claude Code session:
-
-```
-/discord:access pair <code>
-```
-
-Your next DM reaches the assistant.
-
-**8. Lock it down.**
-
-Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/discord:access policy allowlist` directly.
-
-## Access control
-
-See **[ACCESS.md](./ACCESS.md)** for DM policies, guild channels, mention detection, delivery config, skill commands, and the `access.json` schema.
-
-Quick reference: IDs are Discord **snowflakes** (numeric — enable Developer Mode, right-click → Copy ID). Default policy is `pairing`. Guild channels are opt-in per channel ID.
-
-## Tools exposed to the assistant
-
-| Tool | Purpose |
-| --- | --- |
-| `reply` | Send to a channel. Takes `chat_id` + `text`, optionally `reply_to` (message ID) for native threading and `files` (absolute paths) for attachments — max 10 files, 25MB each. Auto-chunks; files attach to the first chunk. Returns the sent message ID(s). |
-| `react` | Add an emoji reaction to any message by ID. Unicode emoji work directly; custom emoji need `<:name:id>` form. |
-| `edit_message` | Edit a message the bot previously sent. Useful for "working…" → result progress updates. Only works on the bot's own messages. |
-| `fetch_messages` | Pull recent history from a channel (oldest-first). Capped at 100 per call. Each line includes the message ID so the model can `reply_to` it; messages with attachments are marked `+Natt`. Discord's search API isn't exposed to bots, so this is the only lookback. |
-| `download_attachment` | Download all attachments from a specific message by ID to `~/.claude/channels/discord/inbox/`. Returns file paths + metadata. Use when `fetch_messages` shows a message has attachments. |
-
-Inbound messages trigger a typing indicator automatically — Discord shows
-"botname is typing…" while the assistant works on a response.
-
-## Attachments
-
-Attachments are **not** auto-downloaded. The `<channel>` notification lists
-each attachment's name, type, and size — the assistant calls
-`download_attachment(chat_id, message_id)` when it actually wants the file.
-Downloads land in `~/.claude/channels/discord/inbox/`.
-
-Same path for attachments on historical messages found via `fetch_messages`
-(messages with attachments are marked `+Natt`).
-
-## Starting
+## Quick Start
 
 ```bash
-./start-daemon.sh      # starts daemon (tmux: discord-daemon)
-./start-byte-v2.sh     # starts main session (tmux: byte) — requires daemon
+# Install dependencies
+bun install
+
+# Start daemon (default: Discord)
+./start-daemon.sh
+
+# Start Claude session
+./start-byte-v2.sh
 ```
 
-## Spawning sessions from Discord
+## Platform Setup
+
+- **[Discord Setup](docs/discord.md)** — bot creation, token, permissions, pairing
+- **[Slack Setup](docs/slack.md)** — app manifest, Socket Mode, tokens
+
+## Configuration
+
+### Platform selection
+
+Set in `~/trading/discord-bot-custom/.env`:
+
+```bash
+CHAT_PLATFORM=discord    # or slack
+
+# Discord
+DISCORD_BOT_TOKEN=MTIz...
+
+# Slack
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+```
+
+Discord bot token can also live in `~/.claude/channels/discord/.env` (loaded as fallback).
+
+### Access control
+
+`access.json` controls who can message the bot. Lives in the state dir (`~/.claude/channels/discord/` by default, or wherever `DISCORD_STATE_DIR` points).
+
+```jsonc
+{
+  "dmPolicy": "pairing",          // pairing | allowlist | disabled
+  "allowFrom": ["user-id-here"],  // platform user IDs
+  "groups": {                      // channel-level policies
+    "channel-id": {
+      "requireMention": true,
+      "allowFrom": [],
+      "threadReply": true
+    }
+  },
+  "ackReaction": "👀",
+  "replyToMode": "first",         // first | all | off
+  "textChunkLimit": 2000,
+  "chunkMode": "newline"           // newline | length
+}
+```
+
+See [ACCESS.md](./ACCESS.md) for full reference.
+
+### Running both platforms simultaneously
+
+```bash
+# Discord daemon (default state dir)
+./start-daemon.sh
+
+# Slack daemon (separate state dir)
+DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLATFORM=slack \
+  bun run daemon.ts
+
+# Each needs its own access.json with platform-specific user IDs
+```
+
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| `reply` | Send a message. Takes `chat_id` + `text`, optionally `reply_to` for threading and `files` for attachments (max 10, 25MB each). Auto-chunks long messages. |
+| `react` | Add emoji reaction to a message. |
+| `edit_message` | Edit a previously sent message. |
+| `fetch_messages` | Pull recent history (up to 100). |
+| `download_attachment` | Download attachments from a message to local inbox. |
+| `create_thread` | Create a thread on a message or standalone. |
+| `spawn_session` | Spawn a new Claude session for a topic (main session only). |
+| `list_sessions` | List active spawned sessions (main session only). |
+| `kill_session` | Kill a spawned session (main session only). |
+
+## Sessions
+
+Spawn isolated Claude sessions from chat:
 
 | Command | Action |
 |---------|--------|
 | `spawn: <topic>` | Create a new session with a thread |
-| `new session: <topic>` | Same thing |
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
+| `listen` / `pause` | Toggle auto-routing in a session thread |
 
-Sessions get cute names (spark, pixel, nova, drift...) and run in their own tmux sessions with isolated context windows. Session state persists to `sessions.json` and survives daemon restarts.
+Sessions get cute names (spark, pixel, nova...), run in tmux, and auto-cleanup after 30 min idle. State persists across daemon restarts.
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `gateway.ts` | ChatGateway interface and shared types |
+| `discord-gateway.ts` | Discord implementation (discord.js) |
+| `slack-gateway.ts` | Slack implementation (@slack/bolt Socket Mode) |
+| `daemon.ts` | Platform-agnostic message router and session manager |
+| `bridge.ts` | MCP relay between Claude and daemon (unix socket ↔ stdio) |
+| `start-daemon.sh` | Start daemon in tmux |
+| `start-byte-v2.sh` | Start main Claude session in tmux |
