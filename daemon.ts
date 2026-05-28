@@ -1034,6 +1034,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       // Discord: channelId IS the thread ID. Slack: need composite channelId:thread_ts.
       const mappedSession = threadToSession.get(msg.channelId)
         ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
+      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
         const info = sessions.get(mappedSession)
         if (info) {
@@ -1045,7 +1046,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
 
+          // In Slack DM threads, always route — the thread IS the session.
+          // In Discord guild threads, require explicit addressing (listen mode,
+          // name prefix, or reply-to-bot) to avoid responding to bystanders.
+          const alwaysRoute = gateway.platform === 'slack' && msg.isDM
           const shouldRoute =
+            alwaysRoute ||
             info.listening ||
             msg.content.toLowerCase().startsWith(info.tmuxName) ||
             (msg.referenceMessageId && gateway.wasSentByUs(msg.referenceMessageId))
