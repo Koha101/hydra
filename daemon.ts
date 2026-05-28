@@ -1031,7 +1031,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     // Session thread routing
     if (msg.isThread) {
+      // Discord: channelId IS the thread ID. Slack: need composite channelId:thread_ts.
       const mappedSession = threadToSession.get(msg.channelId)
+        ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
       if (mappedSession) {
         const info = sessions.get(mappedSession)
         if (info) {
@@ -1164,18 +1166,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
   let targetSessionId = 'main'
 
   if (msg.isThread) {
-    const threadId = msg.channelId
-    const mappedSession = threadToSession.get(threadId)
+    const mappedSession = threadToSession.get(msg.channelId)
+      ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
     if (mappedSession && sessions.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = sessions.get(mappedSession)!
       info.lastActive = Date.now()
-      // Use session's threadId as chat_id so replies go to the right thread
       meta.chat_id = info.threadId
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
     const mappedSession = threadToSession.get(chat_id)
+      ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
     if (mappedSession && sessions.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = sessions.get(mappedSession)!

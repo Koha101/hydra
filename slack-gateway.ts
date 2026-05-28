@@ -215,6 +215,7 @@ export class SlackGateway implements ChatGateway {
     if (!this.app) throw new Error('not connected')
 
     const parsed = this.parseChannelId(channelId)
+    process.stderr.write(`slack gateway send: channelId=${channelId} parsed=${JSON.stringify(parsed)} replyTo=${opts?.replyTo ?? 'none'}\n`)
 
     const payload: Record<string, unknown> = {
       channel: parsed.channel,
