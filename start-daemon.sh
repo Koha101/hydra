@@ -1,7 +1,10 @@
 #!/bin/bash
-# Start the Discord routing daemon in a tmux session.
-# The daemon holds the single Discord gateway connection and routes
-# messages between Discord and Claude sessions via unix sockets.
+# Start the chat routing daemon in a tmux session.
+# The daemon holds a single gateway connection (Discord or Slack) and routes
+# messages between the chat platform and Claude sessions via unix sockets.
+#
+# Platform selection: set CHAT_PLATFORM=slack in ~/.claude/channels/discord/.env
+# Default: discord
 SESSION="discord-daemon"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -16,5 +19,5 @@ rm -f ~/.claude/channels/discord/daemon.sock
 tmux new-session -d -s "$SESSION" \
   "cd '$SCRIPT_DIR' && bun run daemon.ts 2>&1 | tee -a ~/discord-daemon.log"
 
-echo "$(date): Discord daemon started in tmux session '$SESSION'" >> ~/discord-daemon.log
-echo "Discord daemon started. Attach with: tmux attach -t $SESSION"
+echo "$(date): Daemon started in tmux session '$SESSION'" >> ~/discord-daemon.log
+echo "Daemon started. Attach with: tmux attach -t $SESSION"

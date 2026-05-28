@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 /**
- * Discord routing daemon.
+ * Chat routing daemon.
  *
- * Replaces the MCP server role of server.ts — holds the single Discord gateway
- * connection and routes messages to/from Claude sessions via unix sockets.
+ * Platform-agnostic message router that holds a single chat gateway connection
+ * (Discord or Slack) and routes messages to/from Claude sessions via unix sockets.
+ *
+ * Platform selection: set CHAT_PLATFORM=discord (default) or CHAT_PLATFORM=slack
  *
  * Protocol: newline-delimited JSON over unix socket at
  *   ~/.claude/channels/discord/daemon.sock
@@ -20,18 +22,6 @@
  *   {type: "permission_request", request_id: "...", tool_name: "...", description: "...", input_preview: "..."}
  */
 
-import {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  ChannelType,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  type Message,
-  type Attachment,
-  type Interaction,
-} from 'discord.js'
 import { randomBytes, randomUUID } from 'crypto'
 import {
   readFileSync,
@@ -51,6 +41,8 @@ import { join, sep } from 'path'
 import { createServer, type Socket } from 'net'
 import { execSync } from 'child_process'
 
+import type { ChatGateway, InboundMessage, ButtonDef } from './gateway.js'
+
 // ---------------------------------------------------------------------------
 // Config & env
 // ---------------------------------------------------------------------------
@@ -65,60 +57,80 @@ const INBOX_DIR = join(STATE_DIR, 'inbox')
 const CLAUDE_CONFIG = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude-personal')
 const DEFAULT_SESSION_CHANNEL = process.env.DEFAULT_SESSION_CHANNEL ?? '1506825982127112252'
 
-// Load ~/.claude/channels/discord/.env into process.env. Real env wins.
-try {
-  chmodSync(ENV_FILE, 0o600)
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
-  }
-} catch {}
-
-const TOKEN = process.env.DISCORD_BOT_TOKEN
-const STATIC = process.env.DISCORD_ACCESS_MODE === 'static'
-
-if (!TOKEN) {
-  process.stderr.write(
-    `discord daemon: DISCORD_BOT_TOKEN required\n` +
-    `  set in ${ENV_FILE}\n` +
-    `  format: DISCORD_BOT_TOKEN=MTIz...\n`,
-  )
-  process.exit(1)
+// Load .env files into process.env. Real env wins, local .env takes priority over state dir .env.
+const LOCAL_ENV_FILE = join(import.meta.dir, '.env')
+for (const envFile of [LOCAL_ENV_FILE, ENV_FILE]) {
+  try {
+    chmodSync(envFile, 0o600)
+    for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+      const m = line.match(/^(\w+)=(.*)$/)
+      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+    }
+  } catch {}
 }
+
+// Platform selection
+const PLATFORM = (process.env.CHAT_PLATFORM ?? 'discord') as 'discord' | 'slack'
+
+let TOKEN: string | undefined
+let SLACK_APP_TOKEN: string | undefined
+
+if (PLATFORM === 'slack') {
+  TOKEN = process.env.SLACK_BOT_TOKEN
+  SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN
+  if (!TOKEN || !SLACK_APP_TOKEN) {
+    process.stderr.write(
+      `daemon: SLACK_BOT_TOKEN and SLACK_APP_TOKEN required for slack platform\n` +
+      `  set in ${ENV_FILE}\n`,
+    )
+    process.exit(1)
+  }
+} else {
+  TOKEN = process.env.DISCORD_BOT_TOKEN
+  if (!TOKEN) {
+    process.stderr.write(
+      `daemon: DISCORD_BOT_TOKEN required for discord platform\n` +
+      `  set in ${ENV_FILE}\n`,
+    )
+    process.exit(1)
+  }
+}
+
+const STATIC = process.env.DISCORD_ACCESS_MODE === 'static'
 
 // ---------------------------------------------------------------------------
 // Safety nets
 // ---------------------------------------------------------------------------
 
 process.on('unhandledRejection', err => {
-  process.stderr.write(`discord daemon: unhandled rejection: ${err}\n`)
+  process.stderr.write(`daemon: unhandled rejection: ${err}\n`)
 })
 process.on('uncaughtException', err => {
-  process.stderr.write(`discord daemon: uncaught exception: ${err}\n`)
+  process.stderr.write(`daemon: uncaught exception: ${err}\n`)
 })
 
 // ---------------------------------------------------------------------------
-// Permission regex (from server.ts)
+// Permission regex
 // ---------------------------------------------------------------------------
 
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 // ---------------------------------------------------------------------------
-// Discord client (identical to server.ts)
+// Gateway instantiation
 // ---------------------------------------------------------------------------
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel],
-})
+let gateway: ChatGateway
+
+if (PLATFORM === 'slack') {
+  const { SlackGateway } = await import('./slack-gateway.js')
+  gateway = new SlackGateway(SLACK_APP_TOKEN!)
+} else {
+  const { DiscordGateway } = await import('./discord-gateway.js')
+  gateway = new DiscordGateway()
+}
 
 // ---------------------------------------------------------------------------
-// Access control types & helpers (verbatim from server.ts)
+// Access control types & helpers
 // ---------------------------------------------------------------------------
 
 type PendingEntry = {
@@ -185,7 +197,7 @@ function readAccessFile(): Access {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
     try { renameSync(ACCESS_FILE, `${ACCESS_FILE}.corrupt-${Date.now()}`) } catch {}
-    process.stderr.write(`discord daemon: access.json is corrupt, moved aside. Starting fresh.\n`)
+    process.stderr.write(`daemon: access.json is corrupt, moved aside. Starting fresh.\n`)
     return defaultAccess()
   }
 }
@@ -194,7 +206,7 @@ const BOOT_ACCESS: Access | null = STATIC
   ? (() => {
       const a = readAccessFile()
       if (a.dmPolicy === 'pairing') {
-        process.stderr.write('discord daemon: static mode -- dmPolicy "pairing" downgraded to "allowlist"\n')
+        process.stderr.write('daemon: static mode -- dmPolicy "pairing" downgraded to "allowlist"\n')
         a.dmPolicy = 'allowlist'
       }
       a.pending = {}
@@ -227,7 +239,7 @@ function pruneExpired(a: Access): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Gate logic (verbatim from server.ts)
+// Gate logic
 // ---------------------------------------------------------------------------
 
 type GateResult =
@@ -235,28 +247,16 @@ type GateResult =
   | { action: 'drop' }
   | { action: 'pair'; code: string; isResend: boolean }
 
-const recentSentIds = new Set<string>()
-const RECENT_SENT_CAP = 200
-
-function noteSent(id: string): void {
-  recentSentIds.add(id)
-  if (recentSentIds.size > RECENT_SENT_CAP) {
-    const first = recentSentIds.values().next().value
-    if (first) recentSentIds.delete(first)
-  }
-}
-
-async function gate(msg: Message): Promise<GateResult> {
+async function gate(msg: InboundMessage): Promise<GateResult> {
   const access = loadAccess()
   const pruned = pruneExpired(access)
   if (pruned) saveAccess(access)
 
   if (access.dmPolicy === 'disabled') return { action: 'drop' }
 
-  const senderId = msg.author.id
-  const isDM = msg.channel.type === ChannelType.DM
+  const senderId = msg.authorId
 
-  if (isDM) {
+  if (msg.isDM) {
     if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
     if (access.dmPolicy === 'allowlist') return { action: 'drop' }
 
@@ -283,8 +283,9 @@ async function gate(msg: Message): Promise<GateResult> {
     return { action: 'pair', code, isResend: false }
   }
 
-  const channelId = msg.channel.isThread()
-    ? msg.channel.parentId ?? msg.channelId
+  // Guild/channel message
+  const channelId = msg.isThread
+    ? msg.parentChannelId ?? msg.channelId
     : msg.channelId
   const policy = access.groups[channelId]
   if (!policy) return { action: 'drop' }
@@ -293,35 +294,14 @@ async function gate(msg: Message): Promise<GateResult> {
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
     return { action: 'drop' }
   }
-  if (requireMention && !(await isMentioned(msg, access.mentionPatterns))) {
+  if (requireMention && !(await gateway.isMentioned(msg, access.mentionPatterns))) {
     return { action: 'drop' }
   }
   return { action: 'deliver', access }
 }
 
-async function isMentioned(msg: Message, extraPatterns?: string[]): Promise<boolean> {
-  if (client.user && msg.mentions.has(client.user)) return true
-
-  const refId = msg.reference?.messageId
-  if (refId) {
-    if (recentSentIds.has(refId)) return true
-    try {
-      const ref = await msg.fetchReference()
-      if (ref.author.id === client.user?.id) return true
-    } catch {}
-  }
-
-  const text = msg.content
-  for (const pat of extraPatterns ?? []) {
-    try {
-      if (new RegExp(pat, 'i').test(text)) return true
-    } catch {}
-  }
-  return false
-}
-
 // ---------------------------------------------------------------------------
-// Approval polling (verbatim from server.ts)
+// Approval polling
 // ---------------------------------------------------------------------------
 
 function checkApprovals(): void {
@@ -346,13 +326,10 @@ function checkApprovals(): void {
     }
     void (async () => {
       try {
-        const ch = await fetchTextChannel(dmChannelId)
-        if ('send' in ch) {
-          await ch.send("Paired! Say hi to Claude.")
-        }
+        await gateway.send(dmChannelId, "Paired! Say hi to Claude.")
         rmSync(file, { force: true })
       } catch (err) {
-        process.stderr.write(`discord daemon: failed to send approval confirm: ${err}\n`)
+        process.stderr.write(`daemon: failed to send approval confirm: ${err}\n`)
         rmSync(file, { force: true })
       }
     })()
@@ -362,7 +339,7 @@ function checkApprovals(): void {
 if (!STATIC) setInterval(checkApprovals, 5000).unref()
 
 // ---------------------------------------------------------------------------
-// Chunk splitting (verbatim from server.ts)
+// Chunk splitting
 // ---------------------------------------------------------------------------
 
 function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
@@ -385,49 +362,6 @@ function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[
 }
 
 // ---------------------------------------------------------------------------
-// Channel helpers (verbatim from server.ts)
-// ---------------------------------------------------------------------------
-
-async function fetchTextChannel(id: string) {
-  const ch = await client.channels.fetch(id)
-  if (!ch || !ch.isTextBased()) {
-    throw new Error(`channel ${id} not found or not text-based`)
-  }
-  return ch
-}
-
-async function fetchAllowedChannel(id: string) {
-  const ch = await fetchTextChannel(id)
-  const access = loadAccess()
-  if (ch.type === ChannelType.DM) {
-    if (access.allowFrom.includes(ch.recipientId)) return ch
-  } else {
-    const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
-    if (key in access.groups) return ch
-  }
-  throw new Error(`channel ${id} is not allowlisted -- add via /discord:access`)
-}
-
-async function downloadAttachment(att: Attachment): Promise<string> {
-  if (att.size > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`attachment too large: ${(att.size / 1024 / 1024).toFixed(1)}MB, max ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB`)
-  }
-  const res = await fetch(att.url)
-  const buf = Buffer.from(await res.arrayBuffer())
-  const name = att.name ?? `${att.id}`
-  const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'
-  const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-  const path = join(INBOX_DIR, `${Date.now()}-${att.id}.${ext}`)
-  mkdirSync(INBOX_DIR, { recursive: true })
-  writeFileSync(path, buf)
-  return path
-}
-
-function safeAttName(att: Attachment): string {
-  return (att.name ?? att.id).replace(/[\[\]\r\n;]/g, '_')
-}
-
-// ---------------------------------------------------------------------------
 // Cute session names
 // ---------------------------------------------------------------------------
 
@@ -440,7 +374,6 @@ const SESSION_NAMES = [
 
 function pickSessionName(): string {
   const used = new Set([...sessions.values()].map(s => s.tmuxName))
-  // Also check tmux for sessions from previous daemon runs
   try {
     const tmuxOut = execSync('tmux ls -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' })
     for (const line of tmuxOut.split('\n')) {
@@ -467,9 +400,7 @@ type SessionInfo = {
   listening: boolean
 }
 
-/** sessionId -> SessionInfo */
 const sessions = new Map<string, SessionInfo>()
-/** threadId (Discord) -> sessionId */
 const threadToSession = new Map<string, string>()
 
 const SESSIONS_FILE = join(STATE_DIR, 'sessions.json')
@@ -479,7 +410,7 @@ function persistSessions(): void {
     const data = [...sessions.values()]
     writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
   } catch (err) {
-    process.stderr.write(`discord daemon: failed to persist sessions: ${err}\n`)
+    process.stderr.write(`daemon: failed to persist sessions: ${err}\n`)
   }
 }
 
@@ -501,12 +432,12 @@ function loadPersistedSessions(): void {
       restored++
     }
     if (restored > 0 || dead > 0) {
-      process.stderr.write(`discord daemon: restored ${restored} session(s), pruned ${dead} dead\n`)
+      process.stderr.write(`daemon: restored ${restored} session(s), pruned ${dead} dead\n`)
     }
     if (dead > 0) persistSessions()
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      process.stderr.write(`discord daemon: failed to load sessions: ${err}\n`)
+      process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
     }
   }
 }
@@ -523,9 +454,7 @@ type BridgeConn = {
   buf: string
 }
 
-/** sessionId -> BridgeConn */
 const bridges = new Map<string, BridgeConn>()
-/** Queued messages for sessions whose bridge is temporarily disconnected */
 const messageQueues = new Map<string, Array<Record<string, unknown>>>()
 const MAX_QUEUE_SIZE = 50
 
@@ -533,7 +462,7 @@ function sendToBridge(bridge: BridgeConn, msg: Record<string, unknown>): void {
   try {
     bridge.socket.write(JSON.stringify(msg) + '\n')
   } catch (err) {
-    process.stderr.write(`discord daemon: failed to write to bridge ${bridge.sessionId}: ${err}\n`)
+    process.stderr.write(`daemon: failed to write to bridge ${bridge.sessionId}: ${err}\n`)
   }
 }
 
@@ -542,7 +471,6 @@ function sendOrQueue(sessionId: string, msg: Record<string, unknown>): void {
   if (bridge) {
     sendToBridge(bridge, msg)
   } else {
-    // Bridge temporarily disconnected — queue for delivery on reconnect
     let queue = messageQueues.get(sessionId)
     if (!queue) {
       queue = []
@@ -559,7 +487,7 @@ function flushQueue(sessionId: string): void {
   if (!queue || queue.length === 0) return
   const bridge = bridges.get(sessionId)
   if (!bridge) return
-  process.stderr.write(`discord daemon: flushing ${queue.length} queued message(s) for ${sessionId}\n`)
+  process.stderr.write(`daemon: flushing ${queue.length} queued message(s) for ${sessionId}\n`)
   for (const msg of queue) {
     sendToBridge(bridge, msg)
   }
@@ -571,7 +499,7 @@ function getBridgeForSession(sessionId: string): BridgeConn | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn helper — returns structured data, used by both tool handler and intercept
+// Spawn helper
 // ---------------------------------------------------------------------------
 
 type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
@@ -586,10 +514,14 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   // Determine where to create the thread
   let targetChannelId = chatId
   if (targetChannelId) {
-    const ch = await fetchTextChannel(targetChannelId)
-    if (ch.isThread()) {
-      threadId = ch.id
-    } else if (ch.type === ChannelType.DM) {
+    try {
+      const ch = await gateway.fetchChannel(targetChannelId)
+      if (ch.isThread) {
+        threadId = ch.id
+      } else if (ch.isDM) {
+        targetChannelId = DEFAULT_SESSION_CHANNEL
+      }
+    } catch {
       targetChannelId = DEFAULT_SESSION_CHANNEL
     }
   } else {
@@ -598,32 +530,32 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
 
   // Create thread if we don't have one yet
   if (!threadId) {
-    const ch = await fetchTextChannel(targetChannelId!)
-
     if (messageId && targetChannelId === chatId) {
       try {
-        const msg = await ch.messages.fetch(messageId)
-        const thread = await msg.startThread({ name: threadName, autoArchiveDuration: 1440 })
+        const thread = await gateway.createThread(targetChannelId!, threadName, {
+          messageId,
+          archiveDuration: 1440,
+        })
         threadId = thread.id
       } catch (err) {
-        process.stderr.write(`discord daemon: startThread on message failed: ${err}\n`)
+        process.stderr.write(`daemon: createThread on message failed: ${err}\n`)
       }
     }
 
     if (!threadId) {
-      if ('send' in ch) {
-        const anchor = await (ch as any).send(`Starting session **${tmuxName}**: ${topic}`)
-        const thread = await anchor.startThread({ name: threadName, autoArchiveDuration: 1440 })
-        noteSent(anchor.id)
-        threadId = thread.id
-      } else {
-        throw new Error('channel does not support sending messages')
-      }
+      // Post an anchor message and thread on it
+      const anchor = await gateway.send(targetChannelId!, `Starting session **${tmuxName}**: ${topic}`)
+      const thread = await gateway.createThread(targetChannelId!, threadName, {
+        messageId: anchor.id,
+        archiveDuration: 1440,
+      })
+      threadId = thread.id
     }
   }
 
   const escapedTopic = topic.replace(/'/g, "'\\''")
-  const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ~/trading && SESSION_ID=${sessionId} DAEMON_SOCK=${SOCK_PATH} CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} claude --model "claude-opus-4-6[1m]" --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
+  const channelFlag = `plugin:discord@claude-plugins-official`
+  const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ~/trading && SESSION_ID=${sessionId} DAEMON_SOCK=${SOCK_PATH} CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} claude --model "claude-opus-4-6[1m]" --channels ${channelFlag} --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
 
   try {
     execSync(tmuxCmd, { stdio: 'pipe' })
@@ -633,23 +565,17 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   }
 
   const now = Date.now()
-  sessions.set(sessionId, { sessionId, topic, threadId, createdAt: now, lastActive: now, tmuxName, listening: false })
-  threadToSession.set(threadId, sessionId)
+  sessions.set(sessionId, { sessionId, topic, threadId: threadId!, createdAt: now, lastActive: now, tmuxName, listening: false })
+  threadToSession.set(threadId!, sessionId)
   persistSessions()
 
-  let url = ''
-  try {
-    const threadCh = await client.channels.fetch(threadId)
-    if (threadCh && 'guildId' in threadCh && threadCh.guildId) {
-      url = `https://discord.com/channels/${threadCh.guildId}/${threadId}`
-    }
-  } catch {}
+  const url = await gateway.getThreadUrl(threadId!)
 
-  return { name: tmuxName, sessionId, threadId, url }
+  return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
 
 // ---------------------------------------------------------------------------
-// Tool execution (mirrors server.ts CallToolRequestSchema handler)
+// Tool execution
 // ---------------------------------------------------------------------------
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{type: string; text: string}>; isError?: boolean }> {
@@ -661,8 +587,19 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const reply_to = args.reply_to as string | undefined
         const files = (args.files as string[] | undefined) ?? []
 
-        const ch = await fetchAllowedChannel(chat_id)
-        if (!('send' in ch)) throw new Error('channel is not sendable')
+        // Validate channel is allowed
+        const ch = await gateway.fetchChannel(chat_id)
+        const access = loadAccess()
+        if (ch.isDM) {
+          if (!access.allowFrom.includes(ch.recipientId)) {
+            throw new Error(`channel ${chat_id} is not allowlisted`)
+          }
+        } else {
+          const key = ch.isThread ? ch.parentId ?? ch.id : ch.id
+          if (!(key in access.groups)) {
+            throw new Error(`channel ${chat_id} is not allowlisted`)
+          }
+        }
 
         for (const f of files) {
           assertSendable(f)
@@ -671,9 +608,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
             throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 25MB)`)
           }
         }
-        if (files.length > 10) throw new Error('Discord allows max 10 attachments per message')
+        if (files.length > 10) throw new Error('max 10 attachments per message')
 
-        const access = loadAccess()
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
@@ -686,14 +622,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
               reply_to != null &&
               replyMode !== 'off' &&
               (replyMode === 'all' || i === 0)
-            const sent = await ch.send({
-              content: chunks[i],
+            const sent = await gateway.send(chat_id, chunks[i], {
               ...(i === 0 && files.length > 0 ? { files } : {}),
-              ...(shouldReplyTo
-                ? { reply: { messageReference: reply_to, failIfNotExists: false } }
-                : {}),
+              ...(shouldReplyTo ? { replyTo: reply_to } : {}),
             })
-            noteSent(sent.id)
             sentIds.push(sent.id)
           }
         } catch (err) {
@@ -709,18 +641,17 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
 
       case 'fetch_messages': {
-        const ch = await fetchAllowedChannel(args.channel as string)
+        const channelId = args.channel as string
         const limit = Math.min((args.limit as number) ?? 20, 100)
-        const msgs = await ch.messages.fetch({ limit })
-        const me = client.user?.id
-        const arr = [...msgs.values()].reverse()
+        const msgs = await gateway.fetchMessages(channelId, limit)
+        const botId = gateway.botId
         const out =
-          arr.length === 0
+          msgs.length === 0
             ? '(no messages)'
-            : arr
+            : msgs
                 .map(m => {
-                  const who = m.author.id === me ? 'me' : m.author.username
-                  const atts = m.attachments.size > 0 ? ` +${m.attachments.size}att` : ''
+                  const who = m.authorId === botId ? 'me' : m.authorUsername
+                  const atts = m.attachmentCount > 0 ? ` +${m.attachmentCount}att` : ''
                   const text = m.content.replace(/[\r\n]+/g, ' \u23CE ')
                   return `[${m.createdAt.toISOString()}] ${who}: ${text}  (id: ${m.id}${atts})`
                 })
@@ -729,73 +660,50 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
 
       case 'react': {
-        const ch = await fetchAllowedChannel(args.chat_id as string)
-        const msg = await ch.messages.fetch(args.message_id as string)
-        await msg.react(args.emoji as string)
+        await gateway.react(args.chat_id as string, args.message_id as string, args.emoji as string)
         return { content: [{ type: 'text', text: 'reacted' }] }
       }
 
       case 'edit_message': {
-        const ch = await fetchAllowedChannel(args.chat_id as string)
-        const msg = await ch.messages.fetch(args.message_id as string)
-        const edited = await msg.edit(args.text as string)
-        return { content: [{ type: 'text', text: `edited (id: ${edited.id})` }] }
+        const edited = await gateway.edit(args.chat_id as string, args.message_id as string, args.text as string)
+        return { content: [{ type: 'text', text: `edited (id: ${edited})` }] }
       }
 
       case 'create_thread': {
-        const ch = await fetchAllowedChannel(args.chat_id as string)
         const threadName = (args.name as string).slice(0, 100)
-        const archiveDuration = (args.auto_archive_minutes as number | undefined) ?? 1440
-        const messageId = args.message_id as string | undefined
-
-        let thread
-        if (messageId) {
-          const msg = await ch.messages.fetch(messageId)
-          thread = await msg.startThread({ name: threadName, autoArchiveDuration: archiveDuration })
-        } else {
-          if (!('threads' in ch)) throw new Error('channel does not support threads')
-          thread = await (ch as any).threads.create({ name: threadName, autoArchiveDuration: archiveDuration })
+        const thread = await gateway.createThread(args.chat_id as string, threadName, {
+          messageId: args.message_id as string | undefined,
+          archiveDuration: (args.auto_archive_minutes as number | undefined) ?? 1440,
+          text: args.text as string | undefined,
+          files: (args.files as string[] | undefined),
+        })
+        const hasText = args.text as string | undefined
+        return {
+          content: [{
+            type: 'text',
+            text: hasText
+              ? `thread created (thread_id: ${thread.id})`
+              : `thread created (thread_id: ${thread.id})`,
+          }],
         }
-
-        const text = args.text as string | undefined
-        const files = (args.files as string[] | undefined) ?? []
-        if (text) {
-          for (const f of files) {
-            assertSendable(f)
-            const st = statSync(f)
-            if (st.size > MAX_ATTACHMENT_BYTES) {
-              throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 25MB)`)
-            }
-          }
-          const sent = await thread.send({
-            content: text,
-            ...(files.length > 0 ? { files } : {}),
-          })
-          noteSent(sent.id)
-          return { content: [{ type: 'text', text: `thread created (thread_id: ${thread.id}, message_id: ${sent.id})` }] }
-        }
-
-        return { content: [{ type: 'text', text: `thread created (thread_id: ${thread.id})` }] }
       }
 
       case 'download_attachment': {
-        const ch = await fetchAllowedChannel(args.chat_id as string)
-        const msg = await ch.messages.fetch(args.message_id as string)
-        if (msg.attachments.size === 0) {
+        const results = await gateway.downloadAttachments(
+          args.chat_id as string,
+          args.message_id as string,
+          INBOX_DIR,
+        )
+        if (results.length === 0) {
           return { content: [{ type: 'text', text: 'message has no attachments' }] }
         }
-        const lines: string[] = []
-        for (const att of msg.attachments.values()) {
-          const path = await downloadAttachment(att)
-          const kb = (att.size / 1024).toFixed(0)
-          lines.push(`  ${path}  (${safeAttName(att)}, ${att.contentType ?? 'unknown'}, ${kb}KB)`)
-        }
+        const lines = results.map(r => `  ${r.path}  (${r.name}, ${r.contentType}, ${r.sizeKB}KB)`)
         return {
-          content: [{ type: 'text', text: `downloaded ${lines.length} attachment(s):\n${lines.join('\n')}` }],
+          content: [{ type: 'text', text: `downloaded ${results.length} attachment(s):\n${lines.join('\n')}` }],
         }
       }
 
-      // --- Session management tools (main session only) ---
+      // --- Session management tools ---
 
       case 'spawn_session': {
         const result = await doSpawnSession(args.topic as string, args.chat_id as string | undefined, args.message_id as string | undefined)
@@ -854,59 +762,70 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
+const killsInProgress = new Set<string>()
+
 async function killSession(info: SessionInfo, reason: string): Promise<void> {
-  // Post goodbye message in the thread
+  if (killsInProgress.has(info.sessionId)) return
+  killsInProgress.add(info.sessionId)
+
   try {
-    const ch = await fetchTextChannel(info.threadId)
-    if ('send' in ch) {
-      await (ch as any).send(`_${reason}_`)
+    try {
+      await gateway.send(info.threadId, `_${reason}_`)
+    } catch (err) {
+      process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
     }
+
+    const tmuxName = info.tmuxName
+    try {
+      execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
+    } catch {}
+
+    const bridge = bridges.get(info.sessionId)
+    if (bridge) {
+      try { bridge.socket.end() } catch {}
+      bridges.delete(info.sessionId)
+    }
+
+    threadToSession.delete(info.threadId)
+    sessions.delete(info.sessionId)
+    persistSessions()
+
+    setTimeout(() => {
+      try {
+        execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
+        execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
+        process.stderr.write(`daemon: deferred kill caught lingering tmux session "${tmuxName}"\n`)
+      } catch {}
+      killsInProgress.delete(info.sessionId)
+    }, 3000)
   } catch (err) {
-    process.stderr.write(`discord daemon: failed to post session end message: ${err}\n`)
+    killsInProgress.delete(info.sessionId)
+    throw err
   }
-
-  // Kill tmux session
-  try {
-    execSync(`tmux kill-session -t "${info.tmuxName}"`, { stdio: 'pipe' })
-  } catch {
-    // Already dead, ignore
-  }
-
-  // Clean up bridge connection
-  const bridge = bridges.get(info.sessionId)
-  if (bridge) {
-    try { bridge.socket.end() } catch {}
-    bridges.delete(info.sessionId)
-  }
-
-  // Remove from maps
-  threadToSession.delete(info.threadId)
-  sessions.delete(info.sessionId)
-  persistSessions()
 }
 
 // ---------------------------------------------------------------------------
-// Permission handling (mirrors server.ts)
+// Permission handling
 // ---------------------------------------------------------------------------
 
 const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
 
-// Button-click handler for permission requests
-client.on('interactionCreate', async (interaction: Interaction) => {
-  if (!interaction.isButton()) return
-  const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(interaction.customId)
+gateway.onButtonClick(click => {
+  const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(click.customId)
   if (!m) return
+
   const access = loadAccess()
-  if (!access.allowFrom.includes(interaction.user.id)) {
-    await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
+  if (!access.allowFrom.includes(click.userId)) {
+    void click.respond('Not authorized.')
     return
   }
+
   const [, behavior, request_id] = m
 
   if (behavior === 'more') {
     const details = pendingPermissions.get(request_id)
     if (!details) {
-      await interaction.reply({ content: 'Details no longer available.', ephemeral: true }).catch(() => {})
+      void click.respond('Details no longer available.')
       return
     }
     const { tool_name, description, input_preview } = details
@@ -921,19 +840,11 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       `tool_name: ${tool_name}\n` +
       `description: ${description}\n` +
       `input_preview:\n${prettyInput}`
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`perm:allow:${request_id}`)
-        .setLabel('Allow')
-        .setEmoji({ name: '\u2705' })
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`perm:deny:${request_id}`)
-        .setLabel('Deny')
-        .setEmoji({ name: '\u274C' })
-        .setStyle(ButtonStyle.Danger),
-    )
-    await interaction.update({ content: expanded, components: [row] }).catch(() => {})
+    const buttons: ButtonDef[] = [
+      { id: `perm:allow:${request_id}`, label: 'Allow', style: 'success', emoji: '\u2705' },
+      { id: `perm:deny:${request_id}`, label: 'Deny', style: 'danger', emoji: '\u274C' },
+    ]
+    void click.respond(expanded, buttons)
     return
   }
 
@@ -948,33 +859,26 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   }
   pendingPermissions.delete(request_id)
   const label = behavior === 'allow' ? 'Allowed' : 'Denied'
-  await interaction
-    .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
-    .catch(() => {})
+  void click.clearButtons(`${click.messageContent}\n\n${label}`)
 })
 
 // ---------------------------------------------------------------------------
-// Spawn intercept — handles spawn triggers directly without routing to byte
+// Spawn / kill / list intercepts
 // ---------------------------------------------------------------------------
 
-async function handleSpawnIntercept(msg: Message, topic: string, access: Access): Promise<void> {
-  void msg.react(access.ackReaction || '👀').catch(() => {})
+async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, access.ackReaction || '👀').catch(() => {})
 
   try {
     const result = await doSpawnSession(topic, msg.channelId, msg.id)
 
-    // Only reply in DMs (guild channels already have the thread visible)
-    if (msg.channel.isDMBased()) {
+    if (msg.isDM) {
       const reply = result.url
         ? `Spawned session **${result.name}** — ${result.url}`
         : `Spawned session **${result.name}**`
-      const ch = await fetchTextChannel(msg.channelId)
-      if ('send' in ch) {
-        await (ch as any).send({ content: reply, reply: { messageReference: msg.id, failIfNotExists: false } })
-      }
+      await gateway.send(msg.channelId, reply, { replyTo: msg.id })
     }
 
-    // Notify main session so byte knows
     const mainBridge = getBridgeForSession('main')
     if (mainBridge) {
       sendToBridge(mainBridge, {
@@ -985,13 +889,12 @@ async function handleSpawnIntercept(msg: Message, topic: string, access: Access)
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`discord daemon: spawn intercept failed: ${errMsg}\n`)
-    try { await msg.reply(`Spawn failed: ${errMsg}`) } catch {}
+    process.stderr.write(`daemon: spawn intercept failed: ${errMsg}\n`)
+    try { await gateway.send(msg.channelId, `Spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
   }
 }
 
-async function handleKillIntercept(msg: Message, name: string): Promise<void> {
-  // Find session by tmux name or topic
+async function handleKillIntercept(msg: InboundMessage, name: string): Promise<void> {
   let target: SessionInfo | undefined
   for (const s of sessions.values()) {
     if (s.tmuxName === name || s.topic.toLowerCase() === name.toLowerCase()) {
@@ -1000,16 +903,16 @@ async function handleKillIntercept(msg: Message, name: string): Promise<void> {
     }
   }
   if (!target) {
-    try { await msg.reply(`No session found matching "${name}"`) } catch {}
+    try { await gateway.send(msg.channelId, `No session found matching "${name}"`, { replyTo: msg.id }) } catch {}
     return
   }
   await killSession(target, 'session ended')
-  try { await msg.reply(`Killed session **${target.tmuxName}**`) } catch {}
+  try { await gateway.send(msg.channelId, `Killed session **${target.tmuxName}**`, { replyTo: msg.id }) } catch {}
 }
 
-async function handleListIntercept(msg: Message): Promise<void> {
+async function handleListIntercept(msg: InboundMessage): Promise<void> {
   if (sessions.size === 0) {
-    try { await msg.reply('No active sessions.') } catch {}
+    try { await gateway.send(msg.channelId, 'No active sessions.', { replyTo: msg.id }) } catch {}
     return
   }
   const lines = [...sessions.values()].map(s => {
@@ -1018,48 +921,43 @@ async function handleListIntercept(msg: Message): Promise<void> {
     const status = bridges.has(s.sessionId) ? 'connected' : 'disconnected'
     return `**${s.tmuxName}** — ${s.topic} (${age}m old, ${idle}m idle, ${status})`
   })
-  try { await msg.reply(lines.join('\n')) } catch {}
+  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
 }
 
 // ---------------------------------------------------------------------------
-// Deliver a message directly to a session (bypasses gate)
+// Deliver a message to a session
 // ---------------------------------------------------------------------------
 
-async function deliverToSession(msg: Message, targetSessionId: string, access: Access): Promise<void> {
-  if ('sendTyping' in msg.channel) {
-    void msg.channel.sendTyping().catch(() => {})
-  }
+async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
+  void gateway.typing(msg.channelId).catch(() => {})
   if (access.ackReaction) {
-    void msg.react(access.ackReaction).catch(() => {})
+    void gateway.react(msg.channelId, msg.id, access.ackReaction).catch(() => {})
   }
 
-  const atts: string[] = []
-  for (const att of msg.attachments.values()) {
+  const atts: string[] = msg.attachments.map(att => {
     const kb = (att.size / 1024).toFixed(0)
-    atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
-  }
+    return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
+  })
   const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
 
   let threadContext: Record<string, string> = {}
-  if (msg.channel.isThread()) {
-    try {
-      const starter = await msg.channel.fetchStarterMessage()
-      if (starter) {
-        threadContext = {
-          thread_name: msg.channel.name,
-          thread_starter_user: starter.author.username,
-          thread_starter_content: starter.content.slice(0, 500),
-          thread_starter_id: starter.id,
-        }
+  if (msg.isThread) {
+    const starter = await (gateway as any).getThreadStarterInfo?.(msg.channelId)
+    if (starter) {
+      threadContext = {
+        thread_name: starter.threadName,
+        thread_starter_user: starter.starterUser,
+        thread_starter_content: starter.starterContent,
+        thread_starter_id: starter.starterId,
       }
-    } catch {}
+    }
   }
 
   const meta: Record<string, string> = {
     chat_id: msg.channelId,
     message_id: msg.id,
-    user: msg.author.username,
-    user_id: msg.author.id,
+    user: msg.authorUsername,
+    user_id: msg.authorId,
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
     ...threadContext,
@@ -1069,44 +967,37 @@ async function deliverToSession(msg: Message, targetSessionId: string, access: A
 }
 
 // ---------------------------------------------------------------------------
-// Inbound Discord message handling
+// Inbound message handling
 // ---------------------------------------------------------------------------
 
-client.on('threadDelete', thread => {
-  const sessionId = threadToSession.get(thread.id)
+gateway.onThreadDelete(threadId => {
+  const sessionId = threadToSession.get(threadId)
   if (!sessionId) return
   const info = sessions.get(sessionId)
   if (!info) return
-  process.stderr.write(`discord daemon: thread ${thread.id} deleted, killing session ${info.tmuxName}\n`)
+  process.stderr.write(`daemon: thread ${threadId} deleted, killing session ${info.tmuxName}\n`)
   void killSession(info, 'thread deleted')
 })
 
-client.on('messageDelete', msg => {
-  // If the deleted message had a thread mapped to a session, kill it
-  if (!msg.hasThread) return
-  const threadId = msg.thread?.id
+gateway.onMessageDelete((messageId, threadId) => {
   if (!threadId) return
   const sessionId = threadToSession.get(threadId)
   if (!sessionId) return
   const info = sessions.get(sessionId)
   if (!info) return
-  process.stderr.write(`discord daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
+  process.stderr.write(`daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
   void killSession(info, 'anchor message deleted')
 })
 
-client.on('messageCreate', msg => {
-  if (msg.author.bot) return
-  handleInbound(msg).catch(e => process.stderr.write(`discord daemon: handleInbound failed: ${e}\n`))
-})
+gateway.onMessage(async (msg: InboundMessage) => {
+  if (msg.isBot) return
 
-async function handleInbound(msg: Message): Promise<void> {
-  // Command intercepts run before the gate — they only need the sender to be
-  // in allowFrom (skip mention requirement so commands work in any channel).
   const access = loadAccess()
-  const senderId = msg.author.id
+  const senderId = msg.authorId
   const isAllowed = access.allowFrom.includes(senderId)
 
   if (isAllowed) {
+    // Command intercepts
     const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*(.+)/i)
     if (spawnMatch) {
       const topic = spawnMatch[1].trim()
@@ -1118,8 +1009,7 @@ async function handleInbound(msg: Message): Promise<void> {
 
     const killMatch = msg.content.match(/^(?:kill session:|kill:|\/kill)\s*(.+)/i)
     if (killMatch) {
-      const name = killMatch[1].trim()
-      void handleKillIntercept(msg, name)
+      void handleKillIntercept(msg, killMatch[1].trim())
       return
     }
 
@@ -1129,28 +1019,24 @@ async function handleInbound(msg: Message): Promise<void> {
       return
     }
 
-    // Messages in session-mapped threads bypass the gate, but only route if:
-    // 1. Session is in "listening" mode (toggle with listen/pause)
-    // 2. Message starts with the session name
-    // 3. Message replies to one of the bot's messages
-    if (msg.channel.isThread()) {
+    // Session thread routing
+    if (msg.isThread) {
       const mappedSession = threadToSession.get(msg.channelId)
       if (mappedSession) {
         const info = sessions.get(mappedSession)
         if (info) {
-          // listen/pause toggle
           const listenMatch = msg.content.match(/^(listen|pause)\s*$/i)
           if (listenMatch) {
             info.listening = listenMatch[1].toLowerCase() === 'listen'
             persistSessions()
-            void msg.react(info.listening ? '👂' : '⏸️').catch(() => {})
+            void gateway.react(msg.channelId, msg.id, info.listening ? '👂' : '⏸️').catch(() => {})
             return
           }
 
           const shouldRoute =
             info.listening ||
             msg.content.toLowerCase().startsWith(info.tmuxName) ||
-            (msg.reference?.messageId && recentSentIds.has(msg.reference.messageId))
+            (msg.referenceMessageId && gateway.wasSentByUs(msg.referenceMessageId))
 
           if (shouldRoute) {
             info.lastActive = Date.now()
@@ -1158,26 +1044,23 @@ async function handleInbound(msg: Message): Promise<void> {
             return
           }
 
-          // Check reply-to by fetching the referenced message (fallback for older messages not in recentSentIds)
-          if (msg.reference?.messageId) {
-            try {
-              const ref = await msg.fetchReference()
-              if (ref.author.id === client.user?.id) {
-                info.lastActive = Date.now()
-                void deliverToSession(msg, mappedSession, access)
-                return
-              }
-            } catch {}
+          // Fallback: check if replying to bot message via gateway
+          if (msg.referenceMessageId) {
+            const mentioned = await gateway.isMentioned(msg)
+            if (mentioned) {
+              info.lastActive = Date.now()
+              void deliverToSession(msg, mappedSession, access)
+              return
+            }
           }
 
-          // Not addressed to this session — ignore
           return
         }
       }
     }
   }
 
-  // Normal gate for everything else (checks mention, channel policy, etc.)
+  // Normal gate
   const result = await gate(msg)
 
   if (result.action === 'drop') return
@@ -1185,53 +1068,35 @@ async function handleInbound(msg: Message): Promise<void> {
   if (result.action === 'pair') {
     const lead = result.isResend ? 'Still pending' : 'Pairing required'
     try {
-      await msg.reply(
-        `${lead} -- run in Claude Code:\n\n/discord:access pair ${result.code}`,
-      )
+      await gateway.send(msg.channelId, `${lead} -- run in Claude Code:\n\n/discord:access pair ${result.code}`, { replyTo: msg.id })
     } catch (err) {
-      process.stderr.write(`discord daemon: failed to send pairing code: ${err}\n`)
+      process.stderr.write(`daemon: failed to send pairing code: ${err}\n`)
     }
     return
   }
 
   let chat_id = msg.channelId
 
-  // Guild channels with threadReply: create a thread on the triggering
-  // message so replies don't clutter the main channel.
-  if (!msg.channel.isDMBased() && !msg.channel.isThread()) {
+  // Thread creation for threadReply policy
+  if (!msg.isDM && !msg.isThread) {
     const channelId = msg.channelId
     const policy = result.access.groups[channelId]
     if (policy?.threadReply) {
       const preview = msg.content.slice(0, 50).replace(/<@!?\d+>\s*/g, '').trim() || 'Thread'
       const archiveDuration = policy.threadArchiveMinutes ?? 1440
 
-      if (msg.hasThread && msg.thread) {
-        chat_id = msg.thread.id
+      if (msg.hasExistingThread && msg.existingThreadId) {
+        chat_id = msg.existingThreadId
       } else {
-        try {
-          const thread = await msg.startThread({ name: preview, autoArchiveDuration: archiveDuration })
-          chat_id = thread.id
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          process.stderr.write(
-            `discord daemon: startThread failed (channel type: ${msg.channel.type}): ${errMsg}\n`,
-          )
-          try {
-            const refetched = await msg.channel.messages.fetch(msg.id)
-            if (refetched.hasThread && refetched.thread) {
-              chat_id = refetched.thread.id
-            }
-          } catch (reErr) {
-            process.stderr.write(
-              `discord daemon: thread race recovery fetch failed: ${reErr instanceof Error ? reErr.message : String(reErr)}\n`,
-            )
-          }
+        const threadId = await (gateway as any).startThreadOnMessage?.(msg, preview, archiveDuration)
+        if (threadId) {
+          chat_id = threadId
         }
       }
     }
   }
 
-  // Permission-reply intercept: "yes xxxxx" / "no xxxxx"
+  // Permission-reply intercept
   const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
   if (permMatch) {
     const mainBridge = getBridgeForSession('main')
@@ -1243,72 +1108,60 @@ async function handleInbound(msg: Message): Promise<void> {
       })
     }
     const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '\u2705' : '\u274C'
-    void msg.react(emoji).catch(() => {})
+    void gateway.react(msg.channelId, msg.id, emoji).catch(() => {})
     return
   }
 
   // Typing indicator
-  if ('sendTyping' in msg.channel) {
-    void msg.channel.sendTyping().catch(() => {})
-  }
+  void gateway.typing(msg.channelId).catch(() => {})
 
   // Ack reaction
-  const gatedAccess = result.access
-  if (gatedAccess.ackReaction) {
-    void msg.react(gatedAccess.ackReaction).catch(() => {})
+  if (result.access.ackReaction) {
+    void gateway.react(msg.channelId, msg.id, result.access.ackReaction).catch(() => {})
   }
 
-  // Attachment listing
-  const atts: string[] = []
-  for (const att of msg.attachments.values()) {
+  // Build notification
+  const atts: string[] = msg.attachments.map(att => {
     const kb = (att.size / 1024).toFixed(0)
-    atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
-  }
-
+    return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
+  })
   const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
 
-  // Thread context
   let threadContext: Record<string, string> = {}
-  if (msg.channel.isThread()) {
-    try {
-      const starter = await msg.channel.fetchStarterMessage()
-      if (starter) {
-        threadContext = {
-          thread_name: msg.channel.name,
-          thread_starter_user: starter.author.username,
-          thread_starter_content: starter.content.slice(0, 500),
-          thread_starter_id: starter.id,
-        }
+  if (msg.isThread) {
+    const starter = await (gateway as any).getThreadStarterInfo?.(msg.channelId)
+    if (starter) {
+      threadContext = {
+        thread_name: starter.threadName,
+        thread_starter_user: starter.starterUser,
+        thread_starter_content: starter.starterContent,
+        thread_starter_id: starter.starterId,
       }
-    } catch {}
+    }
   }
 
   const meta: Record<string, string> = {
     chat_id,
     message_id: msg.id,
-    user: msg.author.username,
-    user_id: msg.author.id,
+    user: msg.authorUsername,
+    user_id: msg.authorId,
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
     ...threadContext,
   }
 
-  // Route: determine which session gets this message
-  // Check if the message is in a thread that's mapped to a spawned session
+  // Route to session
   let targetSessionId = 'main'
 
-  // If the message is in a thread, check thread mapping
-  if (msg.channel.isThread()) {
+  if (msg.isThread) {
     const threadId = msg.channelId
     const mappedSession = threadToSession.get(threadId)
     if (mappedSession && sessions.has(mappedSession)) {
       targetSessionId = mappedSession
-      // Update last_active
       const info = sessions.get(mappedSession)!
       info.lastActive = Date.now()
     }
   }
-  // Also check if the chat_id (possibly a newly created thread) is mapped
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
     const mappedSession = threadToSession.get(chat_id)
     if (mappedSession && sessions.has(mappedSession)) {
@@ -1319,7 +1172,7 @@ async function handleInbound(msg: Message): Promise<void> {
   }
 
   sendOrQueue(targetSessionId, { type: 'notification', content, meta })
-}
+})
 
 // ---------------------------------------------------------------------------
 // Unix socket server
@@ -1330,7 +1183,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
   try {
     msg = JSON.parse(raw)
   } catch {
-    process.stderr.write(`discord daemon: invalid JSON from bridge: ${raw.slice(0, 200)}\n`)
+    process.stderr.write(`daemon: invalid JSON from bridge: ${raw.slice(0, 200)}\n`)
     return
   }
 
@@ -1339,24 +1192,22 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       const sessionId = msg.sessionId as string
       conn.sessionId = sessionId
 
-      // If another bridge is already registered for this sessionId, disconnect it
       const existing = bridges.get(sessionId)
       if (existing && existing.socket !== conn.socket) {
-        process.stderr.write(`discord daemon: replacing bridge for session ${sessionId}\n`)
+        process.stderr.write(`daemon: replacing bridge for session ${sessionId}\n`)
         try { existing.socket.end() } catch {}
       }
 
       bridges.set(sessionId, conn)
       sendToBridge(conn, { type: 'registered', sessionId })
       flushQueue(sessionId)
-      process.stderr.write(`discord daemon: bridge registered for session ${sessionId}\n`)
+      process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
     }
 
     case 'tool_call': {
       const { id, name, args } = msg as { id: string; name: string; args: Record<string, unknown> }
 
-      // Session management tools are only callable by the main session
       if (['spawn_session', 'list_sessions', 'kill_session'].includes(name)) {
         if (conn.sessionId !== 'main') {
           sendToBridge(conn, {
@@ -1369,7 +1220,6 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         }
       }
 
-      // Update last_active for spawned sessions
       if (conn.sessionId !== 'main') {
         const info = sessions.get(conn.sessionId)
         if (info) info.lastActive = Date.now()
@@ -1394,55 +1244,29 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
     }
 
     case 'permission_response': {
-      // Forward permission response — only from main session (DM users)
-      const mainBridge = getBridgeForSession('main')
-      if (conn === mainBridge) {
-        // This is the main session relaying a permission response back.
-        // The daemon doesn't need to do anything here beyond forwarding
-        // which already happened via the Discord button handler or text reply.
-        // But if a bridge sends it explicitly, we can store/forward as needed.
-      }
       break
     }
 
     case 'permission_request': {
-      // A bridge is forwarding a permission request to be sent to DM users.
       const { request_id, tool_name, description, input_preview } = msg
       pendingPermissions.set(request_id, { tool_name, description, input_preview })
       const access = loadAccess()
       const text = `Permission: ${tool_name}`
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`perm:more:${request_id}`)
-          .setLabel('See more')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`perm:allow:${request_id}`)
-          .setLabel('Allow')
-          .setEmoji({ name: '\u2705' })
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`perm:deny:${request_id}`)
-          .setLabel('Deny')
-          .setEmoji({ name: '\u274C' })
-          .setStyle(ButtonStyle.Danger),
-      )
-      // Only send to DM allowlisted users (same as server.ts)
+      const buttons: ButtonDef[] = [
+        { id: `perm:more:${request_id}`, label: 'See more', style: 'secondary' },
+        { id: `perm:allow:${request_id}`, label: 'Allow', style: 'success', emoji: '\u2705' },
+        { id: `perm:deny:${request_id}`, label: 'Deny', style: 'danger', emoji: '\u274C' },
+      ]
       for (const userId of access.allowFrom) {
-        void (async () => {
-          try {
-            const user = await client.users.fetch(userId)
-            await user.send({ content: text, components: [row] })
-          } catch (e) {
-            process.stderr.write(`discord daemon: permission_request send to ${userId} failed: ${e}\n`)
-          }
-        })()
+        void gateway.sendDM(userId, text, buttons).catch(e => {
+          process.stderr.write(`daemon: permission_request send to ${userId} failed: ${e}\n`)
+        })
       }
       break
     }
 
     default:
-      process.stderr.write(`discord daemon: unknown message type from bridge: ${msg.type}\n`)
+      process.stderr.write(`daemon: unknown message type from bridge: ${msg.type}\n`)
   }
 }
 
@@ -1457,7 +1281,7 @@ mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
 
 const socketServer = createServer((socket: Socket) => {
   const conn: BridgeConn = {
-    sessionId: '', // set on register
+    sessionId: '',
     socket,
     buf: '',
   }
@@ -1474,8 +1298,7 @@ const socketServer = createServer((socket: Socket) => {
 
   socket.on('end', () => {
     if (conn.sessionId) {
-      process.stderr.write(`discord daemon: bridge disconnected for session ${conn.sessionId}\n`)
-      // Remove from bridge map but don't kill the session/thread
+      process.stderr.write(`daemon: bridge disconnected for session ${conn.sessionId}\n`)
       if (bridges.get(conn.sessionId) === conn) {
         bridges.delete(conn.sessionId)
       }
@@ -1483,7 +1306,7 @@ const socketServer = createServer((socket: Socket) => {
   })
 
   socket.on('error', (err) => {
-    process.stderr.write(`discord daemon: bridge socket error: ${err}\n`)
+    process.stderr.write(`daemon: bridge socket error: ${err}\n`)
     if (conn.sessionId && bridges.get(conn.sessionId) === conn) {
       bridges.delete(conn.sessionId)
     }
@@ -1491,52 +1314,34 @@ const socketServer = createServer((socket: Socket) => {
 })
 
 socketServer.listen(SOCK_PATH, () => {
-  // Lock socket file to owner
   try { chmodSync(SOCK_PATH, 0o700) } catch {}
-  process.stderr.write(`discord daemon: listening on ${SOCK_PATH}\n`)
+  process.stderr.write(`daemon: listening on ${SOCK_PATH}\n`)
 })
 
 // ---------------------------------------------------------------------------
-// Discord ready & login
+// Gateway start & graceful shutdown
 // ---------------------------------------------------------------------------
 
-client.once('ready', c => {
-  process.stderr.write(`discord daemon: gateway connected as ${c.user.tag}\n`)
-})
-
-client.on('error', err => {
-  process.stderr.write(`discord daemon: client error: ${err}\n`)
-})
-
-client.login(TOKEN).catch(err => {
-  process.stderr.write(`discord daemon: login failed: ${err}\n`)
-  process.exit(1)
-})
-
-// ---------------------------------------------------------------------------
-// Graceful shutdown
-// ---------------------------------------------------------------------------
+await gateway.start(TOKEN!)
+process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
 
 let shuttingDown = false
 
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
-  process.stderr.write('discord daemon: shutting down\n')
+  process.stderr.write('daemon: shutting down\n')
 
-  // Close the unix socket server
   socketServer.close()
   try { unlinkSync(SOCK_PATH) } catch {}
 
-  // Close all bridge connections
   for (const [, bridge] of bridges) {
     try { bridge.socket.end() } catch {}
   }
   bridges.clear()
 
-  // Disconnect Discord
   setTimeout(() => process.exit(0), 2000)
-  void Promise.resolve(client.destroy()).finally(() => process.exit(0))
+  void Promise.resolve(gateway.stop()).finally(() => process.exit(0))
 }
 
 process.on('SIGTERM', shutdown)
