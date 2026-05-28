@@ -959,8 +959,12 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
     }
   }
 
+  // Use the session's threadId as chat_id so replies go to the right thread
+  const sessionInfo = sessions.get(targetSessionId)
+  const chatId = sessionInfo?.threadId ?? msg.channelId
+
   const meta: Record<string, string> = {
-    chat_id: msg.channelId,
+    chat_id: chatId,
     message_id: msg.id,
     user: msg.authorUsername,
     user_id: msg.authorId,
@@ -1166,6 +1170,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = sessions.get(mappedSession)!
       info.lastActive = Date.now()
+      // Use session's threadId as chat_id so replies go to the right thread
+      meta.chat_id = info.threadId
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
@@ -1174,6 +1180,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = sessions.get(mappedSession)!
       info.lastActive = Date.now()
+      meta.chat_id = info.threadId
     }
   }
 
