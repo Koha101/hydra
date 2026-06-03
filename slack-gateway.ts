@@ -35,6 +35,10 @@ export class SlackGateway implements ChatGateway {
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
   private recentSentIds = new Set<string>()
   private appToken: string
+  private botToken: string | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private reconnecting = false
+  private lastInboundAt = Date.now()
 
   constructor(appToken: string) {
     this.appToken = appToken
@@ -45,6 +49,7 @@ export class SlackGateway implements ChatGateway {
   }
 
   async start(token: string): Promise<void> {
+    this.botToken = token
     this.app = new App({
       token,
       appToken: this.appToken,
@@ -55,6 +60,7 @@ export class SlackGateway implements ChatGateway {
 
     // Handle all messages
     this.app.message(async ({ message, client }) => {
+      this.lastInboundAt = Date.now()
       if (!this.messageHandler) return
       // Skip bot messages
       if (message.subtype === 'bot_message') return
@@ -167,9 +173,60 @@ export class SlackGateway implements ChatGateway {
     } catch (err) {
       process.stderr.write(`slack gateway: auth.test failed: ${err}\n`)
     }
+
+    // Start heartbeat to detect dead WebSocket connections
+    this.startHeartbeat()
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = setInterval(async () => {
+      if (this.reconnecting || !this.app) return
+      try {
+        // Check the underlying WebSocket readyState via the SocketModeReceiver
+        const receiver = (this.app as any).receiver
+        const smClient = receiver?.client
+        const ws = smClient?.websocket
+        if (!ws) return // WebSocket not yet initialized
+        const isActive = typeof ws.isActive === 'function' ? ws.isActive() : ws.readyState === 1
+        if (!isActive) {
+          const staleSec = Math.round((Date.now() - this.lastInboundAt) / 1000)
+          process.stderr.write(`slack gateway: heartbeat detected dead WebSocket (stale ${staleSec}s), reconnecting...\n`)
+          await this.reconnect()
+        }
+      } catch (err) {
+        process.stderr.write(`slack gateway: heartbeat error: ${err}\n`)
+      }
+    }, 60_000)
+    this.heartbeatTimer.unref()
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting) return
+    this.reconnecting = true
+    try {
+      // Stop the old app
+      try { await this.app?.stop() } catch {}
+      this.app = null
+
+      // Re-run start which re-creates the App and re-registers handlers
+      await this.start(this.botToken!)
+      process.stderr.write(`slack gateway: reconnected successfully\n`)
+      this.reconnecting = false
+    } catch (err) {
+      process.stderr.write(`slack gateway: reconnect failed: ${err}, retrying in 30s...\n`)
+      setTimeout(() => {
+        this.reconnecting = false
+        this.reconnect()
+      }, 30_000)
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
     if (this.app) {
       await this.app.stop()
     }
