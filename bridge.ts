@@ -196,6 +196,8 @@ const mcp = new Server(
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
+      'Format replies in standard (GitHub-flavored) Markdown — it renders natively in the chat. Bold is **double asterisks**; italic is *single asterisk* or _underscores_. Do NOT use single-asterisk for bold (that renders as italic). The full palette renders: `inline code`, ```fenced code blocks```, > blockquotes, "- "/"1." lists (nesting ok), | tables |, --- dividers, [links](url), and :emoji:/unicode. How much structure to use is your judgment — just use this syntax so it renders.',
+      '',
       'create_thread creates a Discord thread — either on a specific message (pass message_id) or standalone (omit message_id). It returns a thread_id you can use as chat_id in subsequent reply calls. Use threads to organize multi-part responses or keep detailed output from cluttering the main channel.',
       '',
       "fetch_messages pulls real Discord history. Discord's search API isn't available to bots — if the user asks you to find an old message, fetch more history or ask them roughly when it was.",
