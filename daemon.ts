@@ -39,7 +39,7 @@ import {
 import { homedir } from 'os'
 import { join, sep } from 'path'
 import { createServer, type Socket } from 'net'
-import { execSync } from 'child_process'
+import { execSync, execFileSync } from 'child_process'
 
 import type { ChatGateway, InboundMessage, ButtonDef } from './gateway.js'
 
@@ -555,14 +555,30 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
     }
   }
 
-  const escapedTopic = topic.replace(/'/g, "'\\''")
   const channelFlag = `plugin:discord@claude-plugins-official`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required — set it to the working directory for spawned sessions')
-  const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ${spawnCwd} && export HYDRA_SESSION_ID=${sessionId} && export DAEMON_SOCK=${SOCK_PATH} && export CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} && claude --model "claude-opus-4-6[1m]" --channels ${channelFlag} --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
+
+  // POSIX single-quote helper: wraps any string so the shell treats it 100% literally.
+  // Single quotes neutralize ", $, `, \\, newlines, etc.; the only special char is ' itself,
+  // which we close-escape-reopen ('\'') — so a topic/prompt can contain ANYTHING safely.
+  const shq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+
+  const prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}).`
+
+  // Build the command tmux runs under its own shell. Every interpolated value is shq-escaped
+  // for that single shell layer; tmux itself receives argv directly via execFileSync (no extra
+  // shell), so there is exactly one layer to escape for — no nested-quoting fragility.
+  const inner = [
+    `cd ${shq(spawnCwd)}`,
+    `export HYDRA_SESSION_ID=${shq(sessionId)}`,
+    `export DAEMON_SOCK=${shq(SOCK_PATH)}`,
+    `export CLAUDE_CONFIG_DIR=${shq(CLAUDE_CONFIG)}`,
+    `claude --model ${shq('claude-opus-4-6[1m]')} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`,
+  ].join(' && ')
 
   try {
-    execSync(tmuxCmd, { stdio: 'pipe' })
+    execFileSync('tmux', ['new-session', '-d', '-s', tmuxName, inner], { stdio: 'pipe' })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`failed to spawn tmux session: ${msg}`)
@@ -1011,7 +1027,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
   if (isAllowed) {
     // Command intercepts
-    const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*(.+)/i)
+    // `[\s\S]` (not `.`) so the topic captures multi-line/multi-paragraph prompts, not just the first line.
+    const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i)
     if (spawnMatch) {
       const topic = spawnMatch[1].trim()
       if (topic) {
