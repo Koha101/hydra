@@ -23,6 +23,21 @@ import type {
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
 
+/**
+ * Slack renders FULL Markdown — tables, `-`/`*` lists, headings, code fences — only via the
+ * `markdown_text` field. It can't be combined with `blocks`/`text` and caps at ~12k chars.
+ * So: plain replies go through `markdown_text` (rich); button messages must use Block Kit (which
+ * only does classic mrkdwn); anything past the cap falls back to classic mrkdwn `text`.
+ *
+ * We deliberately do NOT impose a house style here — presentation taste belongs to each bot's own
+ * instructions/CLAUDE.md. This layer's only job is to make the full Markdown palette render reliably.
+ */
+const MARKDOWN_TEXT_MAX = 12000
+function applyMessageBody(payload: Record<string, unknown>, text: string, hasButtons: boolean): void {
+  if (hasButtons || text.length > MARKDOWN_TEXT_MAX) payload.text = text
+  else payload.markdown_text = text
+}
+
 export class SlackGateway implements ChatGateway {
   readonly platform = 'slack' as const
   private app: App | null = null
@@ -217,10 +232,7 @@ export class SlackGateway implements ChatGateway {
     const parsed = this.parseChannelId(channelId)
     process.stderr.write(`slack gateway send: channelId=${channelId} parsed=${JSON.stringify(parsed)} replyTo=${opts?.replyTo ?? 'none'}\n`)
 
-    const payload: Record<string, unknown> = {
-      channel: parsed.channel,
-      text,
-    }
+    const payload: Record<string, unknown> = { channel: parsed.channel }
 
     // If channelId was a composite thread ID, always reply in that thread
     if (parsed.threadTs) {
@@ -231,6 +243,9 @@ export class SlackGateway implements ChatGateway {
     if (opts?.replyTo) {
       payload.thread_ts = opts.replyTo
     }
+
+    // Render full Markdown via markdown_text; buttons force the Block Kit (mrkdwn) path.
+    applyMessageBody(payload, text, !!opts?.buttons?.length)
 
     // Buttons via Block Kit
     if (opts?.buttons?.length) {
@@ -466,10 +481,8 @@ export class SlackGateway implements ChatGateway {
     const dm = await this.app.client.conversations.open({ users: userId })
     const channelId = dm.channel!.id!
 
-    const payload: Record<string, unknown> = {
-      channel: channelId,
-      text,
-    }
+    const payload: Record<string, unknown> = { channel: channelId }
+    applyMessageBody(payload, text, !!buttons?.length)
     if (buttons?.length) {
       payload.blocks = [
         { type: 'section', text: { type: 'mrkdwn', text } },

@@ -5,8 +5,8 @@ SESSION="${BYTE_SESSION_NAME:-slack-byte}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/slack/daemon.sock}"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-DM_CHANNEL="${BYTE_CHANNEL:-D0B6KKFNH4N}"
-CWD="${BYTE_CWD:-$HOME/angellist}"
+GREET_CHANNEL="${BYTE_CHANNEL:-}"   # optional: DM/channel id to greet on launch; empty = start silent
+CWD="${BYTE_CWD:-$HOME}"
 
 # Check daemon is running
 if [ ! -S "$SOCK" ]; then
@@ -34,10 +34,18 @@ fi
 cp "$SRC" "$DEST" || { echo "ERROR: failed to copy bridge.ts into plugin cache" >&2; exit 1; }
 echo "$(date): synced bridge.ts into plugin cache" >> ~/slack-byte-restarts.log
 
+# Launch prompt: with BYTE_CHANNEL set, greet that DM/channel; otherwise start silent and
+# just wait for incoming messages (no hardcoded channel).
+if [ -n "$GREET_CHANNEL" ]; then
+  PROMPT="You just restarted with a fresh context. You're running on Slack via the bridge. Read your memory files, then send a brief greeting to Slack chat ${GREET_CHANNEL} using reply(chat_id=${GREET_CHANNEL})."
+else
+  PROMPT="You just restarted with a fresh context. You're running on Slack via the bridge. Read your memory files to orient, then wait silently for incoming Slack messages — do NOT post anything proactively. When a message arrives, reply with the reply tool using the chat_id from the incoming message."
+fi
+
 # Start slack-byte
 tmux new-session -d -s "$SESSION" \
   "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
-  \"You just restarted with a fresh context. You are Byte running on Slack. Read your memory files, then send a greeting to Slack DM ${DM_CHANNEL} using reply(chat_id=${DM_CHANNEL}).\""
+  \"$PROMPT\""
 
 echo "$(date): Slack Byte started (daemon+bridge)" >> ~/slack-byte-restarts.log
 echo "Slack Byte started. Attach with: tmux attach -t $SESSION"
