@@ -559,7 +559,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   const channelFlag = `plugin:discord@claude-plugins-official`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required — set it to the working directory for spawned sessions')
-  const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ${spawnCwd} && export SESSION_ID=${sessionId} && export DAEMON_SOCK=${SOCK_PATH} && export CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} && claude --model "claude-opus-4-6[1m]" --channels ${channelFlag} --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
+  const tmuxCmd = `tmux new-session -d -s '${tmuxName}' 'cd ${spawnCwd} && export HYDRA_SESSION_ID=${sessionId} && export DAEMON_SOCK=${SOCK_PATH} && export CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG} && claude --model "claude-opus-4-6[1m]" --channels ${channelFlag} --dangerously-skip-permissions "You are ${tmuxName}, a spawned session. Topic: ${escapedTopic}. Your Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId})."'`
 
   try {
     execSync(tmuxCmd, { stdio: 'pipe' })
@@ -879,9 +879,12 @@ async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: 
     if (msg.isDM) {
       // Slack DMs support threads natively — the session thread is already visible,
       // so skip the URL. Discord DMs redirect to a guild channel, so the URL helps.
-      const reply = (result.url && gateway.platform === 'discord')
+      const base = (result.url && gateway.platform === 'discord')
         ? `Spawned session **${result.name}** — ${result.url}`
         : `Spawned session **${result.name}**`
+      // The session is a plain tmux session — surface the attach command so it can be
+      // viewed/driven from any terminal tab (paste into the tab you want).
+      const reply = `${base}\nView in any terminal: \`tmux attach -t ${result.name}\``
       await gateway.send(msg.channelId, reply, { replyTo: msg.id })
     }
 
@@ -1342,6 +1345,18 @@ socketServer.listen(SOCK_PATH, () => {
 // ---------------------------------------------------------------------------
 // Gateway start & graceful shutdown
 // ---------------------------------------------------------------------------
+
+// Keep the plugin-cache bridge (the server.ts Claude actually loads) in sync with the
+// repo's bridge.ts, so spawned sessions never run stale code after a daemon restart.
+// Mirrors the copy launch-bitbot.sh does for the main bot. Best-effort, never fatal.
+try {
+  const bridgeSrc = join(import.meta.dir, 'bridge.ts')
+  const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
+  execSync(`for d in "${discordCache}"/*/ ; do cp "${bridgeSrc}" "$d/server.ts"; done`, { stdio: 'pipe' })
+  process.stderr.write(`daemon: synced bridge.ts into ${discordCache}/*/server.ts\n`)
+} catch (err) {
+  process.stderr.write(`daemon: bridge sync skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
+}
 
 await gateway.start(TOKEN!)
 process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)

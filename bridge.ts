@@ -23,7 +23,9 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 
 const SOCKET_PATH = process.env.DAEMON_SOCK ?? join(homedir(), '.claude', 'channels', 'discord', 'daemon.sock')
-const SESSION_ID = process.env.SESSION_ID ?? 'main'
+// NB: must NOT be plain SESSION_ID — Claude Code overwrites that env var with its own
+// session id when it launches MCP subprocesses, so the daemon-assigned id would be lost.
+const SESSION_ID = process.env.HYDRA_SESSION_ID ?? 'main'
 const RECONNECT_INTERVAL = 5000
 
 // ── Pending tool call tracker ──────────────────────────────────────────
