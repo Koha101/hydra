@@ -23,7 +23,9 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 
 const SOCKET_PATH = process.env.DAEMON_SOCK ?? join(homedir(), '.claude', 'channels', 'discord', 'daemon.sock')
-const SESSION_ID = process.env.SESSION_ID ?? 'main'
+// NB: must NOT be plain SESSION_ID — Claude Code overwrites that env var with its own
+// session id when it launches MCP subprocesses, so the daemon-assigned id would be lost.
+const SESSION_ID = process.env.HYDRA_SESSION_ID ?? 'main'
 const RECONNECT_INTERVAL = 5000
 
 // ── Pending tool call tracker ──────────────────────────────────────────
@@ -193,6 +195,8 @@ const mcp = new Server(
       'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
+      '',
+      'Format replies in standard (GitHub-flavored) Markdown — it renders natively in the chat. Bold is **double asterisks**; italic is *single asterisk* or _underscores_. Do NOT use single-asterisk for bold (that renders as italic). The full palette renders: `inline code`, ```fenced code blocks```, > blockquotes, "- "/"1." lists (nesting ok), | tables |, --- dividers, [links](url), and :emoji:/unicode. How much structure to use is your judgment — just use this syntax so it renders.',
       '',
       'create_thread creates a Discord thread — either on a specific message (pass message_id) or standalone (omit message_id). It returns a thread_id you can use as chat_id in subsequent reply calls. Use threads to organize multi-part responses or keep detailed output from cluttering the main channel.',
       '',

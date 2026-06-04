@@ -27,9 +27,15 @@ sleep 1
 # Remove stale socket
 rm -f "$STATE_DIR/daemon.sock"
 
-# Start daemon
+# Start daemon.
+# Forward env EXPLICITLY into the tmux command. tmux does NOT reliably inherit arbitrary
+# vars into new sessions — its server global env is frozen at first launch — so relying on
+# inheritance silently dropped CLAUDE_CONFIG_DIR and broke spawned-session bridges.
+ENVS="DISCORD_STATE_DIR='$STATE_DIR' SPAWN_CWD='$SPAWN_CWD'"
+[ -n "$CHAT_PLATFORM" ] && ENVS="$ENVS CHAT_PLATFORM='$CHAT_PLATFORM'"
+[ -n "$CLAUDE_CONFIG_DIR" ] && ENVS="$ENVS CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'"
 tmux new-session -d -s "$SESSION" \
-  "cd '$SCRIPT_DIR' && SPAWN_CWD='$SPAWN_CWD' bun run daemon.ts 2>&1 | tee -a ~/discord-daemon.log"
+  "cd '$SCRIPT_DIR' && $ENVS bun run daemon.ts 2>&1 | tee -a ~/discord-daemon.log"
 
 echo "$(date): Daemon started in tmux session '$SESSION' (SPAWN_CWD=$SPAWN_CWD)" >> ~/discord-daemon.log
 echo "Daemon started. Attach with: tmux attach -t $SESSION"
