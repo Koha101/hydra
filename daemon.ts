@@ -8,7 +8,7 @@
  * Platform selection: set CHAT_PLATFORM=discord (default) or CHAT_PLATFORM=slack
  *
  * Protocol: newline-delimited JSON over unix socket at
- *   ~/.claude/channels/discord/daemon.sock
+ *   ~/.claude/channels/<platform>/daemon.sock
  *
  * Bridge -> Daemon:
  *   {type: "register", sessionId: "main" | "<uuid>"}
@@ -47,7 +47,9 @@ import type { ChatGateway, InboundMessage, ButtonDef } from './gateway.js'
 // Config & env
 // ---------------------------------------------------------------------------
 
-const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
+const STATE_DIR = process.env.HYDRA_STATE_DIR
+  ?? process.env.DISCORD_STATE_DIR
+  ?? join(homedir(), '.claude', 'channels', process.env.CHAT_PLATFORM ?? 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
@@ -122,11 +124,35 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 let gateway: ChatGateway
 
 if (PLATFORM === 'slack') {
+  const heartbeatPath = join(STATE_DIR, 'daemon.alive')
   const { SlackGateway } = await import('./slack-gateway.js')
-  gateway = new SlackGateway(SLACK_APP_TOKEN!)
+  gateway = new SlackGateway(SLACK_APP_TOKEN!, { heartbeatPath })
 } else {
   const { DiscordGateway } = await import('./discord-gateway.js')
   gateway = new DiscordGateway()
+}
+
+if (gateway.onReconnectAfterOutage !== undefined) {
+  gateway.onReconnectAfterOutage = (gapMs: number) => {
+    const hrs = Math.floor(gapMs / 3_600_000)
+    const mins = Math.floor((gapMs % 3_600_000) / 60_000)
+    const duration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`
+    const connected = [...sessions.values()].filter(s => bridges.has(s.sessionId)).length
+    const disconnected = [...sessions.values()].filter(s => !bridges.has(s.sessionId)).length
+    const queuedMsgCount = [...messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
+    const report = [
+      `**Recovery report** — back online after ${duration} outage`,
+      `• Sessions: ${sessions.size} total (${connected} connected, ${disconnected} disconnected)`,
+      `• Queued messages: ${queuedMsgCount}`,
+    ].join('\n')
+    const access = loadAccess()
+    for (const userId of access.allowFrom) {
+      void gateway.sendDM(userId, report).catch(e =>
+        process.stderr.write(`daemon: recovery report DM failed: ${e}\n`),
+      )
+    }
+    process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,12 +391,45 @@ function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[
 // Cute session names
 // ---------------------------------------------------------------------------
 
-const SESSION_NAMES = [
-  'spark', 'pixel', 'nova', 'drift', 'flint', 'ember', 'bloom', 'atlas',
-  'qubit', 'prism', 'orbit', 'comet', 'patch', 'glyph', 'pulse', 'scout',
-  'cedar', 'dusk', 'fern', 'haze', 'jade', 'lark', 'moss', 'pine',
-  'reef', 'sage', 'tide', 'vale', 'wren', 'zinc', 'bolt', 'crisp',
+const SESSION_CATALOG: Array<{ name: string; emoji: string }> = [
+  { name: 'spark', emoji: '⚡' },
+  { name: 'pixel', emoji: '🟦' },
+  { name: 'nova',  emoji: '💥' },
+  { name: 'drift', emoji: '🌊' },
+  { name: 'flint', emoji: '🪨' },
+  { name: 'ember', emoji: '🔥' },
+  { name: 'bloom', emoji: '🌸' },
+  { name: 'atlas', emoji: '🗺️' },
+  { name: 'qubit', emoji: '⚛️' },
+  { name: 'prism', emoji: '🌈' },
+  { name: 'orbit', emoji: '🪐' },
+  { name: 'comet', emoji: '☄️' },
+  { name: 'patch', emoji: '🩹' },
+  { name: 'glyph', emoji: '🔣' },
+  { name: 'pulse', emoji: '💓' },
+  { name: 'scout', emoji: '🔭' },
+  { name: 'cedar', emoji: '🪵' },
+  { name: 'dusk',  emoji: '🌇' },
+  { name: 'fern',  emoji: '🌿' },
+  { name: 'haze',  emoji: '🌫️' },
+  { name: 'jade',  emoji: '🐉' },
+  { name: 'lark',  emoji: '🪶' },
+  { name: 'moss',  emoji: '🪴' },
+  { name: 'pine',  emoji: '🌲' },
+  { name: 'reef',  emoji: '🪸' },
+  { name: 'sage',  emoji: '🦉' },
+  { name: 'tide',  emoji: '🌙' },
+  { name: 'vale',  emoji: '🏞️' },
+  { name: 'wren',  emoji: '🐦' },
+  { name: 'zinc',  emoji: '🔧' },
+  { name: 'bolt',  emoji: '🔩' },
+  { name: 'crisp', emoji: '❄️' },
 ]
+const SESSION_NAMES = SESSION_CATALOG.map(s => s.name)
+
+function sessionEmoji(name: string): string {
+  return SESSION_CATALOG.find(s => s.name === name)?.emoji ?? '🔹'
+}
 
 function pickSessionName(): string {
   const used = new Set([...sessions.values()].map(s => s.tmuxName))
@@ -398,6 +457,16 @@ type SessionInfo = {
   lastActive: number
   tmuxName: string
   listening: boolean
+  description?: string
+  messageCount?: number
+  claudeSessionId?: string
+  originType?: 'spawn' | 'fork' | 'handoff'
+  originFrom?: string
+}
+
+function fallbackDescription(topic: string): string {
+  const firstLine = topic.split('\n')[0].replace(/^\/\S+\s*/, '').trim()
+  return firstLine.length > 100 ? firstLine.slice(0, 97) + '...' : firstLine
 }
 
 const sessions = new Map<string, SessionInfo>()
@@ -445,7 +514,7 @@ function loadPersistedSessions(): void {
 loadPersistedSessions()
 
 // ---------------------------------------------------------------------------
-// Bridge connection registry
+// Bridge connection registry & message queueing
 // ---------------------------------------------------------------------------
 
 type BridgeConn = {
@@ -457,6 +526,43 @@ type BridgeConn = {
 const bridges = new Map<string, BridgeConn>()
 const messageQueues = new Map<string, Array<Record<string, unknown>>>()
 const MAX_QUEUE_SIZE = 50
+const QUEUE_FILE = join(STATE_DIR, 'message-queue.json')
+
+function persistQueues(): void {
+  try {
+    const data: Record<string, Array<Record<string, unknown>>> = {}
+    for (const [sid, queue] of messageQueues) {
+      if (queue.length > 0) data[sid] = queue
+    }
+    if (Object.keys(data).length > 0) {
+      writeFileSync(QUEUE_FILE, JSON.stringify(data) + '\n', { mode: 0o600 })
+    } else {
+      try { unlinkSync(QUEUE_FILE) } catch {}
+    }
+  } catch (err) {
+    process.stderr.write(`daemon: failed to persist message queues: ${err}\n`)
+  }
+}
+
+function loadPersistedQueues(): void {
+  try {
+    const raw = readFileSync(QUEUE_FILE, 'utf8')
+    const data = JSON.parse(raw) as Record<string, Array<Record<string, unknown>>>
+    let total = 0
+    for (const [sid, msgs] of Object.entries(data)) {
+      if (sessions.has(sid) && msgs.length > 0) {
+        messageQueues.set(sid, msgs)
+        total += msgs.length
+      }
+    }
+    if (total > 0) process.stderr.write(`daemon: restored ${total} queued message(s)\n`)
+    try { unlinkSync(QUEUE_FILE) } catch {}
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      process.stderr.write(`daemon: failed to load queued messages: ${err}\n`)
+    }
+  }
+}
 
 function sendToBridge(bridge: BridgeConn, msg: Record<string, unknown>): void {
   try {
@@ -478,6 +584,7 @@ function sendOrQueue(sessionId: string, msg: Record<string, unknown>): void {
     }
     if (queue.length < MAX_QUEUE_SIZE) {
       queue.push(msg)
+      persistQueues()
     }
   }
 }
@@ -492,11 +599,31 @@ function flushQueue(sessionId: string): void {
     sendToBridge(bridge, msg)
   }
   messageQueues.delete(sessionId)
+  persistQueues()
 }
 
 function getBridgeForSession(sessionId: string): BridgeConn | undefined {
   return bridges.get(sessionId)
 }
+
+loadPersistedQueues()
+
+// ---------------------------------------------------------------------------
+// Bridge tool definitions (sent to bridges on registration for dynamic refresh)
+// ---------------------------------------------------------------------------
+
+const BRIDGE_TOOLS = [
+  { name: 'reply', description: 'Reply in chat. Pass chat_id from the inbound message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to thread under.' }, files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach.' } }, required: ['chat_id', 'text'] } },
+  { name: 'react', description: 'Add an emoji reaction to a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, emoji: { type: 'string' } }, required: ['chat_id', 'message_id', 'emoji'] } },
+  { name: 'edit_message', description: 'Edit a message the bot previously sent.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['chat_id', 'message_id', 'text'] } },
+  { name: 'download_attachment', description: 'Download attachments from a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
+  { name: 'create_thread', description: 'Create a thread in a channel.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, auto_archive_minutes: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } }, required: ['chat_id', 'name'] } },
+  { name: 'fetch_messages', description: 'Fetch recent messages from a channel.', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'number' } }, required: ['channel'] } },
+  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['topic'] } },
+  { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
+  { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
+]
 
 // ---------------------------------------------------------------------------
 // Spawn helper
@@ -504,12 +631,23 @@ function getBridgeForSession(sessionId: string): BridgeConn | undefined {
 
 type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
 
-async function doSpawnSession(topic: string, chatId?: string, messageId?: string): Promise<SpawnResult> {
+type SpawnOpts = {
+  forkFrom?: { claudeSessionId: string; parentName: string }
+  handedOffFrom?: string
+  artifact?: string
+}
+
+/** Unified session creation — spawn, fork, and handoff all flow through here via SpawnOpts. */
+async function doSpawnSession(topic: string, chatId?: string, messageId?: string, opts?: SpawnOpts): Promise<SpawnResult> {
   let threadId: string | undefined
 
   const sessionId = randomUUID()
   const tmuxName = pickSessionName()
   const threadName = `${tmuxName}: ${topic}`.slice(0, 100)
+  const isFork = !!opts?.forkFrom
+  const isHandoff = !!opts?.handedOffFrom
+  const originType: 'spawn' | 'fork' | 'handoff' = isFork ? 'fork' : isHandoff ? 'handoff' : 'spawn'
+  const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom
 
   // Determine where to create the thread
   let targetChannelId = chatId
@@ -518,9 +656,8 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
       const ch = await gateway.fetchChannel(targetChannelId)
       if (ch.isThread) {
         threadId = ch.id
-      } else if (ch.isDM && gateway.platform === 'discord') {
-        // Discord DMs don't support threads — redirect to a guild channel.
-        // Slack DMs support threads natively, so keep the DM as target.
+      } else if (ch.isDM && !gateway.canThreadInDM) {
+        // DMs can't host threads on this platform — redirect to a guild channel
         targetChannelId = DEFAULT_SESSION_CHANNEL
       }
     } catch {
@@ -545,8 +682,17 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
     }
 
     if (!threadId) {
-      // Post an anchor message and thread on it
-      const anchor = await gateway.send(targetChannelId!, `Starting session **${tmuxName}**: ${topic}`)
+      const e = sessionEmoji(tmuxName)
+      let anchorText: string
+      if (originFrom) {
+        const pe = sessionEmoji(originFrom)
+        const verb = isHandoff ? 'handed off from' : 'forked from'
+        anchorText = `${e} \`${tmuxName}\` — ${verb} ${pe} \`${originFrom}\``
+        if (isFork) anchorText += `\n${topic}`
+      } else {
+        anchorText = `Starting session **${tmuxName}**: ${topic}`
+      }
+      const anchor = await gateway.send(targetChannelId!, anchorText)
       const thread = await gateway.createThread(targetChannelId!, threadName, {
         messageId: anchor.id,
         archiveDuration: 1440,
@@ -560,21 +706,56 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required — set it to the working directory for spawned sessions')
 
   // POSIX single-quote helper: wraps any string so the shell treats it 100% literally.
-  // Single quotes neutralize ", $, `, \\, newlines, etc.; the only special char is ' itself,
-  // which we close-escape-reopen ('\'') — so a topic/prompt can contain ANYTHING safely.
   const shq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
 
-  const prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour Discord thread chat_id is ${threadId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}).`
+  let prompt: string
+  if (isHandoff) {
+    const contextLine = opts!.artifact
+      ? `Read your handoff context from \`${opts!.artifact}\`, then read your memory files.`
+      : `Read your memory files and workstream canon for context.`
+    prompt = [
+      `You are ${tmuxName}, a session created by handoff from ${originFrom}. Topic: ${topic}`,
+      ``,
+      `Your chat thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
+      `${contextLine}`,
+      `After reading the artifact, append a "### Reception (by ${tmuxName})" section to the artifact file noting what oriented you immediately, what needed code verification, and what was missing.`,
+      `Send a greeting to your thread using reply(chat_id=${threadId}). In your greeting, include one sentence on what the previous session was working on and one sentence on where this session is heading.`,
+      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
+      `After greeting, begin executing the Next action from the artifact immediately. Do not wait for user input unless there are critical questions that need the user's answer.`,
+    ].join('\n')
+  } else if (isFork) {
+    prompt = [
+      `You are ${tmuxName}, forked from ${originFrom}.`,
+      `Topic: ${topic}`,
+      ``,
+      `Your new thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
+      `Greet your new thread using reply(chat_id=${threadId}).`,
+      `Mention you were forked from **${originFrom}** and describe your focus.`,
+      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
+    ].join('\n')
+  } else {
+    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
+  }
 
-  // Build the command tmux runs under its own shell. Every interpolated value is shq-escaped
-  // for that single shell layer; tmux itself receives argv directly via execFileSync (no extra
-  // shell), so there is exactly one layer to escape for — no nested-quoting fragility.
+  // Build claude command — fork adds --resume --fork-session
+  const claudeArgs = isFork
+    ? [
+        `claude`,
+        `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
+        `--fork-session`,
+        `--model ${shq('claude-opus-4-6[1m]')}`,
+        `--channels ${shq(channelFlag)}`,
+        `--dangerously-skip-permissions`,
+        shq(prompt),
+      ].join(' ')
+    : `claude --model ${shq('claude-opus-4-6[1m]')} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+
   const inner = [
     `cd ${shq(spawnCwd)}`,
     `export HYDRA_SESSION_ID=${shq(sessionId)}`,
     `export DAEMON_SOCK=${shq(SOCK_PATH)}`,
     `export CLAUDE_CONFIG_DIR=${shq(CLAUDE_CONFIG)}`,
-    `claude --model ${shq('claude-opus-4-6[1m]')} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`,
+    claudeArgs,
   ].join(' && ')
 
   try {
@@ -585,7 +766,10 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   }
 
   const now = Date.now()
-  sessions.set(sessionId, { sessionId, topic, threadId: threadId!, createdAt: now, lastActive: now, tmuxName, listening: false })
+  sessions.set(sessionId, {
+    sessionId, topic, threadId: threadId!, createdAt: now, lastActive: now,
+    tmuxName, listening: false, originType, originFrom,
+  })
   threadToSession.set(threadId!, sessionId)
   persistSessions()
 
@@ -697,13 +881,10 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           text: args.text as string | undefined,
           files: (args.files as string[] | undefined),
         })
-        const hasText = args.text as string | undefined
         return {
           content: [{
             type: 'text',
-            text: hasText
-              ? `thread created (thread_id: ${thread.id})`
-              : `thread created (thread_id: ${thread.id})`,
+            text: `thread created (thread_id: ${thread.id})`,
           }],
         }
       }
@@ -731,16 +912,32 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       }
 
       case 'list_sessions': {
-        const list = [...sessions.values()].map(s => ({
-          name: s.tmuxName,
-          session_id: s.sessionId,
-          topic: s.topic,
-          thread_id: s.threadId,
-          created_at: new Date(s.createdAt).toISOString(),
-          last_active: new Date(s.lastActive).toISOString(),
-          status: bridges.has(s.sessionId) ? 'connected' : 'disconnected',
+        const sorted = [...sessions.values()].sort((a, b) => b.lastActive - a.lastActive)
+        const list = await Promise.all(sorted.map(async s => {
+          const url = await gateway.getThreadUrl(s.threadId).catch(() => '')
+          const desc = s.description ?? fallbackDescription(s.topic)
+          return {
+            name: s.tmuxName,
+            description: desc,
+            url,
+            context: getContextPercent(s.tmuxName),
+            messages: s.messageCount ?? 0,
+            running_for: formatDuration(Date.now() - s.createdAt),
+            status: bridges.has(s.sessionId) ? 'connected' : 'disconnected',
+          }
         }))
         return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
+      }
+
+      case 'set_description': {
+        const sessionId = args.session_id as string | undefined
+        const description = args.description as string | undefined
+        if (!sessionId || !description) throw new Error('session_id and description are required')
+        const info = sessions.get(sessionId)
+        if (!info) throw new Error('session not found')
+        info.description = description.slice(0, 120)
+        persistSessions()
+        return { content: [{ type: 'text', text: `description set for ${info.tmuxName}` }] }
       }
 
       case 'kill_session': {
@@ -793,6 +990,11 @@ async function killSession(info: SessionInfo, reason: string): Promise<void> {
       await gateway.send(info.threadId, `_${reason}_`)
     } catch (err) {
       process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
+    }
+
+    const anchor = gateway.getThreadAnchor(info.threadId)
+    if (anchor) {
+      void gateway.react(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
     }
 
     const tmuxName = info.tmuxName
@@ -887,17 +1089,18 @@ gateway.onButtonClick(click => {
 // ---------------------------------------------------------------------------
 
 async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, access.ackReaction || '👀').catch(() => {})
+  void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
 
   try {
     const result = await doSpawnSession(topic, msg.channelId, msg.id)
 
     if (msg.isDM) {
-      // Slack DMs support threads natively — the session thread is already visible,
-      // so skip the URL. Discord DMs redirect to a guild channel, so the URL helps.
-      const base = (result.url && gateway.platform === 'discord')
-        ? `Spawned session **${result.name}** — ${result.url}`
-        : `Spawned session **${result.name}**`
+      const e = sessionEmoji(result.name)
+      // Platforms that support DM threads show the session inline — skip the URL.
+      // Others redirect to a guild channel, so the URL helps the user find the thread.
+      const base = (result.url && !gateway.canThreadInDM)
+        ? `Spawned ${e} \`${result.name}\` — ${result.url}`
+        : `Spawned ${e} \`${result.name}\``
       // The session is a plain tmux session — surface the attach command so it can be
       // viewed/driven from any terminal tab (paste into the tab you want).
       const reply = `${base}\nView in any terminal: \`tmux attach -t ${result.name}\``
@@ -908,7 +1111,7 @@ async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: 
     if (mainBridge) {
       sendToBridge(mainBridge, {
         type: 'notification',
-        content: `[system] Spawned session **${result.name}** for topic: ${topic}${result.url ? ` — ${result.url}` : ''}`,
+        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\` for topic: ${topic}${result.url ? ` — ${result.url}` : ''}`,
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
@@ -920,6 +1123,7 @@ async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: 
 }
 
 async function handleKillIntercept(msg: InboundMessage, name: string): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '☠️').catch(() => {})
   let target: SessionInfo | undefined
   for (const s of sessions.values()) {
     if (s.tmuxName === name || s.topic.toLowerCase() === name.toLowerCase()) {
@@ -935,24 +1139,657 @@ async function handleKillIntercept(msg: InboundMessage, name: string): Promise<v
   try { await gateway.send(msg.channelId, `Killed session **${target.tmuxName}**`, { replyTo: msg.id }) } catch {}
 }
 
+function formatDuration(ms: number): string {
+  const mins = Math.floor(ms / 60000)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  const remMins = mins % 60
+  if (hrs < 24) return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`
+  const days = Math.floor(hrs / 24)
+  const remHrs = hrs % 24
+  return remHrs > 0 ? `${days}d ${remHrs}h` : `${days}d`
+}
+
+function getContextPercent(tmuxName: string): string {
+  try {
+    const pane = execSync(`tmux capture-pane -t '${tmuxName}' -p 2>/dev/null`, { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }).toString()
+    const match = pane.match(/(\d+)%\n/)
+    return match ? `${match[1]}%` : '?'
+  } catch { return '?' }
+}
+
 async function handleListIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '📊').catch(() => {})
   if (sessions.size === 0) {
     try { await gateway.send(msg.channelId, 'No active sessions.', { replyTo: msg.id }) } catch {}
     return
   }
-  const lines = [...sessions.values()].map(s => {
-    const age = Math.round((Date.now() - s.createdAt) / 60000)
-    const idle = Math.round((Date.now() - s.lastActive) / 60000)
-    const status = bridges.has(s.sessionId) ? 'connected' : 'disconnected'
-    return `**${s.tmuxName}** — ${s.topic} (${age}m old, ${idle}m idle, ${status})`
-  })
+
+  function timeBucket(lastActiveMs: number, now: number): string {
+    const diffH = (now - lastActiveMs) / 3_600_000
+    if (diffH < 1) return 'Past hour'
+    if (diffH < 3) return 'Past 3 hours'
+    const last = new Date(lastActiveMs)
+    const today = new Date(now)
+    const lastDay = new Date(last.getFullYear(), last.getMonth(), last.getDate())
+    const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const daysDiff = Math.round((todayDay.getTime() - lastDay.getTime()) / 86_400_000)
+    if (daysDiff === 0) return `${Math.round(diffH)} hours ago`
+    if (daysDiff === 1) return 'Yesterday'
+    return `${daysDiff} days ago`
+  }
+
+  type SessionEntry = { session: SessionInfo; url: string; latestLine?: string }
+
+  function formatSession(e: SessionEntry): string {
+    const s = e.session
+    const desc = s.description ?? fallbackDescription(s.topic)
+    const duration = formatDuration(Date.now() - s.createdAt)
+    const msgCount = s.messageCount ?? 0
+    const ctx = getContextPercent(s.tmuxName)
+    const disconnected = bridges.has(s.sessionId) ? '' : ' ⚠️'
+    const emoji = sessionEmoji(s.tmuxName)
+    const title = e.url ? `[**${desc}**](${e.url})` : `**${desc}**`
+    const provenance = s.originFrom ? ` ← ${s.originType === 'handoff' ? '🤝' : '🍴'} (${s.originFrom})` : ''
+    const lines = [
+      `${emoji} \`${s.tmuxName}\`${disconnected}${provenance}`,
+      `- ${title}`,
+      `- ${ctx} (${msgCount} msgs · ${duration})`,
+    ]
+    if (e.latestLine) lines.push(`- ${e.latestLine}`)
+    return lines.join('\n')
+  }
+
+  const now = Date.now()
+  const all = [...sessions.values()].sort((a, b) => b.lastActive - a.lastActive)
+
+  const entries: SessionEntry[] = await Promise.all(all.map(async s => ({
+    session: s,
+    url: await gateway.getThreadUrl(s.threadId).catch(() => ''),
+  })))
+
+  // Phase 1: post immediately without latest-message info, grouped by time
+  function buildOutput(list: SessionEntry[]): string {
+    const buckets = new Map<string, SessionEntry[]>()
+    for (const e of list) {
+      const bucket = timeBucket(e.session.lastActive, now)
+      const arr = buckets.get(bucket) ?? []
+      arr.push(e)
+      buckets.set(bucket, arr)
+    }
+    const sections: string[] = []
+    for (const [label, items] of buckets) {
+      sections.push(`### ${label}\n\n${items.map(formatSession).join('\n\n')}`)
+    }
+    return sections.join('\n')
+  }
+
+  let sentMsg: { id: string } | undefined
+  try {
+    sentMsg = await gateway.send(msg.channelId, buildOutput(entries), { replyTo: msg.id, unfurl: false })
+  } catch { return }
+
+  // Phase 2: fetch latest message per thread in parallel, then edit
+  const latestInfos = await Promise.all(entries.map(async (e): Promise<string | undefined> => {
+    try {
+      const msgs = await gateway.fetchMessages(e.session.threadId, 1)
+      if (msgs.length === 0) return undefined
+      const m = msgs[0]
+      const who = m.authorId === gateway.botId ? `<@${gateway.botId}>` : 'you'
+      const msgUrl = gateway.getMessageUrl(e.session.threadId, m.id)
+      return msgUrl ? `[📩 latest](${msgUrl}) — by ${who}` : `📩 latest — by ${who}`
+    } catch { return undefined }
+  }))
+
+  const enriched = entries.map((e, i) => ({ ...e, latestLine: latestInfos[i] }))
+  const richText = buildOutput(enriched)
+  if (sentMsg) {
+    try { await gateway.edit(msg.channelId, sentMsg.id, richText) } catch {}
+  }
+}
+
+const daemonStartedAt = Date.now()
+
+// Thread-scoped intercept: resolves the calling thread's session, or ❌
+/** Map an inbound thread message to its owning session, or null if not a session thread. */
+function resolveThreadSession(msg: InboundMessage): SessionInfo | null {
+  if (!msg.isThread) return null
+  const mappedSession = threadToSession.get(msg.channelId)
+    ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
+  if (!mappedSession) return null
+  return sessions.get(mappedSession) ?? null
+}
+
+async function handleThreadKillIntercept(msg: InboundMessage): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+  void gateway.react(msg.channelId, msg.id, '☠️').catch(() => {})
+  await killSession(info, 'session ended')
+}
+
+async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  try {
+    execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+  } catch {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '📈').catch(() => {})
+  const ctx = getContextPercent(info.tmuxName)
+  const duration = formatDuration(Date.now() - info.createdAt)
+  const msgs = info.messageCount ?? 0
+  const status = bridges.has(info.sessionId) ? 'connected' : 'disconnected'
+  const desc = info.description ?? fallbackDescription(info.topic)
+
+  const forkCount = [...sessions.values()].filter(s => s.originType === 'fork' && s.originFrom === info.tmuxName).length
+
+  const e = sessionEmoji(info.tmuxName)
+  const lines = [
+    `${e} \`${info.tmuxName}\` — ${desc}`,
+    `    ◦ ${ctx} · ${msgs} msgs · ${duration} · ${status}`,
+  ]
+  if (forkCount > 0) lines.push(`    ◦ ${forkCount} fork${forkCount > 1 ? 's' : ''}`)
+  if (info.originType === 'handoff' && info.originFrom) {
+    const pe = sessionEmoji(info.originFrom)
+    lines.push(`    ◦ 🤝 handed off from ${pe} \`${info.originFrom}\``)
+  } else if (info.originType === 'fork' && info.originFrom) {
+    const pe = sessionEmoji(info.originFrom)
+    lines.push(`    ◦ 🍴 forked from ${pe} \`${info.originFrom}\``)
+  }
+
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+}
+
+const RESTART_PENDING_FILE = join(STATE_DIR, 'restart-pending.json')
+
+async function handleRestartIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '🔄').catch(() => {})
+
+  const restartScript = join(import.meta.dir, 'restart-daemon.sh')
+  try {
+    await gateway.send(msg.channelId, `🔄 Restarting daemon — back in a moment...`, { replyTo: msg.id })
+  } catch {}
+
+  try {
+    const restartChatId = msg.isThread && msg.existingThreadId ? msg.existingThreadId : msg.channelId
+    writeFileSync(RESTART_PENDING_FILE, JSON.stringify({ chatId: restartChatId, messageId: msg.id, ts: Date.now() }) + '\n')
+  } catch {}
+
+  let restartFailed = false
+  try {
+    // nohup + &: script must survive killing its parent tmux session (SIGHUP)
+    execSync(`nohup bash "${restartScript}" > /dev/null 2>&1 &`, {
+      stdio: 'pipe',
+      timeout: 10_000,
+      shell: '/bin/bash',
+      env: { ...process.env, PATH: `${homedir()}/.asdf/shims:${homedir()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin` },
+    })
+  } catch (err) {
+    restartFailed = true
+    const errMsg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`daemon: restart failed: ${errMsg}\n`)
+  }
+  if (restartFailed) {
+    try { unlinkSync(RESTART_PENDING_FILE) } catch {}
+    try {
+      await gateway.send(msg.channelId, `❌ Restart failed — daemon is still running on old code.`, { replyTo: msg.id })
+    } catch {}
+  }
+}
+
+async function announceRestartComplete(): Promise<void> {
+  try {
+    const raw = readFileSync(RESTART_PENDING_FILE, 'utf8')
+    const { chatId, messageId, ts } = JSON.parse(raw) as { chatId: string; messageId: string; ts: number }
+    unlinkSync(RESTART_PENDING_FILE)
+    const elapsedSec = Math.round((Date.now() - ts) / 1000)
+    await gateway.send(chatId, `✨ Back online — restart took ${elapsedSec}s.`, { replyTo: messageId })
+  } catch {}
+}
+
+async function handleHealthIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '💚').catch(() => {})
+  const uptimeMin = Math.round((Date.now() - daemonStartedAt) / 60000)
+  const connectedSessions = [...sessions.values()].filter(s => bridges.has(s.sessionId))
+  const disconnectedSessions = [...sessions.values()].filter(s => !bridges.has(s.sessionId))
+  const queuedMsgCount = [...messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
+
+  let heartbeatAge = 'n/a'
+  try {
+    const hb = statSync(join(STATE_DIR, 'daemon.alive'))
+    heartbeatAge = `${Math.round((Date.now() - hb.mtimeMs) / 1000)}s ago`
+  } catch {}
+
+  const lines = [
+    `**Daemon Health**`,
+    `• Uptime: ${uptimeMin}m`,
+    `• Gateway: ${PLATFORM}`,
+    `• Heartbeat: ${heartbeatAge}`,
+    `• Sessions: ${sessions.size} total (${connectedSessions.length} connected, ${disconnectedSessions.length} disconnected)`,
+    `• Queued messages: ${queuedMsgCount}`,
+  ]
+
+  if (disconnectedSessions.length > 0) {
+    lines.push(`• Disconnected: ${disconnectedSessions.map(s => s.tmuxName).join(', ')}`)
+  }
+
+  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+}
+
+async function handleReconnectIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '🔌').catch(() => {})
+  if (!gateway.forceReconnect) {
+    try { await gateway.send(msg.channelId, `Reconnect not supported on this platform.`, { replyTo: msg.id }) } catch {}
+    return
+  }
+  const result = await gateway.forceReconnect()
+  const emoji = result.ok ? '✅' : '❌'
+  try { await gateway.send(msg.channelId, `${emoji} ${result.message}`, { replyTo: msg.id }) } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Claude session ID discovery (fallback when bridge registration missed it)
+// ---------------------------------------------------------------------------
+
+/** Fallback: scan the tmux pane's process tree for a UUID-shaped SESSION env var. */
+function discoverClaudeSessionId(tmuxName: string): string | null {
+  try {
+    const panePid = execSync(`tmux list-panes -t '${tmuxName}' -F '#{pane_pid}' 2>/dev/null`, { encoding: 'utf8' }).trim()
+    if (!panePid) return null
+    const childPids = execSync(`pgrep -P ${panePid} 2>/dev/null`, { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    for (const childPid of childPids) {
+      const envOutput = execSync(`ps -E -p ${childPid} 2>/dev/null`, { encoding: 'utf8' })
+      if (!envOutput.includes('HYDRA_SESSION_ID')) continue
+      // Heuristic: find any UUID-shaped env var with "SESSION" in the name that isn't HYDRA's
+      const hydraId = envOutput.match(/HYDRA_SESSION_ID=([^\s]+)/)?.[1]
+      const candidates = [...envOutput.matchAll(/([A-Z_]*SESSION[A-Z_]*)=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g)]
+      const claudeId = candidates.find(m => m[2] !== hydraId)?.[2]
+      if (claudeId) return claudeId
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fork
+// ---------------------------------------------------------------------------
+
+async function handleForkIntercept(msg: InboundMessage, description?: string): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  if (!info.claudeSessionId) {
+    const discovered = discoverClaudeSessionId(info.tmuxName)
+    if (discovered) {
+      info.claudeSessionId = discovered
+      persistSessions()
+    } else {
+      void gateway.send(msg.channelId, 'Fork unavailable — could not resolve Claude session ID.', { replyTo: msg.id }).catch(() => {})
+      return
+    }
+  }
+
+  try {
+    execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+  } catch {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    void gateway.send(msg.channelId, `Cannot fork — **${info.tmuxName}** is no longer running.`, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🍴').catch(() => {})
+
+  const parentName = info.tmuxName
+  const parentMessages = info.messageCount ?? 0
+  const parentContext = getContextPercent(parentName)
+  const forkTopic = description || `continuing: ${info.topic}`
+  const threadAnchor = gateway.getThreadAnchor(msg.channelId)
+  const baseChatId = threadAnchor?.channelId ?? msg.channelId
+
+  try {
+    const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
+      forkFrom: { claudeSessionId: info.claudeSessionId, parentName },
+    })
+
+    const pe = sessionEmoji(parentName)
+    const ce = sessionEmoji(result.name)
+    await gateway.send(msg.channelId, [
+      `🍴 ${pe} \`${parentName}\` forked → ${ce} \`${result.name}\` — ${result.url}`,
+      `    ◦ ${parentContext} (${parentMessages} msgs)`,
+    ].join('\n'), { replyTo: msg.id })
+
+    const mainBridge = getBridgeForSession('main')
+    if (mainBridge) {
+      sendToBridge(mainBridge, {
+        type: 'notification',
+        content: `[system] ${pe} \`${parentName}\` forked → ${ce} \`${result.name}\`: ${forkTopic}${result.url ? ` — ${result.url}` : ''}`,
+        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`daemon: fork intercept failed: ${errMsg}\n`)
+    try { await gateway.send(msg.channelId, `Fork failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
+  }
+}
+
+async function handleForksIntercept(msg: InboundMessage): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🍽️').catch(() => {})
+  const forks = [...sessions.values()].filter(s => s.originType === 'fork' && s.originFrom === info.tmuxName)
+  if (forks.length === 0) {
+    try { await gateway.send(msg.channelId, `No forks from ${sessionEmoji(info.tmuxName)} \`${info.tmuxName}\`.`, { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  const lines = await Promise.all(forks.sort((a, b) => a.createdAt - b.createdAt).map(async s => {
+    const url = await gateway.getThreadUrl(s.threadId).catch(() => '')
+    const desc = s.description ?? fallbackDescription(s.topic)
+    const ctx = getContextPercent(s.tmuxName)
+    const msgs = s.messageCount ?? 0
+    const duration = formatDuration(Date.now() - s.createdAt)
+    const e = sessionEmoji(s.tmuxName)
+    const title = url ? `[**${desc}**](${url})` : `**${desc}**`
+    return `╰ ${e} \`${s.tmuxName}\` — ${title}\n    ◦ ${ctx} (${msgs} msgs · ${duration})`
+  }))
+
+  const pe = sessionEmoji(info.tmuxName)
+  try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Handoff
+// ---------------------------------------------------------------------------
+
+const HANDOFF_PROTOCOL = `HANDOFF PROTOCOL
+================
+
+You are about to hand off your work to a successor session. Your context
+window is being retired. The successor will start fresh with access to the
+filesystem, memory files, and workstream canon -- but NOT your conversation
+history.
+
+User's direction for the successor: "{user_direction}"
+(If empty: the successor should continue the current line of work.)
+
+If you haven't run a session retrospective yet, consider running one before
+starting this protocol. Retros route learnings to permanent artifacts (skills,
+techniques, memory files) where future sessions will actually load them.
+Handoff artifacts are ephemeral — consumed by one successor. Recommended,
+not required — skip if the session has no learnings worth persisting.
+
+Execute the following steps. Do not ask for confirmation.
+
+STEP 1: PERSIST DURABLE LEARNINGS
+----------------------------------
+Review your conversation for insights that should survive beyond this
+immediate handoff -- things future sessions (not just the successor)
+would benefit from knowing.
+
+Write these to the appropriate files using your normal editing tools:
+- Workstream canon (CANON.md): architectural decisions, gotchas, patterns
+- Memory files (~/.claude/memory/): cross-project patterns, user preferences
+- Workstream notes: action items not for the immediate successor
+
+Route by asking: "Will a future session in a *different* project benefit?"
+→ global memory/technique/skill files (~/.claude/memory/, ~/.claude/skills/).
+"Is this about how *this workstream* works?" → workstream canon.
+"Is this about a specific artifact type (HTML, diagrams, etc.)?" → the
+relevant skill file. Don't put learnings in the handoff doc -- the handoff
+is ephemeral; skills and canon are permanent.
+
+If a spec exists for this work and the implementation diverged from it,
+update the spec to match reality or add a note at the top:
+"Superseded by [description]. See [reference]."
+
+If nothing is durable, say so and move to Step 2.
+
+STEP 2: PRODUCE THE HANDOFF ARTIFACT
+--------------------------------------
+Write the artifact to: {artifact_path}
+
+Structure it as a self-contained prompt -- the successor has never seen
+your conversation:
+
+### TL;DR
+Three sentences max: what we're building, where it's at, what the
+successor should do first.
+
+### Orientation
+What we're working on and why. 2-3 sentences.
+
+### Prerequisites
+Skills, canon docs, or conventions the successor MUST read before touching
+anything. Not suggestions -- gates. If the workstream has specialized tooling
+(validation scripts, editing conventions, pipeline patterns), list the skill
+or doc path here. The successor reads these before acting on anything else.
+
+### Key decisions
+Decisions that were expensive to reach. Include reasoning and rejected
+alternatives. Format: "Decision: X. Reasoning: Y. Rejected: Z."
+
+### State of the work
+- Done (with file paths). For each done item whose mechanism isn't
+  obvious from the name alone, add one sentence explaining how it works.
+  Names you coined in-session are opaque to the successor.
+- In progress (with locations and status)
+- Blocked or unresolved (with enough context to unblock)
+
+### Fragile
+Things that break easily if the successor doesn't know about them.
+Manually maintained state, implicit assumptions, non-obvious coupling
+between files. Not what's done or in progress -- what's brittle.
+
+### Dead ends
+Approaches tried and abandoned, with why.
+
+### Anchors
+Function/constant names and file paths the successor needs. Include
+approximate line numbers as a convenience, but name the function --
+names persist, line numbers drift.
+
+### Next action
+The single most important thing to do first. One sentence.
+
+### Remaining steps
+Other actions, ordered by priority. Organized around the user's
+direction: "{user_direction}"
+
+STEP 3: PRESENT FOR REVIEW
+---------------------------
+Reply in the thread with a TLDR: one sentence on what was persisted,
+one sentence summarizing the artifact, and the file path. Then say:
+"Type \`/go\` to launch the successor, or give feedback to iterate."
+
+If the user sends feedback instead of \`/go\`, revise the artifact file
+and post an updated TLDR. Repeat until \`/go\`.
+`
+
+const HANDOFF_DIR = join(STATE_DIR, 'handoffs')
+
+async function handleHandoffIntercept(msg: InboundMessage, direction?: string): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  try {
+    execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+  } catch {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    void gateway.send(msg.channelId, `Cannot handoff — **${info.tmuxName}** is no longer running.`, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🤝').catch(() => {})
+
+  const userDirection = direction || ''
+  mkdirSync(HANDOFF_DIR, { recursive: true })
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  const artifactPath = join(HANDOFF_DIR, `${ts}-${info.tmuxName}.md`)
+
+  const ctx = getContextPercent(info.tmuxName)
+  const ctxNum = parseInt(ctx) || 0
+  const estimate = ctxNum >= 70 ? '30-60s' : ctxNum >= 40 ? '45-90s' : '60-120s'
+  void gateway.send(msg.channelId,
+    `🤝 **${info.tmuxName}** is preparing the handoff — persisting learnings and composing the artifact (~${estimate} at ${ctx} context). I'll post a TLDR when ready for your review.`,
+    { replyTo: msg.id },
+  ).catch(() => {})
+
+  const protocol = HANDOFF_PROTOCOL
+    .replace(/\{user_direction\}/g, userDirection || '(continue current line of work)')
+    .replace(/\{artifact_path\}/g, artifactPath)
+  let contextNote = ''
+  if (ctxNum >= 80) {
+    contextNote = `\n\nCONTEXT NOTE: You are at ${ctx} context. Keep the artifact concise — prioritize decisions, dead ends, and anchors over comprehensive state. Consider delegating artifact composition to a subagent if available.`
+  } else if (ctxNum >= 60) {
+    contextNote = `\n\nCONTEXT NOTE: You are at ${ctx} context. Balance thoroughness with conciseness.`
+  }
+
+  const protocolMessage = `[system] Handoff requested.${userDirection ? ` User direction: '${userDirection}'.` : ''} Execute the handoff protocol now.\n\n${protocol}${contextNote}`
+
+  sendOrQueue(info.sessionId, {
+    type: 'notification',
+    content: protocolMessage,
+    meta: {
+      chat_id: info.threadId,
+      message_id: msg.id,
+      user: 'system',
+      user_id: 'system',
+      ts: new Date().toISOString(),
+    },
+  })
+}
+
+async function handleGoIntercept(msg: InboundMessage): Promise<void> {
+  const info = resolveThreadSession(msg)
+  if (!info) {
+    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
+    return
+  }
+
+  // Find the most recent artifact file for this session
+  let artifactPath: string | null = null
+  try {
+    const files = readdirSync(HANDOFF_DIR)
+      .filter(f => f.endsWith(`-${info.tmuxName}.md`))
+      .sort()
+    if (files.length > 0) {
+      artifactPath = join(HANDOFF_DIR, files[files.length - 1])
+    }
+  } catch {}
+
+  if (!artifactPath) {
+    void gateway.send(msg.channelId, `No handoff artifact found for **${info.tmuxName}**. Run \`handoff\` first.`, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🤝').catch(() => {})
+
+  const handoffAnchor = gateway.getThreadAnchor(msg.channelId)
+  const baseChatId = handoffAnchor?.channelId ?? msg.channelId
+  const topic = info.description ?? fallbackDescription(info.topic)
+
+  try {
+    const result = await doSpawnSession(topic, baseChatId, undefined, {
+      handedOffFrom: info.tmuxName,
+      artifact: artifactPath,
+    })
+
+    // Wait for successor's bridge to register (up to 30s)
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline) {
+      if (bridges.has(result.sessionId)) break
+      await new Promise(r => setTimeout(r, 500))
+    }
+
+    // Post cross-link in old thread
+    const pe = sessionEmoji(info.tmuxName)
+    const ce = sessionEmoji(result.name)
+    try {
+      await gateway.send(info.threadId, [
+        `🤝 ${pe} \`${info.tmuxName}\` handed off → ${ce} \`${result.name}\` — ${result.url}`,
+        `View in any terminal: \`tmux attach -t ${result.name}\``,
+      ].join('\n'))
+    } catch {}
+
+    // Notify main session
+    const mainBridge = getBridgeForSession('main')
+    if (mainBridge) {
+      sendToBridge(mainBridge, {
+        type: 'notification',
+        content: `[system] 🤝 ${pe} \`${info.tmuxName}\` handed off → ${ce} \`${result.name}\`${result.url ? ` — ${result.url}` : ''}`,
+        meta: { chat_id: baseChatId, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+
+    // Predecessor stays alive — user decides when to kill
+    try {
+      await gateway.send(info.threadId, `${ce} \`${result.name}\` is live. Type \`kill\` here to end \`${info.tmuxName}\`.`)
+    } catch {}
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`daemon: handoff go failed: ${errMsg}\n`)
+    try { await gateway.send(msg.channelId, `Handoff failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
+  }
+}
+
+async function handleCommandsIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '📋').catch(() => {})
+  const text = [
+    '**Bridge Commands**',
+    '',
+    '**Global (work from anywhere):**',
+    '• `new session: <topic>` / `spawn: <topic>` — spawn an isolated Claude session in its own thread',
+    '• `list sessions` — show all running sessions with lineage',
+    '• `kill session: <name>` — terminate a named session',
+    '• `health` / `status` — daemon health and diagnostics',
+    '• `reconnect` — re-establish chat connection without restarting (sessions untouched)',
+    '• `restart` — restart the daemon (picks up code changes, sessions reconnect)',
+    '',
+    '**Thread-scoped (in a session thread only, ❌ elsewhere):**',
+    '• `fork` — fork into a new thread carrying full conversation history',
+    '• `fork: <description>` — directed fork with a specific focus',
+    '• `forks` — list all forks from this thread',
+    '• `handoff` — distill context into an artifact for review',
+    '• `handoff: <direction>` — directed handoff with a specific focus',
+    '• `/go` — launch the successor (predecessor stays alive until you `kill` it)',
+    '• `usage` — session stats: context %, messages, runtime, fork count',
+    '• `kill` — kill this session',
+    '• `listen` / `pause` — toggle whether the session responds to all messages',
+    '',
+    '**Other:**',
+    '• `commands` — this directory',
+  ].join('\n')
+  try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
 }
 
 // ---------------------------------------------------------------------------
 // Deliver a message to a session
 // ---------------------------------------------------------------------------
 
+/** Route an inbound message to a session's bridge (or queue it if disconnected). */
 async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
   void gateway.typing(msg.channelId).catch(() => {})
   if (access.ackReaction) {
@@ -967,7 +1804,7 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
 
   let threadContext: Record<string, string> = {}
   if (msg.isThread) {
-    const starter = await (gateway as any).getThreadStarterInfo?.(msg.channelId)
+    const starter = await gateway.getThreadStarterInfo(msg.channelId)
     if (starter) {
       threadContext = {
         thread_name: starter.threadName,
@@ -980,6 +1817,9 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
 
   // Use the session's threadId as chat_id so replies go to the right thread
   const sessionInfo = sessions.get(targetSessionId)
+  if (sessionInfo) {
+    sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
+  }
   const chatId = sessionInfo?.threadId ?? msg.channelId
 
   const meta: Record<string, string> = {
@@ -1026,7 +1866,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
   const isAllowed = access.allowFrom.includes(senderId)
 
   if (isAllowed) {
-    // Command intercepts
+    // ── Global commands (work from anywhere) ──────────────────────────
+    //   spawn: <topic>         start a new session         🚀
+    //   kill: <name>           kill a named session        ☠️
+    //   list sessions          list all sessions           📊
+    //   health / status        daemon health               💚
+    //   commands               command directory            📋
+
     // `[\s\S]` (not `.`) so the topic captures multi-line/multi-paragraph prompts, not just the first line.
     const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i)
     if (spawnMatch) {
@@ -1049,9 +1895,78 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
+    const restartMatch = msg.content.match(/^(?:\/restart|restart daemon|restart)\s*$/i)
+    if (restartMatch) {
+      void handleRestartIntercept(msg)
+      return
+    }
+
+    const healthMatch = msg.content.match(/^(?:\/health|health|status)\s*$/i)
+    if (healthMatch) {
+      void handleHealthIntercept(msg)
+      return
+    }
+
+    const reconnectMatch = msg.content.match(/^(?:\/reconnect|reconnect)\s*$/i)
+    if (reconnectMatch) {
+      void handleReconnectIntercept(msg)
+      return
+    }
+
+    const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands)\s*$/i)
+    if (commandsMatch) {
+      void handleCommandsIntercept(msg)
+      return
+    }
+
+    // ── Thread commands (spawn thread only, ❌ elsewhere) ─────────────
+    //   kill                   kill this session              ☠️
+    //   usage                  session stats                  📈
+    //   fork / fork: <desc>    fork with full context         🍴
+    //   forks                  list forks from this thread    🍽️
+    //   listen / pause         toggle listening               👂/⏸️
+
+    const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
+    if (threadKillMatch) {
+      void handleThreadKillIntercept(msg)
+      return
+    }
+
+    const usageMatch = msg.content.match(/^(?:\/usage|usage)\s*$/i)
+    if (usageMatch) {
+      void handleUsageIntercept(msg)
+      return
+    }
+
+    if (msg.isThread) {
+      const forkMatch = msg.content.match(/^(?:fork|\/fork)(?::\s*([\s\S]+))?$/i)
+      if (forkMatch) {
+        void handleForkIntercept(msg, forkMatch[1]?.trim())
+        return
+      }
+
+      const forksMatch = msg.content.match(/^(?:forks|\/forks)\s*$/i)
+      if (forksMatch) {
+        void handleForksIntercept(msg)
+        return
+      }
+
+      const handoffMatch = msg.content.match(/^(?:handoff|\/handoff)(?::\s*([\s\S]+))?$/i)
+      if (handoffMatch) {
+        void handleHandoffIntercept(msg, handoffMatch[1]?.trim())
+        return
+      }
+
+      const goMatch = msg.content.match(/^(?:\/go|go!)\s*$/i)
+      if (goMatch) {
+        void handleGoIntercept(msg)
+        return
+      }
+    }
+
     // Session thread routing
     if (msg.isThread) {
-      // Discord: channelId IS the thread ID. Slack: need composite channelId:thread_ts.
+      // Thread ID format varies by platform — try both channelId and existingThreadId.
       const mappedSession = threadToSession.get(msg.channelId)
         ?? (msg.existingThreadId ? threadToSession.get(msg.existingThreadId) : undefined)
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...threadToSession.keys()].join(',')}]\n`)
@@ -1066,10 +1981,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
 
-          // In Slack DM threads, always route — the thread IS the session.
-          // In Discord guild threads, require explicit addressing (listen mode,
-          // name prefix, or reply-to-bot) to avoid responding to bystanders.
-          const alwaysRoute = gateway.platform === 'slack' && msg.isDM
+          // DM threads on exclusive platforms (e.g. Slack) always route — the thread IS the session.
+          // Non-exclusive platforms (e.g. Discord guilds) require explicit addressing to avoid
+          // responding to bystanders (listen mode, name prefix, or reply-to-bot).
+          const alwaysRoute = gateway.dmThreadsAreExclusive && msg.isDM
           const shouldRoute =
             alwaysRoute ||
             info.listening ||
@@ -1126,7 +2041,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       if (msg.hasExistingThread && msg.existingThreadId) {
         chat_id = msg.existingThreadId
       } else {
-        const threadId = await (gateway as any).startThreadOnMessage?.(msg, preview, archiveDuration)
+        const threadId = await gateway.startThreadOnMessage(msg, preview, archiveDuration)
         if (threadId) {
           chat_id = threadId
         }
@@ -1167,7 +2082,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
   let threadContext: Record<string, string> = {}
   if (msg.isThread) {
-    const starter = await (gateway as any).getThreadStarterInfo?.(msg.channelId)
+    const starter = await gateway.getThreadStarterInfo(msg.channelId)
     if (starter) {
       threadContext = {
         thread_name: starter.threadName,
@@ -1233,6 +2148,16 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       const sessionId = msg.sessionId as string
       conn.sessionId = sessionId
 
+      const claudeSessionId = msg.claudeSessionId as string | undefined
+      const info = sessions.get(sessionId)
+      if (info) {
+        const resolved = claudeSessionId || discoverClaudeSessionId(info.tmuxName)
+        if (resolved) {
+          info.claudeSessionId = resolved
+          persistSessions()
+        }
+      }
+
       const existing = bridges.get(sessionId)
       if (existing && existing.socket !== conn.socket) {
         process.stderr.write(`daemon: replacing bridge for session ${sessionId}\n`)
@@ -1240,7 +2165,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       }
 
       bridges.set(sessionId, conn)
-      sendToBridge(conn, { type: 'registered', sessionId })
+      sendToBridge(conn, { type: 'registered', sessionId, tools: BRIDGE_TOOLS, platform: PLATFORM })
       flushQueue(sessionId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
@@ -1365,7 +2290,7 @@ socketServer.listen(SOCK_PATH, () => {
 
 // Keep the plugin-cache bridge (the server.ts Claude actually loads) in sync with the
 // repo's bridge.ts, so spawned sessions never run stale code after a daemon restart.
-// Mirrors the copy launch-bitbot.sh does for the main bot. Best-effort, never fatal.
+// Mirrors the copy the bot launcher does for the main session. Best-effort, never fatal.
 try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
   const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
@@ -1375,8 +2300,15 @@ try {
   process.stderr.write(`daemon: bridge sync skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
 }
 
-await gateway.start(TOKEN!)
-process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
+// Non-blocking: socket server is already listening — bridges reconnect immediately.
+// Chat platform connects in background; messages queue until gateway is live.
+gateway.start(TOKEN!).then(() => {
+  process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
+  void announceRestartComplete()
+}).catch(err => {
+  process.stderr.write(`daemon: gateway start failed: ${err}\n`)
+  process.exit(1)
+})
 
 let shuttingDown = false
 
@@ -1385,6 +2317,7 @@ function shutdown(): void {
   shuttingDown = true
   process.stderr.write('daemon: shutting down\n')
 
+  persistQueues()
   socketServer.close()
   try { unlinkSync(SOCK_PATH) } catch {}
 

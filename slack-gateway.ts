@@ -23,6 +23,13 @@ import type {
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
 
+const HEALTH_CHECK_MS = 60_000
+const HEALTH_CHECK_FAST_MS = 10_000
+const STALE_THRESHOLD_MS = 3 * 60_000
+const HEARTBEAT_WRITE_THROTTLE_MS = 10_000
+const MAX_RECONNECT_ATTEMPTS = 2
+const NETWORK_CHECK_TIMEOUT_MS = 5_000
+
 /**
  * Slack renders FULL Markdown — tables, `-`/`*` lists, headings, code fences — only via the
  * `markdown_text` field. It can't be combined with `blocks`/`text` and caps at ~12k chars.
@@ -40,23 +47,52 @@ function applyMessageBody(payload: Record<string, unknown>, text: string, hasBut
 
 export class SlackGateway implements ChatGateway {
   readonly platform = 'slack' as const
+  readonly canThreadInDM = true
+  readonly dmThreadsAreExclusive = true
+  readonly healthCheckUrl = 'https://slack.com/api/api.test'
   private app: App | null = null
   private _botId: string | null = null
   private _botUserId: string | null = null
   private _teamId: string | null = null
+  private _teamDomain: string | null = null
   private messageHandler: ((msg: InboundMessage) => Promise<void>) | null = null
   private threadDeleteHandler: ((threadId: string) => void) | null = null
   private messageDeleteHandler: ((messageId: string, threadId: string | null) => void) | null = null
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
   private recentSentIds = new Set<string>()
   private appToken: string
-  private botToken: string | null = null
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private token: string | null = null
+  private lastEventAt = Date.now()
+  private lastHeartbeatWrite = 0
+  private healthInterval: ReturnType<typeof setInterval> | null = null
+  private heartbeatPath: string | null = null
+  private staleThresholdMs: number
   private reconnecting = false
-  private lastInboundAt = Date.now()
+  private reconnectAttempts = 0
+  onReconnectAfterOutage: ((gapMs: number) => void) | undefined = undefined
 
-  constructor(appToken: string) {
+  async forceReconnect(): Promise<{ ok: boolean; message: string }> {
+    if (this.reconnecting) return { ok: false, message: 'reconnect already in progress' }
+    const networkUp = await this.checkNetwork()
+    if (!networkUp) return { ok: false, message: 'network unreachable' }
+    try {
+      const gapMs = Date.now() - this.lastEventAt
+      await this.start(this.token!)
+      this.reconnectAttempts = 0
+      this.setHealthCheckInterval(HEALTH_CHECK_MS)
+      if (gapMs > 10 * 60_000 && this.onReconnectAfterOutage) {
+        this.onReconnectAfterOutage(gapMs)
+      }
+      return { ok: true, message: 'reconnected' }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  constructor(appToken: string, opts?: { heartbeatPath?: string; staleThresholdMs?: number }) {
     this.appToken = appToken
+    this.heartbeatPath = opts?.heartbeatPath ?? null
+    this.staleThresholdMs = opts?.staleThresholdMs ?? STALE_THRESHOLD_MS
   }
 
   get botId(): string | null {
@@ -64,7 +100,12 @@ export class SlackGateway implements ChatGateway {
   }
 
   async start(token: string): Promise<void> {
-    this.botToken = token
+    this.token = token
+    if (this.app) {
+      try { await this.app.stop() } catch {}
+      this.app = null
+    }
+
     this.app = new App({
       token,
       appToken: this.appToken,
@@ -75,7 +116,7 @@ export class SlackGateway implements ChatGateway {
 
     // Handle all messages
     this.app.message(async ({ message, client }) => {
-      this.lastInboundAt = Date.now()
+      this.touchHeartbeat()
       if (!this.messageHandler) return
       // Skip bot messages
       if (message.subtype === 'bot_message') return
@@ -98,6 +139,7 @@ export class SlackGateway implements ChatGateway {
 
     // Handle app_mention events (for @mentions in channels where the bot isn't a member)
     this.app.event('app_mention', async ({ event, client }) => {
+      this.touchHeartbeat()
       if (!this.messageHandler) return
 
       let username = event.user
@@ -132,6 +174,7 @@ export class SlackGateway implements ChatGateway {
 
     // Handle button interactions (Block Kit actions)
     this.app.action(/^perm:/, async ({ action, body, ack, respond }) => {
+      this.touchHeartbeat()
       await ack()
       if (!this.buttonClickHandler) return
       if (body.type !== 'block_actions') return
@@ -184,63 +227,25 @@ export class SlackGateway implements ChatGateway {
       this._botId = auth.bot_id ?? null
       this._botUserId = auth.user_id ?? null
       this._teamId = auth.team_id ?? null
-      process.stderr.write(`slack gateway: connected as ${auth.user} (bot_id: ${this._botId}, team: ${this._teamId})\n`)
+      const url = auth.url as string | undefined
+      if (url) {
+        try { this._teamDomain = new URL(url).hostname.split('.')[0] } catch {}
+      }
+      process.stderr.write(`slack gateway: connected as ${auth.user} (bot_id: ${this._botId}, team: ${this._teamId}, domain: ${this._teamDomain})\n`)
     } catch (err) {
       process.stderr.write(`slack gateway: auth.test failed: ${err}\n`)
     }
 
-    // Start heartbeat to detect dead WebSocket connections
-    this.startHeartbeat()
-  }
-
-  private startHeartbeat(): void {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
-    this.heartbeatTimer = setInterval(async () => {
-      if (this.reconnecting || !this.app) return
-      try {
-        // Check the underlying WebSocket readyState via the SocketModeReceiver
-        const receiver = (this.app as any).receiver
-        const smClient = receiver?.client
-        const ws = smClient?.websocket
-        if (!ws) return // WebSocket not yet initialized
-        const isActive = typeof ws.isActive === 'function' ? ws.isActive() : ws.readyState === 1
-        if (!isActive) {
-          const staleSec = Math.round((Date.now() - this.lastInboundAt) / 1000)
-          process.stderr.write(`slack gateway: heartbeat detected dead WebSocket (stale ${staleSec}s), reconnecting...\n`)
-          await this.reconnect()
-        }
-      } catch (err) {
-        process.stderr.write(`slack gateway: heartbeat error: ${err}\n`)
-      }
-    }, 60_000)
-    this.heartbeatTimer.unref()
-  }
-
-  private async reconnect(): Promise<void> {
-    if (this.reconnecting) return
-    this.reconnecting = true
-    try {
-      // Stop the old app
-      try { await this.app?.stop() } catch {}
-      this.app = null
-
-      // Re-run start which re-creates the App and re-registers handlers
-      await this.start(this.botToken!)
-      process.stderr.write(`slack gateway: reconnected successfully\n`)
-      this.reconnecting = false
-    } catch (err) {
-      process.stderr.write(`slack gateway: reconnect failed: ${err}, retrying in 30s...\n`)
-      setTimeout(() => {
-        this.reconnecting = false
-        this.reconnect()
-      }, 30_000)
+    this.touchHeartbeat()
+    if (!this.healthInterval) {
+      this.startHealthCheck()
     }
   }
 
   async stop(): Promise<void> {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
+    if (this.healthInterval) {
+      clearInterval(this.healthInterval)
+      this.healthInterval = null
     }
     if (this.app) {
       await this.app.stop()
@@ -283,6 +288,8 @@ export class SlackGateway implements ChatGateway {
     replyTo?: string
     files?: string[]
     buttons?: ButtonDef[]
+    unfurl?: boolean
+    mrkdwn?: boolean
   }): Promise<SentMessage> {
     if (!this.app) throw new Error('not connected')
 
@@ -301,8 +308,12 @@ export class SlackGateway implements ChatGateway {
       payload.thread_ts = opts.replyTo
     }
 
-    // Render full Markdown via markdown_text; buttons force the Block Kit (mrkdwn) path.
-    applyMessageBody(payload, text, !!opts?.buttons?.length)
+    // Render full Markdown via markdown_text; buttons and mrkdwn opt-in force the classic text path.
+    if (opts?.mrkdwn) {
+      payload.text = text
+    } else {
+      applyMessageBody(payload, text, !!opts?.buttons?.length)
+    }
 
     // Buttons via Block Kit
     if (opts?.buttons?.length) {
@@ -338,6 +349,11 @@ export class SlackGateway implements ChatGateway {
       }
     }
 
+    if (opts?.unfurl === false) {
+      payload.unfurl_links = false
+      payload.unfurl_media = false
+    }
+
     const result = await this.app.client.chat.postMessage(payload as any)
     const sentId = result.ts!
     this.noteSent(sentId)
@@ -347,11 +363,9 @@ export class SlackGateway implements ChatGateway {
   async edit(channelId: string, messageId: string, text: string): Promise<string> {
     if (!this.app) throw new Error('not connected')
     const { channel } = this.parseChannelId(channelId)
-    const result = await this.app.client.chat.update({
-      channel,
-      ts: messageId,
-      text,
-    })
+    const payload: Record<string, unknown> = { channel, ts: messageId }
+    applyMessageBody(payload, text, false)
+    const result = await this.app.client.chat.update(payload as any)
     return result.ts!
   }
 
@@ -586,13 +600,22 @@ export class SlackGateway implements ChatGateway {
     return this.recentSentIds.has(id)
   }
 
-  async getThreadUrl(threadId: string): Promise<string> {
-    // threadId for Slack is "channelId:ts"
+  getThreadAnchor(threadId: string): { channelId: string; messageId: string } | null {
     const parts = threadId.split(':')
-    if (parts.length >= 2) {
-      return this.buildMessageUrl(parts[0], parts.slice(1).join(':'))
-    }
-    return ''
+    if (parts.length < 2) return null
+    return { channelId: parts[0], messageId: parts.slice(1).join(':') }
+  }
+
+  getMessageUrl(threadId: string, messageTs: string): string {
+    const anchor = this.getThreadAnchor(threadId)
+    if (!anchor) return ''
+    return this.buildMessageUrl(anchor.channelId, messageTs, anchor.messageId)
+  }
+
+  async getThreadUrl(threadId: string): Promise<string> {
+    const anchor = this.getThreadAnchor(threadId)
+    if (!anchor) return ''
+    return this.buildMessageUrl(anchor.channelId, anchor.messageId)
   }
 
   /** Start a thread on a message (for threadReply policy). In Slack this just means replying in-thread. */
@@ -647,6 +670,88 @@ export class SlackGateway implements ChatGateway {
     }
   }
 
+  // --- Heartbeat & self-heal ---
+
+  private touchHeartbeat(): void {
+    this.lastEventAt = Date.now()
+    if (this.heartbeatPath && (this.lastEventAt - this.lastHeartbeatWrite > HEARTBEAT_WRITE_THROTTLE_MS)) {
+      this.lastHeartbeatWrite = this.lastEventAt
+      this.writeHeartbeat()
+    }
+  }
+
+  private writeHeartbeat(): void {
+    if (!this.heartbeatPath) return
+    try {
+      writeFileSync(this.heartbeatPath, String(Date.now()) + '\n')
+    } catch {}
+  }
+
+  private healthCheckMs = HEALTH_CHECK_MS
+
+  private startHealthCheck(): void {
+    if (this.healthInterval) clearInterval(this.healthInterval)
+    this.healthInterval = setInterval(async () => {
+      const elapsed = Date.now() - this.lastEventAt
+      if (elapsed > this.staleThresholdMs) {
+        process.stderr.write(`slack gateway: connection stale (${Math.round(elapsed / 1000)}s since last event), attempting reconnect\n`)
+        await this.reconnect()
+      }
+      this.writeHeartbeat()
+    }, this.healthCheckMs)
+    this.healthInterval.unref()
+  }
+
+  private setHealthCheckInterval(ms: number): void {
+    if (ms === this.healthCheckMs) return
+    this.healthCheckMs = ms
+    this.startHealthCheck()
+  }
+
+  private async checkNetwork(): Promise<boolean> {
+    try {
+      const resp = await fetch(this.healthCheckUrl, { signal: AbortSignal.timeout(NETWORK_CHECK_TIMEOUT_MS) })
+      return resp.ok
+    } catch {
+      return false
+    }
+  }
+
+  // Network-aware: if network is down, stay alive and poll fast (10s) instead of
+  // exiting for watchdog restart. Prevents restart storms during extended outages.
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting) return
+    this.reconnecting = true
+    try {
+      const networkUp = await this.checkNetwork()
+      if (!networkUp) {
+        this.setHealthCheckInterval(HEALTH_CHECK_FAST_MS)
+        process.stderr.write(`slack gateway: network unreachable, polling every ${HEALTH_CHECK_FAST_MS / 1000}s\n`)
+        this.reconnectAttempts = 0
+        this.writeHeartbeat()
+        return
+      }
+      this.reconnectAttempts++
+      if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+        process.stderr.write(`slack gateway: ${this.reconnectAttempts} reconnect attempts exhausted (network is up), exiting for supervisor restart\n`)
+        process.exit(1)
+      }
+      const gapMs = Date.now() - this.lastEventAt
+      await this.start(this.token!)
+      this.reconnectAttempts = 0
+      this.setHealthCheckInterval(HEALTH_CHECK_MS)
+      process.stderr.write(`slack gateway: reconnected successfully\n`)
+      if (gapMs > 10 * 60_000 && this.onReconnectAfterOutage) {
+        this.onReconnectAfterOutage(gapMs)
+      }
+    } catch (err) {
+      process.stderr.write(`slack gateway: reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed: ${err}\n`)
+      this.writeHeartbeat()
+    } finally {
+      this.reconnecting = false
+    }
+  }
+
   // --- Internal helpers ---
 
   private async normalizeMessage(msg: GenericMessageEvent, username: string, client: any): Promise<InboundMessage> {
@@ -681,14 +786,11 @@ export class SlackGateway implements ChatGateway {
     }
   }
 
-  private buildMessageUrl(channelId: string, ts: string): string {
-    // Slack message URLs: https://workspace.slack.com/archives/CHANNEL/pTIMESTAMP
-    // We need the team domain, but we can use the team ID format
+  private buildMessageUrl(channelId: string, ts: string, threadTs?: string): string {
     const tsClean = ts.replace('.', '')
-    if (this._teamId) {
-      return `https://app.slack.com/client/${this._teamId}/${channelId}/thread/${channelId}-${ts}`
-    }
-    return ''
+    const domain = this._teamDomain ?? 'app'
+    const threadParam = threadTs ? `?thread_ts=${threadTs}&cid=${channelId}` : ''
+    return `https://${domain}.slack.com/archives/${channelId}/p${tsClean}${threadParam}`
   }
 
   private emojiToSlackName(emoji: string): string {
@@ -708,6 +810,16 @@ export class SlackGateway implements ChatGateway {
       '💯': '100',
       '⭐': 'star',
       '🚀': 'rocket',
+      '📋': 'clipboard',
+      '📊': 'bar_chart',
+      '📈': 'chart_with_upwards_trend',
+      '💚': 'green_heart',
+      '☠️': 'skull_and_crossbones',
+      '🍴': 'fork_and_knife',
+      '🍽️': 'knife_fork_plate',
+      '🤝': 'handshake',
+      '🔄': 'arrows_counterclockwise',
+      '🔌': 'electric_plug',
     }
     if (map[emoji]) return map[emoji]
     // If it's already a text name (no colons), return as-is
