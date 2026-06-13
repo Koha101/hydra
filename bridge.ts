@@ -18,13 +18,41 @@ import {
 import { z } from 'zod'
 import { connect, type Socket } from 'net'
 import { homedir } from 'os'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { randomUUID } from 'crypto'
+import { readFileSync, existsSync } from 'fs'
+import { fileURLToPath } from 'url'
 
-const STATE_DIR = process.env.HYDRA_STATE_DIR
-  ?? process.env.DISCORD_STATE_DIR
-  ?? join(homedir(), '.claude', 'channels', process.env.CHAT_PLATFORM ?? 'discord')
-const SOCKET_PATH = process.env.DAEMON_SOCK ?? join(STATE_DIR, 'daemon.sock')
+// Resolve daemon socket path. Priority:
+// 1. DAEMON_SOCK env var (explicit override — needed when multiple daemons share a plugin cache)
+// 2. daemon.json in the same directory as this bridge (written by daemon during sync)
+// 3. HYDRA_STATE_DIR / CHAT_PLATFORM env var fallback
+function resolveSocketPath(): string {
+  if (process.env.DAEMON_SOCK) {
+    process.stderr.write(`bridge: socket path from DAEMON_SOCK env: ${process.env.DAEMON_SOCK}\n`)
+    return process.env.DAEMON_SOCK
+  }
+
+  // Check for daemon.json next to this script
+  try {
+    const bridgeDir = dirname(fileURLToPath(import.meta.url))
+    const configPath = join(bridgeDir, 'daemon.json')
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (config.socket) {
+        process.stderr.write(`bridge: socket path from daemon.json: ${config.socket}\n`)
+        return config.socket
+      }
+    }
+  } catch {}
+
+  const stateDir = process.env.HYDRA_STATE_DIR
+    ?? process.env.DISCORD_STATE_DIR
+    ?? join(homedir(), '.claude', 'channels', process.env.CHAT_PLATFORM ?? 'discord')
+  return join(stateDir, 'daemon.sock')
+}
+
+const SOCKET_PATH = resolveSocketPath()
 // NB: must NOT be plain SESSION_ID — Claude Code overwrites that env var with its own
 // session id when it launches MCP subprocesses, so the daemon-assigned id would be lost.
 const SESSION_ID = process.env.HYDRA_SESSION_ID ?? 'main'

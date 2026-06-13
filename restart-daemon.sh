@@ -11,6 +11,11 @@
 export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Source .env from state dir for persistent config (SPAWN_CWD, CLAUDE_CONFIG_DIR, etc.)
+_STATE_HINT="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
+[ -f "$_STATE_HINT/.env" ] && set -a && . "$_STATE_HINT/.env" && set +a
+
 : "${TMUX_SESSION:=discord-daemon}"
 : "${HYDRA_STATE_DIR:=${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
 : "${SPAWN_CWD:=$HOME}"

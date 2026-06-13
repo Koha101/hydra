@@ -35,6 +35,7 @@ import {
   chmodSync,
   unlinkSync,
   existsSync,
+  copyFileSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
@@ -453,6 +454,7 @@ type SessionInfo = {
   sessionId: string
   topic: string
   threadId: string
+  anchorMessageId?: string
   createdAt: number
   lastActive: number
   tmuxName: string
@@ -640,6 +642,7 @@ type SpawnOpts = {
 /** Unified session creation — spawn, fork, and handoff all flow through here via SpawnOpts. */
 async function doSpawnSession(topic: string, chatId?: string, messageId?: string, opts?: SpawnOpts): Promise<SpawnResult> {
   let threadId: string | undefined
+  let anchorMessageId: string | undefined
 
   const sessionId = randomUUID()
   const tmuxName = pickSessionName()
@@ -676,6 +679,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
           archiveDuration: 1440,
         })
         threadId = thread.id
+        anchorMessageId = messageId
       } catch (err) {
         process.stderr.write(`daemon: createThread on message failed: ${err}\n`)
       }
@@ -693,6 +697,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
         anchorText = `Starting session **${tmuxName}**: ${topic}`
       }
       const anchor = await gateway.send(targetChannelId!, anchorText)
+      anchorMessageId = anchor.id
       const thread = await gateway.createThread(targetChannelId!, threadName, {
         messageId: anchor.id,
         archiveDuration: 1440,
@@ -758,16 +763,28 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
     claudeArgs,
   ].join(' && ')
 
+  process.stderr.write(`daemon: spawn ${tmuxName}: running tmux new-session\n`)
+  process.stderr.write(`daemon: spawn ${tmuxName}: inner cmd = ${inner.slice(0, 300)}...\n`)
+
   try {
     execFileSync('tmux', ['new-session', '-d', '-s', tmuxName, inner], { stdio: 'pipe' })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`daemon: spawn ${tmuxName}: execFileSync FAILED: ${msg}\n`)
     throw new Error(`failed to spawn tmux session: ${msg}`)
+  }
+
+  // Verify the tmux session actually exists after creation
+  try {
+    execFileSync('tmux', ['has-session', '-t', tmuxName], { stdio: 'pipe' })
+    process.stderr.write(`daemon: spawn ${tmuxName}: tmux session confirmed alive\n`)
+  } catch {
+    process.stderr.write(`daemon: spawn ${tmuxName}: WARNING — tmux session died immediately after creation\n`)
   }
 
   const now = Date.now()
   sessions.set(sessionId, {
-    sessionId, topic, threadId: threadId!, createdAt: now, lastActive: now,
+    sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom,
   })
   threadToSession.set(threadId!, sessionId)
@@ -1854,8 +1871,12 @@ gateway.onMessageDelete((messageId, threadId) => {
   if (!sessionId) return
   const info = sessions.get(sessionId)
   if (!info) return
-  process.stderr.write(`daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
-  void killSession(info, 'anchor message deleted')
+  if (info.anchorMessageId && messageId === info.anchorMessageId) {
+    process.stderr.write(`daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
+    void killSession(info, 'anchor message deleted')
+  } else {
+    process.stderr.write(`daemon: message ${messageId} deleted in thread for session ${info.tmuxName} (not anchor, ignoring)\n`)
+  }
 })
 
 gateway.onMessage(async (msg: InboundMessage) => {
@@ -2294,8 +2315,14 @@ socketServer.listen(SOCK_PATH, () => {
 try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
   const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
-  execSync(`for d in "${discordCache}"/*/ ; do cp "${bridgeSrc}" "$d/server.ts"; done`, { stdio: 'pipe' })
-  process.stderr.write(`daemon: synced bridge.ts into ${discordCache}/*/server.ts\n`)
+  const daemonConfig = JSON.stringify({ socket: SOCK_PATH, platform: PLATFORM })
+  const versionDirs = readdirSync(discordCache, { withFileTypes: true }).filter(d => d.isDirectory())
+  for (const d of versionDirs) {
+    const targetDir = join(discordCache, d.name)
+    copyFileSync(bridgeSrc, join(targetDir, 'server.ts'))
+    writeFileSync(join(targetDir, 'daemon.json'), daemonConfig)
+  }
+  process.stderr.write(`daemon: synced bridge.ts + daemon.json into ${discordCache}/*/\n`)
 } catch (err) {
   process.stderr.write(`daemon: bridge sync skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
 }

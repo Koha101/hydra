@@ -6,6 +6,7 @@
 
 import {
   Client,
+  Events,
   GatewayIntentBits,
   Partials,
   ChannelType,
@@ -118,7 +119,7 @@ export class DiscordGateway implements ChatGateway {
     })
 
     await new Promise<void>((resolve) => {
-      this.client.once('ready', c => {
+      this.client.once(Events.ClientReady, c => {
         process.stderr.write(`discord gateway: connected as ${c.user.tag}\n`)
         resolve()
       })

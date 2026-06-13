@@ -4,9 +4,9 @@
 SESSION="${BYTE_SESSION_NAME:-slack-byte}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/slack/daemon.sock}"
-CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude-slack}"
 GREET_CHANNEL="${BYTE_CHANNEL:-}"   # optional: DM/channel id to greet on launch; empty = start silent
-CWD="${BYTE_CWD:-$HOME}"
+CWD="${BYTE_CWD:-$HOME/angellist}"
 
 # Check daemon is running
 if [ ! -S "$SOCK" ]; then
@@ -43,8 +43,10 @@ else
 fi
 
 # Start slack-byte
+# CLAUDE_CONFIG_DIR is separate from discord (~/.claude-slack) so each platform
+# gets its own plugin cache with its own daemon.json pointing to the right socket.
 tmux new-session -d -s "$SESSION" \
-  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR='$CONFIG_DIR' && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
   \"$PROMPT\""
 
 echo "$(date): Slack Byte started (daemon+bridge)" >> ~/slack-byte-restarts.log

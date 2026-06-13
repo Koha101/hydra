@@ -12,9 +12,13 @@
 #   CLAUDE_CONFIG_DIR — config dir for spawned Claude sessions
 export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-SESSION="${TMUX_SESSION:-discord-daemon}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
+
+# Source .env from state dir for persistent config (SPAWN_CWD, CLAUDE_CONFIG_DIR, etc.)
+[ -f "$STATE_DIR/.env" ] && set -a && . "$STATE_DIR/.env" && set +a
+
+SESSION="${CHAT_PLATFORM:-discord}-daemon"
 LOG="${HYDRA_LOG:-$HOME/hydra-daemon.log}"
 
 if [ -z "$SPAWN_CWD" ]; then
