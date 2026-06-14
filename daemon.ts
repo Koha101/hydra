@@ -124,13 +124,21 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 let gateway: ChatGateway
 
+const heartbeatPath = join(STATE_DIR, 'daemon.alive')
+
 if (PLATFORM === 'slack') {
-  const heartbeatPath = join(STATE_DIR, 'daemon.alive')
   const { SlackGateway } = await import('./slack-gateway.js')
   gateway = new SlackGateway(SLACK_APP_TOKEN!, { heartbeatPath })
 } else {
   const { DiscordGateway } = await import('./discord-gateway.js')
   gateway = new DiscordGateway()
+}
+
+// Write heartbeat for the watchdog (Slack gateway writes its own; Discord needs this)
+if (PLATFORM !== 'slack') {
+  const touchHeartbeat = () => writeFileSync(heartbeatPath, String(Date.now()))
+  touchHeartbeat()
+  setInterval(touchHeartbeat, 30_000)
 }
 
 if (gateway.onReconnectAfterOutage !== undefined) {
