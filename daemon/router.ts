@@ -3,24 +3,23 @@ import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
-import type { InboundMessage, DownloadedFile } from '../gateway.js'
+import type { DownloadedFile } from '../gateway.js'
+import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResurrectIntercept } from './commands/thread.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
 // ---------------------------------------------------------------------------
-// Notification payload builder
+// Notification payload builder (auto-downloads attachments)
 // ---------------------------------------------------------------------------
 
-/** Auto-download attachments and build the notification payload for an inbound message. */
 async function buildNotificationPayload(
   msg: InboundMessage,
   chatId: string,
 ): Promise<{ content: string; meta: Record<string, string> }> {
-  // Auto-download attachments so sessions receive local file paths
   let downloadedFiles: DownloadedFile[] = []
   if (msg.attachments.length > 0) {
     try {
@@ -69,14 +68,12 @@ async function buildNotificationPayload(
 // Deliver a message to a session
 // ---------------------------------------------------------------------------
 
-/** Route an inbound message to a session's bridge (or queue it if disconnected). */
 async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
   void gateway.typing(msg.channelId).catch(() => {})
   if (access.ackReaction) {
     void gateway.react(msg.channelId, msg.id, access.ackReaction).catch(() => {})
   }
 
-  // Use the session's threadId as chat_id so replies go to the right thread
   const sessionInfo = registry.get(targetSessionId)
   if (sessionInfo) {
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
@@ -207,12 +204,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
         void handleGoIntercept(msg)
         return
       }
-
-      const resurrectMatch = msg.content.match(/^(?:resurrect|\/resurrect)\s*$/i)
-      if (resurrectMatch) {
-        void handleResurrectIntercept(msg)
-        return
-      }
     }
 
     if (msg.isThread) {
@@ -313,10 +304,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
     void gateway.react(msg.channelId, msg.id, result.access.ackReaction).catch(() => {})
   }
 
-  const { content, meta } = await buildNotificationPayload(msg, chat_id)
-
-  // Route to session
   let targetSessionId = 'main'
+  let effectiveChatId = chat_id
 
   if (msg.isThread) {
     const mappedSession = registry.getByThread(msg.channelId)
@@ -325,7 +314,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
       info.lastActive = Date.now()
-      meta.chat_id = info.threadId
+      effectiveChatId = info.threadId
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
@@ -335,9 +324,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
       info.lastActive = Date.now()
-      meta.chat_id = info.threadId
+      effectiveChatId = info.threadId
     }
   }
 
+  const { content, meta } = await buildNotificationPayload(msg, effectiveChatId)
   transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 })
