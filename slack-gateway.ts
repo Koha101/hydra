@@ -7,6 +7,7 @@
 
 import { App, type MessageEvent, type GenericMessageEvent, type BotMessageEvent } from '@slack/bolt'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { sanitizeFilename } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -528,8 +529,8 @@ export class SlackGateway implements ChatGateway {
       })
       const buf = Buffer.from(await res.arrayBuffer())
 
-      const name = file.name ?? `${file.id}`
-      const sanitizedName = name.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const name = file.name || `${file.id}`
+      const sanitizedName = sanitizeFilename(name, `${file.id}`)
       const path = `${inboxDir}/${Date.now()}-${sanitizedName}`
       mkdirSync(inboxDir, { recursive: true })
       writeFileSync(path, buf)
