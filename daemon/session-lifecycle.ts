@@ -8,7 +8,7 @@ import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } 
 import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
-import { computeToolsForSession } from './bridge-dispatch.js'
+import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
 
 // ---------------------------------------------------------------------------
 // Kill guard
@@ -174,12 +174,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         `claude`,
         `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
         `--fork-session`,
-        `--model ${shq('claude-opus-4-6[1m]')}`,
+        `--model ${shq(SPAWN_MODEL)}`,
         `--channels ${shq(channelFlag)}`,
         `--dangerously-skip-permissions`,
         shq(prompt),
       ].join(' ')
-    : `claude --model ${shq('claude-opus-4-6[1m]')} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
 
   const inner = [
     `cd ${shq(spawnCwd)}`,
@@ -212,7 +212,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const capabilities: SessionCapabilities = {
     role: 'worker',
     tools: computeToolsForSession(sessionId).map(t => t.name),
-    model: 'claude-opus-4-6[1m]',
+    model: SPAWN_MODEL,
     cwd: spawnCwd,
     platform: PLATFORM,
   }

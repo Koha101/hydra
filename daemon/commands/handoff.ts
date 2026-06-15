@@ -115,7 +115,7 @@ and post an updated TLDR. Repeat until \`/go\`.
 const HANDOFF_DIR = join(STATE_DIR, 'handoffs')
 
 export async function handleHandoffIntercept(msg: InboundMessage, direction?: string): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -170,7 +170,7 @@ export async function handleHandoffIntercept(msg: InboundMessage, direction?: st
 }
 
 export async function handleGoIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return

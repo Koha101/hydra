@@ -150,7 +150,8 @@ export class SessionRegistry {
     return `session-${randomBytes(3).toString('hex')}`
   }
 
-  resolveThreadSession(channelId: string, existingThreadId?: string): SessionInfo | null {
+  resolveThreadSession(channelId: string, existingThreadId?: string, isThread?: boolean): SessionInfo | null {
+    if (isThread === false) return null
     const mappedSession = this.threadToSession.get(channelId)
       ?? (existingThreadId ? this.threadToSession.get(existingThreadId) : undefined)
     if (!mappedSession) return null

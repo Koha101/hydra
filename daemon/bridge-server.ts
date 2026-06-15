@@ -3,7 +3,7 @@ import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
 import { registry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
-import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-dispatch.js'
+import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
 import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
@@ -53,7 +53,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         capabilities: info?.capabilities ?? {
           role: sessionId === 'main' ? 'main' : 'worker',
           tools: tools.map(t => t.name),
-          model: 'claude-opus-4-6[1m]',
+          model: SPAWN_MODEL,
           cwd: process.env.SPAWN_CWD ?? '(unknown)',
           platform: PLATFORM,
         },
