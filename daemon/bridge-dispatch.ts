@@ -23,6 +23,7 @@ export const BRIDGE_TOOLS = [
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
 ]
 
+export const SPAWN_MODEL = 'claude-opus-4-6[1m]'
 export const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
