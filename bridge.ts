@@ -85,6 +85,7 @@ let socketReady = false
 // ── Dynamic tool list (updated on daemon registration) ────────────────
 
 let dynamicTools: Array<Record<string, unknown>> | null = null
+let sessionCapabilities: Record<string, unknown> | null = null
 
 // ── Socket connection ──────────────────────────────────────────────────
 
@@ -107,6 +108,12 @@ function handleDaemonMessage(msg: Record<string, unknown>): void {
     case 'registered': {
       process.stderr.write(`bridge: registered as session ${msg.sessionId}\n`)
       socketReady = true
+
+      const caps = msg.capabilities as Record<string, unknown> | undefined
+      if (caps) {
+        sessionCapabilities = caps
+        process.stderr.write(`bridge: capabilities received: role=${caps.role}\n`)
+      }
 
       // Update tool list if daemon sent one (dynamic tool refresh)
       const tools = msg.tools as Array<Record<string, unknown>> | undefined
@@ -289,9 +296,15 @@ mcp.setNotificationHandler(
 
 // ── Tool definitions ───────────────────────────────────────────────────
 
+const SESSION_INFO_TOOL = {
+  name: 'get_session_info',
+  description: 'Get information about this session: role, available tools, model, working directory, platform. Use this to understand your own capabilities.',
+  inputSchema: { type: 'object' as const, properties: {} },
+}
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
-  if (dynamicTools) return { tools: dynamicTools }
-  return { tools: [
+  if (dynamicTools) return { tools: [SESSION_INFO_TOOL, ...dynamicTools] }
+  return { tools: [SESSION_INFO_TOOL,
     {
       name: 'reply',
       description:
@@ -444,6 +457,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const name = req.params.name
   const args = req.params.arguments ?? {}
+
+  if (name === 'get_session_info') {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          session_id: SESSION_ID,
+          capabilities: sessionCapabilities ?? { role: SESSION_ID === 'main' ? 'main' : 'worker' },
+        }, null, 2),
+      }],
+    }
+  }
 
   if (!sock || sock.destroyed || !socketReady) {
     return {

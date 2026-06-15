@@ -450,6 +450,14 @@ function pickSessionName(): string {
 // Session registry
 // ---------------------------------------------------------------------------
 
+type SessionCapabilities = {
+  role: 'main' | 'worker'
+  tools: string[]
+  model: string
+  cwd: string
+  platform: string
+}
+
 type SessionInfo = {
   sessionId: string
   topic: string
@@ -465,6 +473,7 @@ type SessionInfo = {
   originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   threadUrl?: string
+  capabilities?: SessionCapabilities
 }
 
 function fallbackDescription(topic: string): string {
@@ -627,6 +636,13 @@ const BRIDGE_TOOLS = [
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
 ]
+
+const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
+
+function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
+  if (sessionId === 'main') return BRIDGE_TOOLS
+  return BRIDGE_TOOLS.filter(t => !MAIN_ONLY_TOOLS.has(t.name))
+}
 
 // ---------------------------------------------------------------------------
 // Spawn helper
@@ -809,9 +825,16 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   const url = await gateway.getThreadUrl(threadId!)
 
   const now = Date.now()
+  const capabilities: SessionCapabilities = {
+    role: 'worker',
+    tools: computeToolsForSession(sessionId).map(t => t.name),
+    model: 'claude-opus-4-6[1m]',
+    cwd: spawnCwd,
+    platform: PLATFORM,
+  }
   sessions.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
-    tmuxName, listening: false, originType, originFrom, threadUrl: url || undefined,
+    tmuxName, listening: false, originType, originFrom, threadUrl: url || undefined, capabilities,
   })
   threadToSession.set(threadId!, sessionId)
   persistSessions()
@@ -2376,7 +2399,20 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       }
 
       bridges.set(sessionId, conn)
-      sendToBridge(conn, { type: 'registered', sessionId, tools: BRIDGE_TOOLS, platform: PLATFORM })
+      const tools = computeToolsForSession(sessionId)
+      sendToBridge(conn, {
+        type: 'registered',
+        sessionId,
+        tools,
+        platform: PLATFORM,
+        capabilities: info?.capabilities ?? {
+          role: sessionId === 'main' ? 'main' : 'worker',
+          tools: tools.map(t => t.name),
+          model: 'claude-opus-4-6[1m]',
+          cwd: process.env.SPAWN_CWD ?? '(unknown)',
+          platform: PLATFORM,
+        },
+      })
       flushQueue(sessionId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
@@ -2385,16 +2421,14 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
     case 'tool_call': {
       const { id, name, args } = msg as { id: string; name: string; args: Record<string, unknown> }
 
-      if (['spawn_session', 'list_sessions', 'kill_session'].includes(name)) {
-        if (conn.sessionId !== 'main') {
-          sendToBridge(conn, {
-            type: 'tool_result',
-            id,
-            content: [{ type: 'text', text: `${name} is only available to the main session` }],
-            isError: true,
-          })
-          return
-        }
+      if (MAIN_ONLY_TOOLS.has(name) && conn.sessionId !== 'main') {
+        sendToBridge(conn, {
+          type: 'tool_result',
+          id,
+          content: [{ type: 'text', text: `${name} is only available to the main session` }],
+          isError: true,
+        })
+        return
       }
 
       if (conn.sessionId !== 'main') {
