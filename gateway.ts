@@ -120,6 +120,7 @@ export interface ChatGateway {
   }): Promise<SentMessage>
   edit(channelId: string, messageId: string, text: string): Promise<string>
   react(channelId: string, messageId: string, emoji: string): Promise<void>
+  unreact(channelId: string, messageId: string, emoji: string): Promise<void>
   typing(channelId: string): Promise<void>
 
   // Channels & threads

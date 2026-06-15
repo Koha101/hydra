@@ -380,6 +380,17 @@ export class SlackGateway implements ChatGateway {
     })
   }
 
+  async unreact(channelId: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
+    const name = this.emojiToSlackName(emoji)
+    await this.app.client.reactions.remove({
+      channel,
+      timestamp: messageId,
+      name,
+    })
+  }
+
   async typing(channelId: string): Promise<void> {
     // Slack doesn't have a typing indicator API for bots.
     // No-op.

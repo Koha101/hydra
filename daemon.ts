@@ -472,6 +472,7 @@ type SessionInfo = {
   claudeSessionId?: string
   originType?: 'spawn' | 'fork' | 'handoff'
   originFrom?: string
+  respawnCount?: number
 }
 
 function fallbackDescription(topic: string): string {
@@ -668,7 +669,6 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
       if (ch.isThread) {
         threadId = ch.id
       } else if (ch.isDM && !gateway.canThreadInDM) {
-        // DMs can't host threads on this platform — redirect to a guild channel
         targetChannelId = DEFAULT_SESSION_CHANNEL
       }
     } catch {
@@ -676,6 +676,31 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
     }
   } else {
     targetChannelId = DEFAULT_SESSION_CHANNEL
+  }
+
+  // Clean up dead session in this thread before spawning
+  let respawnCount = 0
+  if (threadId) {
+    const staleId = threadToSession.get(threadId)
+    if (staleId) {
+      const stale = sessions.get(staleId)
+      if (stale) {
+        try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+          respawnCount = (stale.respawnCount ?? 0) + 1
+          const anchor = gateway.getThreadAnchor(threadId)
+          if (anchor) {
+            void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+            const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+            const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
+            void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
+            if (respawnCount > 1) {
+              void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
+            }
+          }
+          await killSession(stale, 'replaced by new spawn')
+        }
+      }
+    }
   }
 
   // Create thread if we don't have one yet
@@ -794,6 +819,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   sessions.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom,
+    ...(respawnCount > 0 ? { respawnCount } : {}),
   })
   threadToSession.set(threadId!, sessionId)
   persistSessions()
@@ -1116,8 +1142,24 @@ gateway.onButtonClick(click => {
 async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
 
+  // If spawn is typed in a thread with a dead session, target that thread so it gets reused
+  let chatId = msg.channelId
+  if (msg.isThread && msg.existingThreadId) {
+    const staleId = threadToSession.get(msg.existingThreadId)
+    if (staleId && sessions.has(staleId)) {
+      const staleInfo = sessions.get(staleId)!
+      let tmuxAlive = false
+      try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+      if (tmuxAlive) {
+        try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
+      } else {
+        chatId = msg.existingThreadId
+      }
+    }
+  }
+
   try {
-    const result = await doSpawnSession(topic, msg.channelId, msg.id)
+    const result = await doSpawnSession(topic, chatId, msg.id)
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
