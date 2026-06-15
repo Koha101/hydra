@@ -1,8 +1,9 @@
-import { gateway, PERMISSION_REPLY_RE } from './config.js'
+import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
+import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
@@ -12,19 +13,28 @@ import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from
 import { killSession } from './session-lifecycle.js'
 
 // ---------------------------------------------------------------------------
-// Deliver a message to a session
+// Notification payload builder (auto-downloads attachments)
 // ---------------------------------------------------------------------------
 
-async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
-  void gateway.typing(msg.channelId).catch(() => {})
-  if (access.ackReaction) {
-    void gateway.react(msg.channelId, msg.id, access.ackReaction).catch(() => {})
+async function buildNotificationPayload(
+  msg: InboundMessage,
+  chatId: string,
+): Promise<{ content: string; meta: Record<string, string> }> {
+  let downloadedFiles: DownloadedFile[] = []
+  if (msg.attachments.length > 0) {
+    try {
+      downloadedFiles = await gateway.downloadAttachments(msg.channelId, msg.id, INBOX_DIR)
+    } catch (err) {
+      process.stderr.write(`daemon: auto-download failed for ${msg.id}: ${err}\n`)
+    }
   }
 
-  const atts: string[] = msg.attachments.map(att => {
-    const kb = (att.size / 1024).toFixed(0)
-    return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
-  })
+  const atts: string[] = downloadedFiles.length > 0
+    ? downloadedFiles.map(f => `${f.name} (${f.contentType}, ${f.sizeKB}KB) -> ${f.path}`)
+    : msg.attachments.map(att => {
+        const kb = (att.size / 1024).toFixed(0)
+        return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
+      })
   const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
 
   let threadContext: Record<string, string> = {}
@@ -40,12 +50,6 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
     }
   }
 
-  const sessionInfo = registry.get(targetSessionId)
-  if (sessionInfo) {
-    sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
-  }
-  const chatId = sessionInfo?.threadId ?? msg.channelId
-
   const meta: Record<string, string> = {
     chat_id: chatId,
     message_id: msg.id,
@@ -53,9 +57,30 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
     user_id: msg.authorId,
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
+    ...(downloadedFiles.length > 0 ? { downloaded_files: downloadedFiles.map(f => f.path).join('; ') } : {}),
     ...threadContext,
   }
 
+  return { content, meta }
+}
+
+// ---------------------------------------------------------------------------
+// Deliver a message to a session
+// ---------------------------------------------------------------------------
+
+async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
+  void gateway.typing(msg.channelId).catch(() => {})
+  if (access.ackReaction) {
+    void gateway.react(msg.channelId, msg.id, access.ackReaction).catch(() => {})
+  }
+
+  const sessionInfo = registry.get(targetSessionId)
+  if (sessionInfo) {
+    sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
+  }
+  const chatId = sessionInfo?.threadId ?? msg.channelId
+
+  const { content, meta } = await buildNotificationPayload(msg, chatId)
   transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 }
 
@@ -279,36 +304,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
     void gateway.react(msg.channelId, msg.id, result.access.ackReaction).catch(() => {})
   }
 
-  const atts: string[] = msg.attachments.map(att => {
-    const kb = (att.size / 1024).toFixed(0)
-    return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
-  })
-  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
-
-  let threadContext: Record<string, string> = {}
-  if (msg.isThread) {
-    const starter = await gateway.getThreadStarterInfo(msg.channelId)
-    if (starter) {
-      threadContext = {
-        thread_name: starter.threadName,
-        thread_starter_user: starter.starterUser,
-        thread_starter_content: starter.starterContent,
-        thread_starter_id: starter.starterId,
-      }
-    }
-  }
-
-  const meta: Record<string, string> = {
-    chat_id,
-    message_id: msg.id,
-    user: msg.authorUsername,
-    user_id: msg.authorId,
-    ts: msg.createdAt.toISOString(),
-    ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
-    ...threadContext,
-  }
-
   let targetSessionId = 'main'
+  let effectiveChatId = chat_id
 
   if (msg.isThread) {
     const mappedSession = registry.getByThread(msg.channelId)
@@ -317,7 +314,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
       info.lastActive = Date.now()
-      meta.chat_id = info.threadId
+      effectiveChatId = info.threadId
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
@@ -327,9 +324,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
       info.lastActive = Date.now()
-      meta.chat_id = info.threadId
+      effectiveChatId = info.threadId
     }
   }
 
+  const { content, meta } = await buildNotificationPayload(msg, effectiveChatId)
   transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 })
