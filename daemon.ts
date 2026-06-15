@@ -644,6 +644,7 @@ const BRIDGE_TOOLS = [
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
 ]
 
+const SPAWN_MODEL = 'claude-opus-4-6[1m]'
 const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
@@ -772,12 +773,12 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
         `claude`,
         `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
         `--fork-session`,
-        `--model ${shq('claude-opus-4-6[1m]')}`,
+        `--model ${shq(SPAWN_MODEL)}`,
         `--channels ${shq(channelFlag)}`,
         `--dangerously-skip-permissions`,
         shq(prompt),
       ].join(' ')
-    : `claude --model ${shq('claude-opus-4-6[1m]')} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
 
   const inner = [
     `cd ${shq(spawnCwd)}`,
@@ -810,7 +811,7 @@ async function doSpawnSession(topic: string, chatId?: string, messageId?: string
   const capabilities: SessionCapabilities = {
     role: 'worker',
     tools: computeToolsForSession(sessionId).map(t => t.name),
-    model: 'claude-opus-4-6[1m]',
+    model: SPAWN_MODEL,
     cwd: spawnCwd,
     platform: PLATFORM,
   }
@@ -2226,7 +2227,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         capabilities: info?.capabilities ?? {
           role: sessionId === 'main' ? 'main' : 'worker',
           tools: tools.map(t => t.name),
-          model: 'claude-opus-4-6[1m]',
+          model: SPAWN_MODEL,
           cwd: process.env.SPAWN_CWD ?? '(unknown)',
           platform: PLATFORM,
         },

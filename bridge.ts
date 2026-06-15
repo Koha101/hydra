@@ -56,7 +56,9 @@ const SOCKET_PATH = resolveSocketPath()
 // NB: must NOT be plain SESSION_ID — Claude Code overwrites that env var with its own
 // session id when it launches MCP subprocesses, so the daemon-assigned id would be lost.
 const SESSION_ID = process.env.HYDRA_SESSION_ID ?? 'main'
+const IS_MAIN = SESSION_ID === 'main'
 const RECONNECT_INTERVAL = 5000
+const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 const CLAUDE_SESSION_ID_ENV_NAMES = ['CLAUDE_CODE_SESSION_ID', 'SESSION_ID']
 
@@ -304,7 +306,7 @@ const SESSION_INFO_TOOL = {
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   if (dynamicTools) return { tools: [SESSION_INFO_TOOL, ...dynamicTools] }
-  return { tools: [SESSION_INFO_TOOL,
+  const fallback = [
     {
       name: 'reply',
       description:
@@ -449,7 +451,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ['session_id', 'description'],
       },
     },
-  ] }
+  ]
+  const filtered = IS_MAIN ? fallback : fallback.filter(t => !MAIN_ONLY_TOOLS.has(t.name))
+  return { tools: [SESSION_INFO_TOOL, ...filtered] }
 })
 
 // ── Tool call handler (relay to daemon) ────────────────────────────────
@@ -464,7 +468,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         type: 'text',
         text: JSON.stringify({
           session_id: SESSION_ID,
-          capabilities: sessionCapabilities ?? { role: SESSION_ID === 'main' ? 'main' : 'worker' },
+          capabilities: sessionCapabilities ?? {
+            role: IS_MAIN ? 'main' : 'worker',
+            tools: [],
+            model: 'unknown',
+            cwd: process.cwd(),
+            platform: 'unknown',
+          },
         }, null, 2),
       }],
     }
