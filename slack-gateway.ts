@@ -502,17 +502,27 @@ export class SlackGateway implements ChatGateway {
 
   async downloadAttachments(channelId: string, messageId: string, inboxDir: string): Promise<DownloadedFile[]> {
     if (!this.app) throw new Error('not connected')
-    const { channel } = this.parseChannelId(channelId)
+    const { channel, threadTs } = this.parseChannelId(channelId)
 
-    // Fetch the specific message
-    const result = await this.app.client.conversations.history({
-      channel,
-      latest: messageId,
-      inclusive: true,
-      limit: 1,
-    })
-
-    const msg = result.messages?.[0]
+    let msg: any
+    if (threadTs) {
+      const result = await this.app.client.conversations.replies({
+        channel,
+        ts: threadTs,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.find(m => m.ts === messageId)
+    } else {
+      const result = await this.app.client.conversations.history({
+        channel,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.[0]
+    }
     if (!msg || !msg.files?.length) return []
 
     const results: DownloadedFile[] = []
