@@ -7,7 +7,7 @@ import { fallbackDescription, formatDuration, getContextPercent } from '../util.
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleThreadKillIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -17,7 +17,7 @@ export async function handleThreadKillIntercept(msg: InboundMessage): Promise<vo
 }
 
 export async function handleForkIntercept(msg: InboundMessage, description?: string): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -79,7 +79,7 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
 }
 
 export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
