@@ -86,9 +86,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     threadId = opts!.existingThreadId!
   }
 
-  if (!threadId) {
   // Determine where to create the thread
+  let respawnCount = 0
   let targetChannelId = chatId
+  if (!threadId) {
   if (targetChannelId) {
     try {
       const ch = await gateway.fetchChannel(targetChannelId)
@@ -106,7 +107,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   }
 
   // Clean up dead session in this thread before spawning
-  let respawnCount = 0
   if (threadId) {
     const staleId = registry.getByThread(threadId)
     if (staleId) {
