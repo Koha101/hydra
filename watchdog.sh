@@ -96,3 +96,13 @@ if [ "$ELAPSED" -gt "$STALE_SECONDS" ]; then
   echo "$(date): Heartbeat stale (${ELAPSED}s > ${STALE_SECONDS}s), restarting daemon" >> "$LOG"
   restart_daemon
 fi
+
+# Bot session health check — revive slack-byte if dead while daemon is alive.
+: "${BOT_TMUX_SESSION:=slack-byte}"
+if ! tmux has-session -t "$BOT_TMUX_SESSION" 2>/dev/null; then
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    echo "$(date): Bot session '$BOT_TMUX_SESSION' missing (daemon alive), reviving" >> "$LOG"
+    cd "$HYDRA_DIR"
+    BYTE_CWD="${SPAWN_CWD}" ./start-slack-byte.sh
+  fi
+fi

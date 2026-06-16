@@ -75,36 +75,33 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const threadName = `${tmuxName}: ${topic}`.slice(0, 100)
   const isFork = !!opts?.forkFrom
   const isHandoff = !!opts?.handedOffFrom
-  const isResurrect = !!opts?.existingThreadId
+  const isResume = !!opts?.resumeFrom
+  const isResurrect = !!opts?.existingThreadId && !isResume
   const originType: SessionInfo['originType'] = isFork ? 'fork' : isHandoff ? 'handoff' : isResurrect ? 'resurrect' : 'spawn'
   const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom ?? opts?.resurrectFrom
 
-  // Resurrect: reattach to existing thread — skip all thread creation.
-  // anchorMessageId is intentionally left undefined: resurrected sessions don't own
-  // an anchor message, so the onMessageDelete anchor guard is correctly a no-op.
-  if (isResurrect) {
-    threadId = opts!.existingThreadId!
+  if (opts?.existingThreadId) {
+    threadId = opts.existingThreadId
   }
 
   // Determine where to create the thread
   let respawnCount = 0
   let targetChannelId = chatId
   if (!threadId) {
-  if (targetChannelId) {
-    try {
-      const ch = await gateway.fetchChannel(targetChannelId)
-      if (ch.isThread) {
-        threadId = ch.id
-      } else if (ch.isDM && !gateway.canThreadInDM) {
-        // DMs can't host threads on this platform -- redirect to a guild channel
+    if (targetChannelId) {
+      try {
+        const ch = await gateway.fetchChannel(targetChannelId)
+        if (ch.isThread) {
+          threadId = ch.id
+        } else if (ch.isDM && !gateway.canThreadInDM) {
+          targetChannelId = DEFAULT_SESSION_CHANNEL
+        }
+      } catch {
         targetChannelId = DEFAULT_SESSION_CHANNEL
       }
-    } catch {
+    } else {
       targetChannelId = DEFAULT_SESSION_CHANNEL
     }
-  } else {
-    targetChannelId = DEFAULT_SESSION_CHANNEL
-  }
 
   // Clean up dead session in this thread before spawning
   if (threadId) {
@@ -214,18 +211,29 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
-  // Build claude command -- fork adds --resume --fork-session
-  const claudeArgs = isFork
-    ? [
-        `claude`,
-        `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
-        `--fork-session`,
-        `--model ${shq(SPAWN_MODEL)}`,
-        `--channels ${shq(channelFlag)}`,
-        `--dangerously-skip-permissions`,
-        shq(prompt),
-      ].join(' ')
-    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+  // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
+  let claudeArgs: string
+  if (isFork) {
+    claudeArgs = [
+      `claude`,
+      `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
+      `--fork-session`,
+      `--model ${shq(SPAWN_MODEL)}`,
+      `--channels ${shq(channelFlag)}`,
+      `--dangerously-skip-permissions`,
+      shq(prompt),
+    ].join(' ')
+  } else if (isResume) {
+    claudeArgs = [
+      `claude`,
+      `--resume ${shq(opts!.resumeFrom!)}`,
+      `--model ${shq(SPAWN_MODEL)}`,
+      `--channels ${shq(channelFlag)}`,
+      `--dangerously-skip-permissions`,
+    ].join(' ')
+  } else {
+    claudeArgs = `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+  }
 
   const inner = [
     `cd ${shq(spawnCwd)}`,
