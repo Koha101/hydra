@@ -156,7 +156,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• 🤝 `handoff` / `handoff: <direction>` — distill context into an artifact',
     '• 🤝 `/go` — launch the handoff successor',
     '• ⏯️ `resume` — reconnect to a dead session with full context (via --resume)',
-    '• 🔁 `respawn` / `resurrect` — fresh session that reads thread history and continues',
+    '• 🔁 `respawn` — fresh session that reads thread history and continues',
     '• 📈 `usage` — session stats: context %, messages, runtime, fork count',
     '• ☠️ `kill` — kill this session',
     '• 👂/⏸️ `listen` / `pause` — toggle whether the session responds to all messages',
