@@ -136,7 +136,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• 📈 `usage` — session stats: context %, messages, runtime, fork count',
     '• ☠️ `kill` — kill this session',
     '• ⏯️ `resume` — reconnect to a dead session with full context (via --resume)',
-    '• 🔁 `respawn` / `resurrect` — fresh session that reads thread history and continues',
+    '• 🔁 `respawn` — fresh session that reads thread history and continues',
     '• 👂/⏸️ `listen` / `pause` — toggle whether the session responds to all messages',
     '',
     '**Other:**',
