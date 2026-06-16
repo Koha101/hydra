@@ -6,7 +6,7 @@ import { gateway, STATE_DIR } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { doSpawnSession, killSession } from '../session-lifecycle.js'
+import { doSpawnSession, killSession, tryResume, tryRespawn } from '../session-lifecycle.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
@@ -137,6 +137,8 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• `/go` — launch the successor (predecessor stays alive until you `kill` it)',
     '• `usage` — session stats: context %, messages, runtime, fork count',
     '• `kill` — kill this session',
+    '• `resume` — reconnect to a dead session with full context (via --resume)',
+    '• `respawn` — fresh session that reads thread history and continues',
     '• `listen` / `pause` — toggle whether the session responds to all messages',
     '',
     '**Other:**',
@@ -152,63 +154,23 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
 let recoveryInProgress = false
 const MAX_CONCURRENT = 2
 const STAGGER_MS = 5_000
-const HEALTH_TIMEOUT_MS = 30_000
 
 async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
   const originalName = dead.tmuxName
 
   if (dead.claudeSessionId) {
-    try {
-      const result = await doSpawnSession(dead.topic, undefined, undefined, {
-        existingThreadId: dead.threadId,
-        resumeFrom: dead.claudeSessionId,
-      })
-
-      const ok = await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)
-      if (ok) {
-        transport.sendOrQueue(result.sessionId, {
-          type: 'notification',
-          content: `[system] You were interrupted by a system crash and have been recovered with full conversation context. Check your thread for any messages you may have missed, and continue where you left off.`,
-          meta: { chat_id: dead.threadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
-        })
-        return { name: originalName, method: 'resumed', newName: result.name, threadUrl: dead.threadUrl }
-      }
-
-      process.stderr.write(`daemon: recover ${originalName}: resume health check failed, falling back to resurrect\n`)
-      const info = [...registry.values()].find(s => s.sessionId === result.sessionId)
-      if (info) await killSession(info, 'resume health check failed').catch(() => {})
-    } catch (err) {
-      process.stderr.write(`daemon: recover ${originalName}: resume failed: ${err}\n`)
+    const result = await tryResume(dead)
+    if (result) {
+      return { name: originalName, method: 'resumed', newName: result.name, threadUrl: dead.threadUrl }
     }
+    process.stderr.write(`daemon: recover ${originalName}: resume failed or health check timed out, falling back to resurrect\n`)
   }
 
-  try {
-    const result = await doSpawnSession(dead.topic, undefined, undefined, {
-      existingThreadId: dead.threadId,
-      resurrectFrom: originalName,
-    })
+  const result = await tryRespawn(dead.threadId, dead.topic, originalName)
+  if (result) {
     return { name: originalName, method: 'resurrected', newName: result.name, threadUrl: dead.threadUrl }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    return { name: originalName, method: 'failed', reason, threadUrl: dead.threadUrl }
   }
-}
-
-function waitForBridge(sessionId: string, timeoutMs: number): Promise<boolean> {
-  return new Promise(resolve => {
-    if (transport.has(sessionId)) { resolve(true); return }
-    const interval = setInterval(() => {
-      if (transport.has(sessionId)) {
-        clearInterval(interval)
-        clearTimeout(timer)
-        resolve(true)
-      }
-    }, 1_000)
-    const timer = setTimeout(() => {
-      clearInterval(interval)
-      resolve(false)
-    }, timeoutMs)
-  })
+  return { name: originalName, method: 'failed', reason: 'both resume and resurrect failed', threadUrl: dead.threadUrl }
 }
 
 export async function handleRecoverIntercept(msg: InboundMessage, targetName?: string): Promise<void> {
