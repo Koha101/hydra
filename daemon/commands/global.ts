@@ -15,8 +15,22 @@ const RESTART_PENDING_FILE = join(STATE_DIR, 'restart-pending.json')
 export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
 
+  // If spawn is typed in a thread with a dead session, target that thread so it gets reused
+  let chatId = msg.channelId
+  if (msg.isThread && msg.existingThreadId) {
+    const staleId = registry.getByThread(msg.existingThreadId)
+    if (staleId) {
+      const stale = registry.get(staleId)
+      if (stale) {
+        try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+          chatId = msg.existingThreadId
+        }
+      }
+    }
+  }
+
   try {
-    const result = await doSpawnSession(topic, msg.channelId, msg.id)
+    const result = await doSpawnSession(topic, chatId, msg.id)
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
