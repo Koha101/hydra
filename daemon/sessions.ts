@@ -30,6 +30,7 @@ export type SessionInfo = {
   claudeSessionId?: string
   originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
+  respawnCount?: number
   threadUrl?: string
   capabilities?: SessionCapabilities
 }

@@ -20,9 +20,13 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   if (msg.isThread && msg.existingThreadId) {
     const staleId = registry.getByThread(msg.existingThreadId)
     if (staleId) {
-      const stale = registry.get(staleId)
-      if (stale) {
-        try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+      const staleInfo = registry.get(staleId)
+      if (staleInfo) {
+        let tmuxAlive = false
+        try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+        if (tmuxAlive) {
+          try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
+        } else {
           chatId = msg.existingThreadId
         }
       }

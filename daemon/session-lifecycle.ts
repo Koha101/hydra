@@ -105,6 +105,31 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     targetChannelId = DEFAULT_SESSION_CHANNEL
   }
 
+  // Clean up dead session in this thread before spawning
+  let respawnCount = 0
+  if (threadId) {
+    const staleId = registry.getByThread(threadId)
+    if (staleId) {
+      const stale = registry.get(staleId)
+      if (stale) {
+        try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+          respawnCount = (stale.respawnCount ?? 0) + 1
+          const anchor = gateway.getThreadAnchor(threadId)
+          if (anchor) {
+            void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+            const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+            const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
+            void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
+            if (respawnCount > 1) {
+              void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
+            }
+          }
+          await killSession(stale, 'replaced by new spawn')
+        }
+      }
+    }
+  }
+
   // Create thread if we don't have one yet
   if (!threadId) {
     if (messageId && targetChannelId === chatId) {
@@ -242,6 +267,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom, threadUrl: url || undefined, capabilities,
+    ...(respawnCount > 0 ? { respawnCount } : {}),
   })
   registry.setThread(threadId!, sessionId)
   registry.persist()

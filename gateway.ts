@@ -89,31 +89,6 @@ export type ThreadStarterInfo = {
   starterId: string
 }
 
-/**
- * Sanitize an attachment filename for safe local storage.
- * - Strips leading dots (prevents hidden files)
- * - Replaces non-alphanumeric/dot/dash/underscore chars
- * - Truncates to maxLen chars (preserving extension when possible)
- * - Falls back to fallbackId if the result is empty
- */
-export function sanitizeFilename(raw: string, fallbackId: string, maxLen = 200): string {
-  const cleaned = raw.replace(/^\.+/, '').replace(/[^a-zA-Z0-9._-]/g, '_')
-  let result: string
-  if (cleaned.length > maxLen) {
-    const dotIdx = cleaned.lastIndexOf('.')
-    if (dotIdx > 0) {
-      const ext = cleaned.slice(dotIdx)
-      const stem = cleaned.slice(0, maxLen - ext.length)
-      result = stem + ext
-    } else {
-      result = cleaned.slice(0, maxLen)
-    }
-  } else {
-    result = cleaned
-  }
-  return result || fallbackId
-}
-
 export interface ChatGateway {
   readonly platform: 'discord' | 'slack'
   readonly botId: string | null
@@ -145,6 +120,7 @@ export interface ChatGateway {
   }): Promise<SentMessage>
   edit(channelId: string, messageId: string, text: string): Promise<string>
   react(channelId: string, messageId: string, emoji: string): Promise<void>
+  unreact(channelId: string, messageId: string, emoji: string): Promise<void>
   typing(channelId: string): Promise<void>
 
   // Channels & threads
