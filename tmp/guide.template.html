@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hydra → Slack — Setup Guide</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#ffffff; --ink:#1e293b; --muted:#64748b;
+    --line:#e2e8f0; --indigo:#5C6BC0; --indigo-d:#3730a3;
+    --green:#10b981; --green-d:#065f46; --amber:#f59e0b; --amber-bg:#fff7ed;
+    --code-bg:#1e293b; --pink:#db2777;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased;}
+  code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+  /* sticky header + progress */
+  header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line);}
+  .hwrap{max-width:880px;margin:0 auto;padding:14px 24px;}
+  .htop{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  h1{font-size:19px;margin:0;}
+  .pill{font-size:12px;font-weight:700;color:#fff;background:var(--pink);
+    padding:3px 10px;border-radius:999px;}
+  .bar{height:6px;background:var(--line);border-radius:999px;margin-top:10px;overflow:hidden}
+  .bar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--indigo),var(--green));
+    border-radius:999px;transition:width .35s ease}
+  .barlabel{font-size:11.5px;color:var(--muted);margin-top:5px}
+
+  main{max-width:880px;margin:0 auto;padding:24px;}
+  .lede{color:var(--muted);font-size:14.5px;margin:0 0 18px}
+
+  /* callout */
+  .callout{display:flex;gap:12px;background:var(--amber-bg);border:1px solid #fcd9a3;
+    border-left:4px solid var(--amber);border-radius:10px;padding:14px 16px;margin:0 0 22px;font-size:14px}
+  .callout b{color:#92400e}
+  .callout .ic{font-size:18px;line-height:1}
+
+  /* diagram */
+  figure{margin:0 0 26px}
+  figure img{width:100%;border:1px solid var(--line);border-radius:12px;display:block;
+    box-shadow:0 1px 3px rgba(15,23,42,.06)}
+  figcaption{font-size:12px;color:var(--muted);margin-top:8px;text-align:center}
+
+  /* step cards */
+  .step{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:18px 20px;margin:0 0 16px;box-shadow:0 1px 2px rgba(15,23,42,.04);transition:opacity .2s}
+  .shead{display:flex;align-items:center;gap:12px;margin:0 0 4px}
+  .num{flex:0 0 28px;width:28px;height:28px;border-radius:8px;background:var(--indigo);color:#fff;
+    font-weight:700;font-size:14px;display:grid;place-items:center}
+  .stitle{font-size:16px;font-weight:700;margin:0;flex:1}
+  .chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+  .chk input{width:17px;height:17px;accent-color:var(--green);cursor:pointer}
+  .step.done{opacity:.62}
+  .step.done .stitle{text-decoration:line-through;text-decoration-color:var(--muted)}
+  .sbody{margin-top:8px;font-size:14px}
+  .sbody p{margin:8px 0}
+  .sbody a{color:var(--indigo);font-weight:600}
+  .sub{color:var(--muted);font-size:13px}
+
+  /* code block + copy */
+  .code{position:relative;margin:12px 0}
+  .code pre{background:var(--code-bg);color:#e2e8f0;border-radius:10px;
+    padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.55;margin:0}
+  .code pre .cmt{color:#94a3b8}
+  .copy{position:absolute;top:9px;right:9px;background:#334155;color:#e2e8f0;border:none;
+    border-radius:7px;padding:5px 11px;font-size:11.5px;font-weight:600;cursor:pointer;
+    font-family:inherit;transition:background .15s}
+  .copy:hover{background:#475569}
+  .copy.ok{background:var(--green)}
+  .clabel{font-size:11px;color:var(--muted);margin:0 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+
+  /* token table */
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  td code{background:#eef2ff;color:var(--indigo-d);padding:1px 6px;border-radius:5px;font-size:12.5px}
+
+  kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
+    padding:1px 6px;font-size:12px;font-family:inherit;color:#334155}
+  .inline{background:#eef2ff;color:var(--indigo-d);padding:1px 6px;border-radius:5px;font-size:13px}
+
+  /* accordion */
+  details{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:4px 20px;margin:8px 0}
+  details summary{cursor:pointer;font-weight:700;font-size:15px;padding:14px 0;list-style:none;
+    display:flex;align-items:center;gap:8px}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"▸";color:var(--indigo);transition:transform .2s}
+  details[open] summary::before{transform:rotate(90deg)}
+  details .acc{padding:0 0 14px;font-size:14px}
+  details .acc li{margin:8px 0}
+
+  footer{max-width:880px;margin:0 auto;padding:8px 24px 48px;color:var(--muted);font-size:12.5px}
+  .resetbtn{background:none;border:1px solid var(--line);border-radius:7px;padding:5px 12px;
+    font-size:12px;cursor:pointer;color:var(--muted);font-family:inherit}
+  .resetbtn:hover{background:#fff}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hwrap">
+    <div class="htop">
+      <h1>Hydra → Slack — Setup Guide</h1>
+      <span class="pill">Slack only · no Discord needed</span>
+    </div>
+    <div class="bar"><i id="barfill"></i></div>
+    <div class="barlabel"><span id="barcount">0 of 6</span> steps done · progress saved in this browser</div>
+  </div>
+</header>
+
+<main>
+  <p class="lede">Connect a Slack app to a Claude Code session. Two processes do the work: a <b>daemon</b> (holds the Slack connection, routes messages) and a <b>bridge</b> (an MCP plugin inside Claude). They talk over a unix socket — so always start the <b>daemon first</b>.</p>
+
+  <div class="callout">
+    <span class="ic">✅</span>
+    <div><b>Do you need Discord too? No.</b> The daemon runs one platform per process. Discord would be a fully separate, parallel daemon with its own state dir — only if you also want the bot in Discord. For Slack, everything below is complete on its own.</div>
+  </div>
+
+  <figure>
+    <img src="DIAGRAM_SRC" alt="Hydra to Slack architecture diagram">
+    <figcaption>How a message flows once set up: Slack → SlackGateway → Daemon → Bridge (MCP) → Claude, and replies travel back the same path.</figcaption>
+  </figure>
+
+  <!-- STEP 1 -->
+  <section class="step" id="s1">
+    <div class="shead">
+      <span class="num">1</span>
+      <h2 class="stitle">Create the Slack app from the manifest</h2>
+      <label class="chk"><input type="checkbox" data-step="s1"> done</label>
+    </div>
+    <div class="sbody">
+      <p>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> → <b>Create New App</b> → <b>From an app manifest</b>. Pick your workspace, then paste the JSON below.</p>
+      <div class="callout" style="margin:10px 0">
+        <span class="ic">👤</span>
+        <div><b>Create your own app — don't reuse a shared one.</b> A Slack app is one event stream: if a second daemon connects to the same app, Slack splits messages across both connections and neither bot behaves predictably. This manifest uses the name <b>BitBot</b> so it won't collide with an existing <code class="inline">Byte</code> app. The name is cosmetic — Hydra references the bot by tokens, never by name.</div>
+      </div>
+      <div class="code">
+        <p class="clabel">app manifest (JSON)</p>
+        <button class="copy">Copy</button>
+<pre>{
+  "display_information": {
+    "name": "BitBot",
+    "description": "Claude Code chat bridge",
+    "background_color": "#2c2c2c"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "BitBot",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "reactions:read",
+        "reactions:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 2 -->
+  <section class="step" id="s2">
+    <div class="shead">
+      <span class="num">2</span>
+      <h2 class="stitle">Grab the two tokens, then install the app</h2>
+      <label class="chk"><input type="checkbox" data-step="s2"> done</label>
+    </div>
+    <div class="sbody">
+      <p>You need <b>both</b> tokens — one for the WebSocket, one for the API:</p>
+      <table>
+        <tr><th>Token</th><th>Where to get it</th><th>For</th></tr>
+        <tr>
+          <td><code>xapp-…</code></td>
+          <td>Basic Information → App-Level Tokens → <b>Generate</b><br><span class="sub">name <code>socket-mode</code>, scope <code>connections:write</code></span></td>
+          <td>Socket Mode connection</td>
+        </tr>
+        <tr>
+          <td><code>xoxb-…</code></td>
+          <td>OAuth &amp; Permissions → <b>Bot User OAuth Token</b></td>
+          <td>posting &amp; reacting</td>
+        </tr>
+      </table>
+      <p>Then <b>Install App → Install to Workspace → Authorize</b>. <span class="sub">Org-restricted workspace? An admin may need to approve the scopes.</span></p>
+    </div>
+  </section>
+
+  <!-- STEP 3 -->
+  <section class="step" id="s3">
+    <div class="shead">
+      <span class="num">3</span>
+      <h2 class="stitle">Write the config files</h2>
+      <label class="chk"><input type="checkbox" data-step="s3"> done</label>
+    </div>
+    <div class="sbody">
+      <p>Create the state directory:</p>
+      <div class="code">
+        <button class="copy">Copy</button>
+<pre>mkdir -p ~/.claude/channels/slack</pre>
+      </div>
+      <p><code class="inline">~/.claude/channels/slack/.env</code> — paste your two tokens:</p>
+      <div class="code">
+        <p class="clabel">.env</p>
+        <button class="copy">Copy</button>
+<pre>CHAT_PLATFORM=slack
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...</pre>
+      </div>
+      <p><code class="inline">~/.claude/channels/slack/access.json</code> — who's allowed to DM the bot. Use <b>your</b> Slack user ID (Profile → <kbd>⋮</kbd> → Copy member ID; looks like <code class="inline">U084P1E92NP</code>):</p>
+      <div class="code">
+        <p class="clabel">access.json</p>
+        <button class="copy">Copy</button>
+<pre>{
+  "dmPolicy": "allowlist",
+  "allowFrom": ["UXXXXXXXX"],
+  "groups": {},
+  "pending": {}
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- STEP 4 -->
+  <section class="step" id="s4">
+    <div class="shead">
+      <span class="num">4</span>
+      <h2 class="stitle">Enable the bridge plugin in Claude</h2>
+      <label class="chk"><input type="checkbox" data-step="s4"> done</label>
+    </div>
+    <div class="sbody">
+      <p>In <code class="inline">~/.claude/settings.json</code> (the name says "discord" for historical reasons — it's platform-agnostic):</p>
+      <div class="code">
+        <p class="clabel">~/.claude/settings.json</p>
+        <button class="copy">Copy</button>
+<pre>{
+  "enabledPlugins": {
+    "discord@claude-plugins-official": true
+  }
+}</pre>
+      </div>
+      <div class="callout" style="margin:12px 0 0">
+        <span class="ic">⚠️</span>
+        <div><b>If your claude.ai account has a native Slack connector</b> (Settings → Connected Apps), <b>disable it</b> — otherwise Claude uses that instead of this bridge and the bot stays silent.</div>
+      </div>
+      <p class="sub" style="margin-top:10px"><code>start-slack-byte.sh</code> copies <code>bridge.ts</code> into the plugin cache for you — no manual copy needed.</p>
+    </div>
+  </section>
+
+  <!-- STEP 5 -->
+  <section class="step" id="s5">
+    <div class="shead">
+      <span class="num">5</span>
+      <h2 class="stitle">Start the two processes — daemon first</h2>
+      <label class="chk"><input type="checkbox" data-step="s5"> done</label>
+    </div>
+    <div class="sbody">
+      <p><b>1) The daemon.</b> <code class="inline">SPAWN_CWD</code> is where spawned sub-sessions run (required). Opens tmux session <code class="inline">discord-daemon</code>:</p>
+      <div class="code">
+        <p class="clabel">terminal — step 5.1</p>
+        <button class="copy">Copy</button>
+<pre>cd ~/Documents/angellist/hydra
+
+DISCORD_STATE_DIR=~/.claude/channels/slack \
+CHAT_PLATFORM=slack \
+SPAWN_CWD=~/angellist \
+  ./start-daemon.sh</pre>
+      </div>
+      <p><b>2) Claude + bridge</b> — only after the daemon socket exists. Opens tmux session <code class="inline">slack-byte</code>:</p>
+      <div class="code">
+        <p class="clabel">terminal — step 5.2</p>
+        <button class="copy">Copy</button>
+<pre>export DAEMON_SOCK=~/.claude/channels/slack/daemon.sock
+export CLAUDE_CONFIG_DIR=~/.claude
+./start-slack-byte.sh</pre>
+      </div>
+      <p class="sub">Watch it live: <code class="inline">tmux attach -t slack-byte</code>. The script greets a default DM (<code>BYTE_CHANNEL</code>) from working dir <code>~/angellist</code> (<code>BYTE_CWD</code>) — override those env vars to change either.</p>
+    </div>
+  </section>
+
+  <!-- STEP 6 -->
+  <section class="step" id="s6">
+    <div class="shead">
+      <span class="num">6</span>
+      <h2 class="stitle">Test it in Slack</h2>
+      <label class="chk"><input type="checkbox" data-step="s6"> done</label>
+    </div>
+    <div class="sbody">
+      <p>DM <b>BitBot</b> in Slack (or @mention it in a channel you've added to <code class="inline">groups</code>). It should reply through Claude.</p>
+      <p>Type <code class="inline">spawn: &lt;task&gt;</code> in a DM to fork an isolated sub-session in its own thread — Slack threads route straight back to that sub-session.</p>
+    </div>
+  </section>
+
+  <details>
+    <summary>Triage — if the bot stays silent</summary>
+    <div class="acc">
+      <ul>
+        <li><b>No reply at all</b> → <code class="inline">tmux attach -t slack-byte</code>. Most common cause: the native claude.ai Slack connector is hijacking it (Step 4), or your user ID isn't in <code class="inline">allowFrom</code>.</li>
+        <li><b><code>socket not found</code> from <code>start-slack-byte.sh</code></b> → the daemon isn't up. Run step 5.1 and confirm <code class="inline">~/.claude/channels/slack/daemon.sock</code> exists.</li>
+        <li><b>Daemon exits immediately</b> → <code class="inline">SPAWN_CWD</code> is required; set it.</li>
+        <li><b>Token errors</b> → check the daemon log: <code class="inline">tmux attach -t discord-daemon</code>. Verify both tokens are in <code>.env</code> and the app is installed to the workspace.</li>
+      </ul>
+    </div>
+  </details>
+</main>
+
+<footer>
+  <button class="resetbtn" id="reset">Reset progress</button>
+  &nbsp; Generated for the Hydra repo · self-contained — copy this file anywhere.
+</footer>
+
+<script>
+  // ---- copy buttons (with file:// fallback) ----
+  document.querySelectorAll('.copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pre = btn.parentElement.querySelector('pre');
+      var text = pre.innerText;
+      var done = function(){
+        btn.textContent = 'Copied!'; btn.classList.add('ok');
+        setTimeout(function(){ btn.textContent='Copy'; btn.classList.remove('ok'); }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function(){ fallback(text); done(); });
+      } else { fallback(text); done(); }
+    });
+  });
+  function fallback(text){
+    var ta=document.createElement('textarea'); ta.value=text;
+    ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta);
+    ta.select(); try{ document.execCommand('copy'); }catch(e){} document.body.removeChild(ta);
+  }
+
+  // ---- progress checkboxes (localStorage) ----
+  var KEY='hydra-slack-setup-progress';
+  var boxes=document.querySelectorAll('input[data-step]');
+  var total=boxes.length;
+  var saved={};
+  try{ saved=JSON.parse(localStorage.getItem(KEY)||'{}'); }catch(e){ saved={}; }
+
+  function render(){
+    var done=0;
+    boxes.forEach(function(b){
+      var id=b.getAttribute('data-step');
+      b.checked=!!saved[id];
+      var card=document.getElementById(id);
+      if(b.checked){ card.classList.add('done'); done++; } else { card.classList.remove('done'); }
+    });
+    var pct=total? Math.round(done/total*100):0;
+    document.getElementById('barfill').style.width=pct+'%';
+    document.getElementById('barcount').textContent=done+' of '+total;
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('change', function(){
+      saved[b.getAttribute('data-step')]=b.checked;
+      try{ localStorage.setItem(KEY, JSON.stringify(saved)); }catch(e){}
+      render();
+    });
+  });
+  document.getElementById('reset').addEventListener('click', function(){
+    saved={}; try{ localStorage.removeItem(KEY); }catch(e){} render();
+  });
+  render();
+</script>
+</body>
+</html>

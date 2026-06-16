@@ -2,9 +2,9 @@ import { execSync } from 'child_process'
 import { gateway } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { killSession, doSpawnSession, discoverClaudeSessionId } from '../session-lifecycle.js'
+import { killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
-import { fallbackDescription, formatDuration, getContextPercent } from '../util.js'
+import { fallbackDescription, formatDuration, getContextPercent, reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleThreadKillIntercept(msg: InboundMessage): Promise<void> {
@@ -116,34 +116,23 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
 const resurrectsInProgress = new Set<string>()
 
 export async function handleResurrectIntercept(msg: InboundMessage): Promise<void> {
-  // Resurrect works in threads where a session previously lived but has died.
-  // It spawns a fresh session and instructs it to read the thread history to
-  // reconstruct context — unlike fork, which carries the transcript via --resume.
-
   const threadId = msg.existingThreadId ?? msg.channelId
   if (resurrectsInProgress.has(threadId)) {
     void gateway.send(msg.channelId, 'Resurrection already in progress for this thread.', { replyTo: msg.id }).catch(() => {})
     return
   }
 
-  // Check if there's a live session for this thread
   const liveSession = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
   if (liveSession) {
     try {
       execSync(`tmux has-session -t '${liveSession.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-      // Session is genuinely alive
       void gateway.send(msg.channelId, 'Session is still alive — use `kill` first if you want to restart.', { replyTo: msg.id }).catch(() => {})
       return
     } catch {
-      // tmux session is gone — clean up stale tracking and proceed with resurrect.
-      // killSession handles bridge/thread/session cleanup and respects killsInProgress.
-      // The tmux kill-session inside will fail silently since the session is already dead.
       await killSession(liveSession, 'stale — resurrecting')
     }
   }
 
-  // In a thread: check if this thread EVER had a session (even if cleaned up)
-  // We can detect this by checking if the thread has a session-like anchor pattern
   if (!msg.isThread) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     void gateway.send(msg.channelId, 'Resurrect must be used in a thread where a session previously lived.', { replyTo: msg.id }).catch(() => {})
@@ -152,7 +141,6 @@ export async function handleResurrectIntercept(msg: InboundMessage): Promise<voi
 
   void gateway.react(msg.channelId, msg.id, '🫀').catch(() => {})
 
-  // Resurrect reattaches INTO the existing thread — no new thread, no cross-link
   const existingThreadId = msg.existingThreadId ?? msg.channelId
   const previousName = liveSession?.tmuxName
 
@@ -167,7 +155,6 @@ export async function handleResurrectIntercept(msg: InboundMessage): Promise<voi
       `View in any terminal: \`tmux attach -t ${result.name}\``,
     ].join('\n'), { replyTo: msg.id })
 
-    // Notify main session
     const mainBridge = transport.get('main')
     if (mainBridge) {
       transport.sendToBridge(mainBridge, {
@@ -182,5 +169,77 @@ export async function handleResurrectIntercept(msg: InboundMessage): Promise<voi
     try { await gateway.send(msg.channelId, `Resurrect failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
   } finally {
     resurrectsInProgress.delete(threadId)
+  }
+}
+
+export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
+  if (!msg.isThread) {
+    await reportError(msg.channelId, msg.id, 'resume', 'must be used in a thread')
+    return
+  }
+
+  const threadId = msg.existingThreadId ?? msg.channelId
+  const staleId = registry.getByThread(threadId)
+  const dead = staleId ? registry.get(staleId) : null
+
+  if (!dead) {
+    await reportError(msg.channelId, msg.id, 'resume', 'no session found in this thread', 'Use `respawn` to start a fresh session that reads this thread.')
+    return
+  }
+
+  let tmuxAlive = false
+  try { execSync(`tmux has-session -t '${dead.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+  if (tmuxAlive) {
+    void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+    try { await gateway.send(msg.channelId, `Session **${dead.tmuxName}** is already running.`, { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  if (!dead.claudeSessionId) {
+    await reportError(msg.channelId, msg.id, 'resume', 'no Claude session ID available — cannot reconnect', 'Use `respawn` to start a fresh session that reads this thread.')
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+
+  const result = await tryResume(dead)
+  if (result) {
+    const e = sessionEmoji(result.name)
+    try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.`, { replyTo: msg.id }) } catch {}
+  } else {
+    await reportError(msg.channelId, msg.id, 'resume', 'session could not reconnect (health check failed)', 'Use `respawn` to start a fresh session that reads this thread.')
+  }
+}
+
+export async function handleRespawnIntercept(msg: InboundMessage, topic?: string): Promise<void> {
+  if (!msg.isThread) {
+    await reportError(msg.channelId, msg.id, 'respawn', 'must be used in a thread')
+    return
+  }
+
+  const threadId = msg.existingThreadId ?? msg.channelId
+  const staleId = registry.getByThread(threadId)
+  const dead = staleId ? registry.get(staleId) : null
+
+  if (dead) {
+    let tmuxAlive = false
+    try { execSync(`tmux has-session -t '${dead.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+    if (tmuxAlive) {
+      await reportError(msg.channelId, msg.id, 'respawn', `thread has a live session (**${dead.tmuxName}**)`, 'Use `kill` first, or `spawn:` for a new thread.')
+      return
+    }
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
+
+  const resolvedTopic = topic || dead?.topic || 'respawned session'
+  const resurrectFrom = dead?.tmuxName
+
+  const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom)
+  if (result) {
+    const e = sessionEmoji(result.name)
+    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned — reading thread history.`, { replyTo: msg.id }) } catch {}
+  } else {
+    await reportError(msg.channelId, msg.id, 'respawn', 'failed to spawn session')
   }
 }

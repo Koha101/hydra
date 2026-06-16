@@ -284,6 +284,64 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 }
 
 // ---------------------------------------------------------------------------
+// Recovery primitives — shared by resume/respawn commands and recover cascade
+// ---------------------------------------------------------------------------
+
+export const HEALTH_TIMEOUT_MS = 30_000
+
+export function waitForBridge(sessionId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    if (transport.has(sessionId)) { resolve(true); return }
+    const interval = setInterval(() => {
+      if (transport.has(sessionId)) {
+        clearInterval(interval)
+        clearTimeout(timer)
+        resolve(true)
+      }
+    }, 1_000)
+    const timer = setTimeout(() => {
+      clearInterval(interval)
+      resolve(false)
+    }, timeoutMs)
+  })
+}
+
+export async function tryResume(dead: { topic: string; threadId: string; claudeSessionId?: string; threadUrl?: string }): Promise<SpawnResult | null> {
+  if (!dead.claudeSessionId) return null
+  try {
+    const result = await doSpawnSession(dead.topic, undefined, undefined, {
+      existingThreadId: dead.threadId,
+      resumeFrom: dead.claudeSessionId,
+    })
+    const ok = await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)
+    if (!ok) {
+      const info = registry.get(result.sessionId)
+      if (info) await killSession(info, 'resume health check failed').catch(() => {})
+      return null
+    }
+    transport.sendOrQueue(result.sessionId, {
+      type: 'notification',
+      content: `[system] You were interrupted by a system crash and have been recovered with full conversation context. Check your thread for any messages you may have missed, and continue where you left off.`,
+      meta: { chat_id: dead.threadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+    })
+    return result
+  } catch {
+    return null
+  }
+}
+
+export async function tryRespawn(threadId: string, topic: string, resurrectFrom?: string): Promise<SpawnResult | null> {
+  try {
+    return await doSpawnSession(topic, undefined, undefined, {
+      existingThreadId: threadId,
+      resurrectFrom,
+    })
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Claude session ID discovery
 // ---------------------------------------------------------------------------
 
