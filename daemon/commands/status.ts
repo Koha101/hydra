@@ -150,6 +150,16 @@ export async function handleListIntercept(msg: InboundMessage): Promise<void> {
   const now = Date.now()
   const all = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
 
+  // Backfill threadUrl for sessions that predate the caching feature
+  await Promise.all(all.map(async s => {
+    if (!s.threadUrl) {
+      try {
+        const url = await gateway.getThreadUrl(s.threadId)
+        if (url) { s.threadUrl = url; registry.persist() }
+      } catch {}
+    }
+  }))
+
   const entries: SessionEntry[] = all.map(s => ({ session: s }))
 
   // Phase 1: post immediately without latest-message info, grouped by time
