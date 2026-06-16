@@ -14,6 +14,7 @@ export const BRIDGE_TOOLS = [
   { name: 'reply', description: 'Reply in chat. Pass chat_id from the inbound message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to thread under.' }, files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach.' } }, required: ['chat_id', 'text'] } },
   { name: 'react', description: 'Add an emoji reaction to a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, emoji: { type: 'string' } }, required: ['chat_id', 'message_id', 'emoji'] } },
   { name: 'edit_message', description: 'Edit a message the bot previously sent.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['chat_id', 'message_id', 'text'] } },
+  { name: 'delete_message', description: 'Delete a message. Bot can delete its own messages; in DMs the bot can also delete user messages.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
   { name: 'download_attachment', description: 'Download attachments from a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
   { name: 'create_thread', description: 'Create a thread in a channel.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, auto_archive_minutes: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } }, required: ['chat_id', 'name'] } },
   { name: 'fetch_messages', description: 'Fetch recent messages from a channel.', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'number' } }, required: ['channel'] } },
@@ -123,6 +124,11 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'edit_message': {
         const edited = await gateway.edit(args.chat_id as string, args.message_id as string, args.text as string)
         return { content: [{ type: 'text', text: `edited (id: ${edited})` }] }
+      }
+
+      case 'delete_message': {
+        await gateway.delete(args.chat_id as string, args.message_id as string)
+        return { content: [{ type: 'text', text: 'deleted' }] }
       }
 
       case 'create_thread': {

@@ -369,6 +369,12 @@ export class SlackGateway implements ChatGateway {
     return result.ts!
   }
 
+  async delete(channelId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
+    await this.app.client.chat.delete({ channel, ts: messageId })
+  }
+
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.app) throw new Error('not connected')
     const { channel } = this.parseChannelId(channelId)
