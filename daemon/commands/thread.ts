@@ -142,7 +142,16 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
   const result = await tryResume(dead)
   if (result) {
     const e = sessionEmoji(result.name)
-    try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.`, { replyTo: msg.id }) } catch {}
+    try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+    const mainBridge = transport.get('main')
+    if (mainBridge) {
+      transport.sendToBridge(mainBridge, {
+        type: 'notification',
+        content: `[system] ⏯️ ${e} \`${result.name}\` resumed in thread (was ${dead.tmuxName})`,
+        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    debouncedRefreshListDisplay()
   } else {
     await reportError(msg.channelId, msg.id, 'resume', 'session could not reconnect (health check failed)', 'Use `respawn` to start a fresh session that reads this thread.')
   }
@@ -175,7 +184,16 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
   const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom)
   if (result) {
     const e = sessionEmoji(result.name)
-    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned — reading thread history.`, { replyTo: msg.id }) } catch {}
+    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+    const mainBridge = transport.get('main')
+    if (mainBridge) {
+      transport.sendToBridge(mainBridge, {
+        type: 'notification',
+        content: `[system] 🔁 ${e} \`${result.name}\` respawned in thread${resurrectFrom ? ` (was ${resurrectFrom})` : ''}`,
+        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    debouncedRefreshListDisplay()
   } else {
     await reportError(msg.channelId, msg.id, 'respawn', 'failed to spawn session')
   }
