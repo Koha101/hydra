@@ -177,7 +177,7 @@ const MAX_CONCURRENT = 2
 const STAGGER_MS = 5_000
 const HEALTH_TIMEOUT_MS = 30_000
 
-async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string } | { name: string; method: 'failed'; reason: string }> {
+async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
   const originalName = dead.tmuxName
 
   if (dead.claudeSessionId) {
@@ -194,7 +194,7 @@ async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'r
           content: `[system] You were interrupted by a system crash and have been recovered with full conversation context. Check your thread for any messages you may have missed, and continue where you left off.`,
           meta: { chat_id: dead.threadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
         })
-        return { name: originalName, method: 'resumed', newName: result.name }
+        return { name: originalName, method: 'resumed', newName: result.name, threadUrl: dead.threadUrl }
       }
 
       process.stderr.write(`daemon: recover ${originalName}: resume health check failed, falling back to resurrect\n`)
@@ -210,10 +210,10 @@ async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'r
       existingThreadId: dead.threadId,
       resurrectFrom: originalName,
     })
-    return { name: originalName, method: 'resurrected', newName: result.name }
+    return { name: originalName, method: 'resurrected', newName: result.name, threadUrl: dead.threadUrl }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    return { name: originalName, method: 'failed', reason }
+    return { name: originalName, method: 'failed', reason, threadUrl: dead.threadUrl }
   }
 }
 
@@ -301,10 +301,13 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
   const resurrected = results.filter(r => r.method === 'resurrected')
   const failed = results.filter(r => r.method === 'failed') as Array<{ name: string; method: 'failed'; reason: string }>
 
+  const fmtName = (r: { name: string; threadUrl?: string }) =>
+    r.threadUrl ? `<${r.threadUrl}|\`${r.name}\`>` : `\`${r.name}\``
+
   const lines = [`🔮 **Recovery complete** — ${results.length} session(s)`]
-  if (resumed.length > 0) lines.push(`• ${resumed.length} resumed (full context): ${resumed.map(r => `\`${r.name}\``).join(', ')}`)
-  if (resurrected.length > 0) lines.push(`• ${resurrected.length} resurrected (thread re-read): ${resurrected.map(r => `\`${r.name}\``).join(', ')}`)
-  if (failed.length > 0) lines.push(`• ${failed.length} failed: ${failed.map(r => `\`${r.name}\` (${r.reason})`).join(', ')}`)
+  if (resumed.length > 0) lines.push(`• ${resumed.length} resumed (full context): ${resumed.map(fmtName).join(', ')}`)
+  if (resurrected.length > 0) lines.push(`• ${resurrected.length} resurrected (thread re-read): ${resurrected.map(fmtName).join(', ')}`)
+  if (failed.length > 0) lines.push(`• ${failed.length} failed: ${failed.map(r => `${fmtName(r)} (${r.reason})`).join(', ')}`)
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
 
