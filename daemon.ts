@@ -81,6 +81,18 @@ try {
 gateway.start(TOKEN!).then(() => {
   process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
   void announceRestartComplete()
+
+  const manifest = registry.readRecoveryManifest()
+  if (manifest && manifest.sessions.length > 0) {
+    const names = manifest.sessions.map(s => `\`${s.tmuxName}\``).join(', ')
+    const access = loadAccess()
+    const msg = `⚡ Found ${manifest.sessions.length} dead session(s) from crash: ${names}\nReply \`recover\` to revive all, or \`recover <name>\` for a specific one.`
+    for (const userId of access.allowFrom) {
+      void gateway.sendDM(userId, msg).catch(e =>
+        process.stderr.write(`daemon: recovery DM failed: ${e}\n`),
+      )
+    }
+  }
 }).catch(err => {
   process.stderr.write(`daemon: gateway start failed: ${err}\n`)
   process.exit(1)

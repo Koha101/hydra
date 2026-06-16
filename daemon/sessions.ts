@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
@@ -39,6 +39,15 @@ export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
   handedOffFrom?: string
   artifact?: string
+  existingThreadId?: string
+  resurrectFrom?: string
+  resumeFrom?: string
+}
+
+export type RecoveryManifest = {
+  sessions: SessionInfo[]
+  createdAt: number
+  version: 1
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +106,7 @@ export class SessionRegistry {
 
   constructor() {
     this.sessionsFile = join(STATE_DIR, 'sessions.json')
+    this.manifestFile = join(STATE_DIR, 'recovery-manifest.json')
     this.loadPersisted()
   }
 
@@ -158,32 +168,94 @@ export class SessionRegistry {
     return this.sessions.get(mappedSession) ?? null
   }
 
+  private readonly manifestFile: string
+
   private loadPersisted(): void {
     try {
       const raw = readFileSync(this.sessionsFile, 'utf8')
       const data = JSON.parse(raw) as SessionInfo[]
       let restored = 0
-      let dead = 0
+      const deadSessions: SessionInfo[] = []
       for (const info of data) {
         try {
           execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
         } catch {
-          dead++
+          deadSessions.push(info)
           continue
         }
         this.sessions.set(info.sessionId, info)
         this.threadToSession.set(info.threadId, info.sessionId)
         restored++
       }
-      if (restored > 0 || dead > 0) {
-        process.stderr.write(`daemon: restored ${restored} session(s), pruned ${dead} dead\n`)
+      if (restored > 0 || deadSessions.length > 0) {
+        process.stderr.write(`daemon: restored ${restored} session(s), ${deadSessions.length} dead\n`)
       }
-      if (dead > 0) this.persist()
+      if (deadSessions.length > 0) {
+        this.writeRecoveryManifest(deadSessions)
+        this.persist()
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
       }
     }
+  }
+
+  private writeRecoveryManifest(deadSessions: SessionInfo[]): void {
+    const manifestPath = this.manifestFile
+    let existing: SessionInfo[] = []
+    try {
+      const raw = readFileSync(manifestPath, 'utf8')
+      const prev = JSON.parse(raw) as RecoveryManifest
+      const TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - prev.createdAt < TTL_MS) {
+        existing = prev.sessions
+      } else {
+        process.stderr.write(`daemon: discarding stale recovery manifest (>24h)\n`)
+      }
+    } catch {}
+
+    const seen = new Set(existing.map(s => s.threadId))
+    for (const s of deadSessions) {
+      if (!seen.has(s.threadId)) {
+        existing.push(s)
+        seen.add(s.threadId)
+      }
+    }
+
+    const manifest: RecoveryManifest = {
+      sessions: existing,
+      createdAt: Date.now(),
+      version: 1,
+    }
+    try {
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+      process.stderr.write(`daemon: wrote recovery manifest with ${existing.length} session(s)\n`)
+    } catch (err) {
+      process.stderr.write(`daemon: failed to write recovery manifest: ${err}\n`)
+    }
+  }
+
+  readRecoveryManifest(): RecoveryManifest | null {
+    const manifestPath = this.manifestFile
+    try {
+      const raw = readFileSync(manifestPath, 'utf8')
+      const manifest = JSON.parse(raw) as RecoveryManifest
+      const TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - manifest.createdAt > TTL_MS) {
+        process.stderr.write(`daemon: recovery manifest expired (>24h), deleting\n`)
+        unlinkSync(manifestPath)
+        return null
+      }
+      return manifest
+    } catch {
+      return null
+    }
+  }
+
+  deleteRecoveryManifest(): void {
+    const manifestPath = this.manifestFile
+    try { unlinkSync(manifestPath) } catch {}
   }
 }
 
