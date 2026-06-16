@@ -254,11 +254,14 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
 
         recoverOne(dead).then(r => {
           results.push(r)
-          active--
           if (r.method !== 'failed') {
             const e = sessionEmoji(r.newName)
             void gateway.send(dead.threadId, `🔮 ${e} \`${r.newName}\` recovered (${r.method})`).catch(() => {})
           }
+        }).catch(err => {
+          results.push({ name: dead.tmuxName, method: 'failed' as const, reason: String(err) })
+        }).finally(() => {
+          active--
         })
 
         if (queue.length > 0) await new Promise(r => setTimeout(r, STAGGER_MS))
