@@ -168,7 +168,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const recoverMatch = msg.content.match(/^(?:\/recover|recover)\s*(.*)?$/i)
+    const recoverMatch = msg.content.match(/^(?:\/recover-all|recover-all|\/recover|recover)\s*(.*)?$/i)
     if (recoverMatch && !msg.isThread) {
       void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
       return

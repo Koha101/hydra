@@ -93,7 +93,7 @@ gateway.start(TOKEN!).then(() => {
     const msg = [
       `⚡ Found ${manifest.sessions.length} dead session(s) from crash:`,
       ...sessionLines,
-      `Reply \`recover\` to revive all, or \`recover <name>\` for a specific one.`,
+      `Reply \`recover-all\` to revive all, or \`recover-all <name>\` for a specific one.`,
     ].join('\n')
     for (const userId of access.allowFrom) {
       void gateway.sendDM(userId, msg).catch(e =>
