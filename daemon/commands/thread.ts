@@ -109,69 +109,6 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}
 }
 
-// ---------------------------------------------------------------------------
-// Resurrect — crash recovery for dead session threads
-// ---------------------------------------------------------------------------
-
-const resurrectsInProgress = new Set<string>()
-
-export async function handleResurrectIntercept(msg: InboundMessage): Promise<void> {
-  const threadId = msg.existingThreadId ?? msg.channelId
-  if (resurrectsInProgress.has(threadId)) {
-    void gateway.send(msg.channelId, 'Resurrection already in progress for this thread.', { replyTo: msg.id }).catch(() => {})
-    return
-  }
-
-  const liveSession = registry.resolveThreadSession(msg.channelId, msg.existingThreadId)
-  if (liveSession) {
-    try {
-      execSync(`tmux has-session -t '${liveSession.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-      void gateway.send(msg.channelId, 'Session is still alive — use `kill` first if you want to restart.', { replyTo: msg.id }).catch(() => {})
-      return
-    } catch {
-      await killSession(liveSession, 'stale — resurrecting')
-    }
-  }
-
-  if (!msg.isThread) {
-    void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
-    void gateway.send(msg.channelId, 'Resurrect must be used in a thread where a session previously lived.', { replyTo: msg.id }).catch(() => {})
-    return
-  }
-
-  void gateway.react(msg.channelId, msg.id, '🫀').catch(() => {})
-
-  const existingThreadId = msg.existingThreadId ?? msg.channelId
-  const previousName = liveSession?.tmuxName
-
-  resurrectsInProgress.add(threadId)
-  try {
-    const topic = 'resurrected session — reading thread history'
-    const result = await doSpawnSession(topic, undefined, undefined, { existingThreadId, resurrectFrom: previousName })
-
-    const ce = sessionEmoji(result.name)
-    await gateway.send(existingThreadId, [
-      `🫀 ${ce} \`${result.name}\` resurrected in this thread`,
-      `View in any terminal: \`tmux attach -t ${result.name}\``,
-    ].join('\n'), { replyTo: msg.id })
-
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'notification',
-        content: `[system] 🫀 Resurrected session → ${ce} \`${result.name}\`${result.url ? ` — ${result.url}` : ''}`,
-        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
-      })
-    }
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`daemon: resurrect intercept failed: ${errMsg}\n`)
-    try { await gateway.send(msg.channelId, `Resurrect failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
-  } finally {
-    resurrectsInProgress.delete(threadId)
-  }
-}
-
 export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
   if (!msg.isThread) {
     await reportError(msg.channelId, msg.id, 'resume', 'must be used in a thread')

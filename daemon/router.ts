@@ -193,7 +193,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const respawnMatch = msg.content.match(/^(?:\/respawn|respawn)(?::?\s*([\s\S]+))?$/i)
+      const respawnMatch = msg.content.match(/^(?:\/respawn|respawn|\/resurrect|resurrect)(?::?\s*([\s\S]+))?$/i)
       if (respawnMatch) {
         void handleRespawnIntercept(msg, respawnMatch[1]?.trim() || undefined)
         return
