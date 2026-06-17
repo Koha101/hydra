@@ -1,5 +1,6 @@
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { createServer, type Socket } from 'net'
+import { execSync } from 'child_process'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
 import { registry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
@@ -8,6 +9,8 @@ import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import type { ButtonDef } from '../gateway.js'
+
+const DEATH_DETECT_DELAY_MS = 3_000
 
 // ---------------------------------------------------------------------------
 // Bridge protocol handler
@@ -127,6 +130,32 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Session death detection
+// ---------------------------------------------------------------------------
+
+async function checkSessionDeath(sessionId: string): Promise<void> {
+  if (transport.has(sessionId)) return
+
+  const info = registry.get(sessionId)
+  if (!info) return
+
+  let tmuxAlive = false
+  try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+
+  if (!tmuxAlive) {
+    process.stderr.write(`daemon: session ${info.tmuxName} crashed (tmux dead, bridge disconnected)\n`)
+    registry.markDead(sessionId)
+    try {
+      await gateway.send(info.threadId, `_Session crashed._ Use \`resume\` to reconnect or \`respawn\` to start fresh.`)
+    } catch {}
+    const anchor = gateway.getThreadAnchor(info.threadId)
+    if (anchor) {
+      void gateway.react(anchor.channelId, anchor.messageId, '💀').catch(() => {})
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Socket server
 // ---------------------------------------------------------------------------
 
@@ -160,6 +189,10 @@ export const socketServer = createServer((socket: Socket) => {
       process.stderr.write(`daemon: bridge disconnected for session ${conn.sessionId}\n`)
       if (transport.get(conn.sessionId) === conn) {
         transport.delete(conn.sessionId)
+      }
+      if (conn.sessionId !== 'main') {
+        const sid = conn.sessionId
+        setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
       }
     }
   })
