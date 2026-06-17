@@ -12,7 +12,7 @@ import { join } from 'path'
 import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
-import { registry } from './daemon/sessions.js'
+import { registry, threadRegistry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
@@ -21,6 +21,9 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
+
+// Boot thread registry — loads threads.json or migrates from sessions on first run
+threadRegistry.boot(registry)
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
