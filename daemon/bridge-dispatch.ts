@@ -1,5 +1,6 @@
-import { statSync } from 'fs'
-import { gateway, INBOX_DIR } from './config.js'
+import { statSync, mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { gateway, INBOX_DIR, STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
@@ -45,6 +46,7 @@ export const BRIDGE_TOOLS = [
   { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
+  { name: 'save_memory', description: 'Persist decisions, dead ends, or state to thread-local memory. Survives session death — injected into spawn prompt on resurrection.', inputSchema: { type: 'object', properties: { entries: { type: 'array', items: { type: 'object', properties: { type: { type: 'string', enum: ['decision', 'dead_end', 'state', 'anchor'] }, content: { type: 'string' } }, required: ['type', 'content'] } } }, required: ['entries'] } },
 ]
 
 export const SPAWN_MODEL = 'claude-opus-4-6[1m]'
@@ -59,7 +61,7 @@ export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
 // Tool execution
 // ---------------------------------------------------------------------------
 
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{type: string; text: string}>; isError?: boolean }> {
+export async function executeTool(name: string, args: Record<string, unknown>, sessionId?: string): Promise<{ content: Array<{type: string; text: string}>; isError?: boolean }> {
   try {
     switch (name) {
       case 'reply': {
@@ -236,6 +238,38 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
         const info = registry.get(targetId)!
         await killSession(info, 'session ended')
         return { content: [{ type: 'text', text: `killed session ${targetId}` }] }
+      }
+
+      case 'save_memory': {
+        if (!sessionId) throw new Error('save_memory requires a session context')
+        const info = registry.get(sessionId)
+        if (!info) throw new Error('session not found')
+        const threadId = info.threadId
+        const entries = args.entries as Array<{ type: string; content: string }>
+        if (!entries || entries.length === 0) throw new Error('entries array is required and must not be empty')
+
+        const memDir = join(STATE_DIR, 'thread-memory')
+        mkdirSync(memDir, { recursive: true })
+        const memFile = join(memDir, `${threadId}.md`)
+
+        const MAX_MEMORY_BYTES = 50 * 1024
+        let currentSize = 0
+        try { currentSize = statSync(memFile).size } catch {}
+
+        const ts = new Date().toISOString()
+        const lines = entries.map(e => `### ${e.type} — ${ts}\n${e.content}\n`).join('\n')
+
+        if (currentSize + Buffer.byteLength(lines) > MAX_MEMORY_BYTES) {
+          return {
+            content: [{ type: 'text', text: `save_memory: thread memory at ${(currentSize / 1024).toFixed(1)}KB — approaching 50KB cap. Entry not written. Consolidate or trim earlier entries.` }],
+            isError: true,
+          }
+        }
+
+        appendFileSync(memFile, lines + '\n')
+        const newSize = currentSize + Buffer.byteLength(lines) + 1
+        const warning = newSize > 40 * 1024 ? ` (warning: ${(newSize / 1024).toFixed(1)}KB / 50KB)` : ''
+        return { content: [{ type: 'text', text: `saved ${entries.length} memory entry/entries to thread ${threadId}${warning}` }] }
       }
 
       default:
