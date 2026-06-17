@@ -203,6 +203,10 @@ export const socketServer = createServer((socket: Socket) => {
     process.stderr.write(`daemon: bridge socket error: ${err}\n`)
     if (conn.sessionId && transport.get(conn.sessionId) === conn) {
       transport.delete(conn.sessionId)
+      if (conn.sessionId !== 'main') {
+        const sid = conn.sessionId
+        setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
+      }
     }
   })
 })
