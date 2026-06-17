@@ -138,6 +138,7 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
 
   void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
 
+  registry.removeDead(threadId)
   const result = await tryResume(dead)
   if (result) {
     const e = sessionEmoji(result.name)
@@ -180,6 +181,7 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
   const resolvedTopic = topic || dead?.topic || 'respawned session'
   const resurrectFrom = dead?.tmuxName
 
+  if (dead) registry.removeDead(threadId)
   const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom)
   if (result) {
     const e = sessionEmoji(result.name)

@@ -179,17 +179,17 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
     return
   }
 
-  const manifest = registry.readRecoveryManifest()
-  if (!manifest || manifest.sessions.length === 0) {
+  const allDead = registry.deadSessions()
+  if (allDead.length === 0) {
     try { await gateway.send(msg.channelId, 'No dead sessions to recover.', { replyTo: msg.id }) } catch {}
     return
   }
 
-  let targets = manifest.sessions
+  let targets = allDead
   if (targetName && targetName !== 'all') {
     targets = targets.filter(s => s.tmuxName === targetName)
     if (targets.length === 0) {
-      try { await gateway.send(msg.channelId, `"${targetName}" not found in recovery manifest.`, { replyTo: msg.id }) } catch {}
+      try { await gateway.send(msg.channelId, `"${targetName}" not found in dead sessions.`, { replyTo: msg.id }) } catch {}
       return
     }
   }
@@ -248,16 +248,8 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
 
-  if (targetName && targetName !== 'all') {
-    const remaining = manifest.sessions.filter(s => !targets.some(t => t.sessionId === s.sessionId))
-    if (remaining.length > 0) {
-      const { writeFileSync: wfs } = await import('fs')
-      const manifestPath = join(STATE_DIR, 'recovery-manifest.json')
-      wfs(manifestPath, JSON.stringify({ ...manifest, sessions: remaining }, null, 2) + '\n', { mode: 0o600 })
-    } else {
-      registry.deleteRecoveryManifest()
-    }
-  } else {
-    registry.deleteRecoveryManifest()
+  for (const t of targets) {
+    registry.removeDead(t.threadId)
   }
+  registry.deleteRecoveryManifest()
 }
