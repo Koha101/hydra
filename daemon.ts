@@ -47,9 +47,7 @@ function sendRecoveryReport(gapMs: number): void {
   process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
 }
 
-if ('onReconnectAfterOutage' in gateway) {
-  gateway.onReconnectAfterOutage = sendRecoveryReport
-}
+gateway.onReconnectAfterOutage = sendRecoveryReport
 
 // ---------------------------------------------------------------------------
 // Permission UI
@@ -98,6 +96,9 @@ const GATEWAY_RETRY_INTERVAL_MS = 10_000
 const GATEWAY_MAX_RETRIES = 30
 
 async function startGateway(attempt = 0): Promise<void> {
+  if (attempt > 0) {
+    try { writeFileSync(heartbeatPath, String(Date.now()) + '\n') } catch {}
+  }
   try {
     await gateway.start(TOKEN!)
     process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
@@ -112,7 +113,6 @@ async function startGateway(attempt = 0): Promise<void> {
       process.exit(1)
     }
     process.stderr.write(`daemon: gateway start failed (attempt ${attempt + 1}/${GATEWAY_MAX_RETRIES}), retrying in ${GATEWAY_RETRY_INTERVAL_MS / 1000}s: ${err}\n`)
-    try { writeFileSync(heartbeatPath, String(Date.now()) + '\n') } catch {}
     await new Promise(r => setTimeout(r, GATEWAY_RETRY_INTERVAL_MS))
     return startGateway(attempt + 1)
   }
