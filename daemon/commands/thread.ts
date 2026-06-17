@@ -132,29 +132,54 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
     return
   }
 
-  if (!dead.claudeSessionId) {
-    await reportError(msg.channelId, msg.id, 'resume', 'no Claude session ID available — cannot reconnect', 'Use `respawn` to start a fresh session that reads this thread.')
-    return
-  }
-
   void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
 
-  const result = await tryResume(dead)
+  // Three-tier cascade: resume → fork-from-dead → respawn
+  if (dead.claudeSessionId) {
+    // Tier 1: full resume (--resume, same conversation)
+    const result = await tryResume(dead)
+    if (result) {
+      registry.removeDead(threadId)
+      const e = sessionEmoji(result.name)
+      try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+      const mainBridge = transport.get('main')
+      if (mainBridge) {
+        transport.sendToBridge(mainBridge, {
+          type: 'notification',
+          content: `[system] ⏯️ ${e} \`${result.name}\` resumed in thread (was ${dead.tmuxName})`,
+          meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+        })
+      }
+      debouncedRefreshListDisplay()
+      return
+    }
+    process.stderr.write(`daemon: resume tier 1 (--resume) failed for ${dead.tmuxName}, trying fork-from-dead\n`)
+
+    // Tier 2: fork from dead session (--resume --fork-session, transcript copy)
+    try {
+      const forkResult = await doSpawnSession(dead.topic, undefined, undefined, {
+        existingThreadId: dead.threadId,
+        forkFrom: { claudeSessionId: dead.claudeSessionId, parentName: dead.tmuxName },
+      })
+      registry.removeDead(threadId)
+      const e = sessionEmoji(forkResult.name)
+      try { await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id }) } catch {}
+      debouncedRefreshListDisplay()
+      return
+    } catch {
+      process.stderr.write(`daemon: resume tier 2 (fork-from-dead) failed for ${dead.tmuxName}, falling back to respawn\n`)
+    }
+  }
+
+  // Tier 3: respawn (fresh session reads thread history)
+  const result = await tryRespawn(threadId, dead.topic, dead.tmuxName)
   if (result) {
     registry.removeDead(threadId)
     const e = sessionEmoji(result.name)
-    try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'notification',
-        content: `[system] ⏯️ ${e} \`${result.name}\` resumed in thread (was ${dead.tmuxName})`,
-        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
-      })
-    }
+    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned (resume unavailable — reading thread history).\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
     debouncedRefreshListDisplay()
   } else {
-    await reportError(msg.channelId, msg.id, 'resume', 'session could not reconnect (health check failed)', 'Use `respawn` to start a fresh session that reads this thread.')
+    await reportError(msg.channelId, msg.id, 'resume', 'all recovery methods failed')
   }
 }
 
