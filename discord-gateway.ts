@@ -16,6 +16,7 @@ import {
   type Message,
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
+import { sanitizeFilename } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -301,10 +302,9 @@ export class DiscordGateway implements ChatGateway {
       }
       const res = await fetch(att.url)
       const buf = Buffer.from(await res.arrayBuffer())
-      const name = att.name ?? `${att.id}`
-      const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'
-      const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-      const path = `${inboxDir}/${Date.now()}-${att.id}.${ext}`
+      const name = att.name || `${att.id}`
+      const sanitizedName = sanitizeFilename(name, `${att.id}`)
+      const path = `${inboxDir}/${Date.now()}-${sanitizedName}`
       mkdirSync(inboxDir, { recursive: true })
       writeFileSync(path, buf)
       results.push({
