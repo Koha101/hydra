@@ -400,6 +400,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     thread.currentSessionId = sessionId
     thread.lastActive = now
     thread.threadUrl = url || thread.threadUrl
+    thread.anchorState = respawnCount > 0 ? 'zombie' : 'live'
     if (respawnCount > 0) thread.respawnCount = respawnCount
   }
   thread.sessionHistory.push({
