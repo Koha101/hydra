@@ -52,7 +52,8 @@ restart_daemon() {
   CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" \
     HYDRA_STATE_DIR="$HYDRA_STATE_DIR" \
     CHAT_PLATFORM="$CHAT_PLATFORM" \
-    SPAWN_CWD="$SPAWN_CWD" ./start-daemon.sh
+    SPAWN_CWD="$SPAWN_CWD" \
+    ./start-daemon.sh
 }
 
 # Bail if tmux isn't reachable (prevents phantom "session missing" restarts)

@@ -40,7 +40,7 @@ fi
 # 2. Remove stale socket
 rm -f "$SOCK"
 
-# 3. Relaunch
+# 3. Relaunch (start-daemon.sh handles syncing source into the runtime dir)
 echo "Starting daemon..."
 CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" \
   HYDRA_STATE_DIR="$HYDRA_STATE_DIR" \

@@ -82,7 +82,11 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
 export async function handleRestartIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔄').catch(() => {})
 
-  const restartScript = join(import.meta.dir, '..', '..', 'restart-daemon.sh')
+  // HYDRA_SOURCE_DIR points to the dev repo; the daemon may be running from an
+  // isolated runtime copy, so import.meta.dir would resolve to the copy — but
+  // restart-daemon.sh must run from the real repo to pick up new code.
+  const sourceDir = process.env.HYDRA_SOURCE_DIR ?? join(import.meta.dir, '..', '..')
+  const restartScript = join(sourceDir, 'restart-daemon.sh')
   try {
     await gateway.send(msg.channelId, `🔄 Restarting daemon — back in a moment...`, { replyTo: msg.id })
   } catch {}
