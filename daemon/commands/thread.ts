@@ -73,6 +73,8 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
+
+    debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: fork intercept failed: ${errMsg}\n`)
@@ -94,8 +96,8 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
     return
   }
 
-  const lines = await Promise.all(forks.sort((a, b) => a.createdAt - b.createdAt).map(async s => {
-    const url = await gateway.getThreadUrl(s.threadId).catch(() => '')
+  const lines = forks.sort((a, b) => a.createdAt - b.createdAt).map(s => {
+    const url = s.threadUrl ?? ''
     const desc = s.description ?? fallbackDescription(s.topic)
     const ctx = getContextPercent(s.tmuxName)
     const msgs = s.messageCount ?? 0
@@ -103,7 +105,7 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
     const e = sessionEmoji(s.tmuxName)
     const title = url ? `[**${desc}**](${url})` : `**${desc}**`
     return `╰ ${e} \`${s.tmuxName}\` — ${title}\n    ◦ ${ctx} (${msgs} msgs · ${duration})`
-  }))
+  })
 
   const pe = sessionEmoji(info.tmuxName)
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}

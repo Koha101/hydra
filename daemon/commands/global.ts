@@ -20,16 +20,14 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   let chatId = msg.channelId
   if (msg.isThread && msg.existingThreadId) {
     const staleId = registry.getByThread(msg.existingThreadId)
-    if (staleId) {
-      const staleInfo = registry.get(staleId)
-      if (staleInfo) {
-        let tmuxAlive = false
-        try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
-        if (tmuxAlive) {
-          try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
-        } else {
-          chatId = msg.existingThreadId
-        }
+    if (staleId && registry.has(staleId)) {
+      const staleInfo = registry.get(staleId)!
+      let tmuxAlive = false
+      try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+      if (tmuxAlive) {
+        try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
+      } else {
+        chatId = msg.existingThreadId
       }
     }
   }
@@ -163,7 +161,6 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Other:**',
     '• 📋 `commands` — this list',
-    '• 🔪 react `:hocho:` on any bot message to delete it',
   ].join('\n')
   try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
 }

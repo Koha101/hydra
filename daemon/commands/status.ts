@@ -1,4 +1,4 @@
-import { statSync, readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR, PLATFORM } from '../config.js'
@@ -11,8 +11,10 @@ import type { InboundMessage } from '../../gateway.js'
 export const daemonStartedAt = Date.now()
 
 // ---------------------------------------------------------------------------
-// List display helpers
+// List display helpers (shared by handleListIntercept and refreshListDisplay)
 // ---------------------------------------------------------------------------
+
+type SessionEntry = { session: SessionInfo; latestLine?: string }
 
 function listTimeBucket(lastActiveMs: number, now: number): string {
   const diffH = (now - lastActiveMs) / 3_600_000
@@ -27,8 +29,6 @@ function listTimeBucket(lastActiveMs: number, now: number): string {
   if (daysDiff === 1) return 'Yesterday'
   return `${daysDiff} days ago`
 }
-
-type SessionEntry = { session: SessionInfo; latestLine?: string }
 
 function formatSessionEntry(e: SessionEntry): string {
   const s = e.session
@@ -67,7 +67,8 @@ function buildListOutput(list: SessionEntry[], now: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-refresh list machinery
+// Auto-refresh: FILO queue of up to 5 list-session messages that get silently
+// edited on lifecycle events. edit_message doesn't trigger push notifications.
 // ---------------------------------------------------------------------------
 
 const LIST_MSGS_FILE = join(STATE_DIR, 'list-messages.json')
@@ -98,7 +99,6 @@ function loadPersistedListMsgs(): void {
 
 loadPersistedListMsgs()
 
-// Debounced refresh: coalesces rapid lifecycle events into a single edit pass
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 export function debouncedRefreshListDisplay(): void {
@@ -120,18 +120,7 @@ async function refreshListDisplay(): Promise<void> {
     output = 'No active sessions.'
   } else {
     const entries: SessionEntry[] = all.map(s => ({ session: s }))
-    const latestInfos = await Promise.all(entries.map(async (e): Promise<string | undefined> => {
-      try {
-        const msgs = await gateway.fetchMessages(e.session.threadId, 1)
-        if (msgs.length === 0) return undefined
-        const m = msgs[0]
-        const who = m.authorId === gateway.botId ? `<@${gateway.botId}>` : 'you'
-        const msgUrl = gateway.getMessageUrl(e.session.threadId, m.id)
-        return msgUrl ? `[📩 latest](${msgUrl}) — by ${who}` : `📩 latest — by ${who}`
-      } catch { return undefined }
-    }))
-    const enriched = entries.map((e, i) => ({ ...e, latestLine: latestInfos[i] }))
-    output = buildListOutput(enriched, now)
+    output = buildListOutput(entries, now)
   }
 
   let changed = false
@@ -140,7 +129,6 @@ async function refreshListDisplay(): Promise<void> {
     try {
       await gateway.edit(lm.channelId, lm.messageId, output)
     } catch {
-      // Edit failed (message deleted, channel archived, etc.) — remove stale entry
       lastListMsgs.splice(i, 1)
       changed = true
     }
@@ -162,16 +150,6 @@ export async function handleListIntercept(msg: InboundMessage): Promise<void> {
 
   const now = Date.now()
   const all = live.sort((a, b) => b.lastActive - a.lastActive)
-
-  // Backfill threadUrl for sessions that predate the caching feature
-  await Promise.all(all.map(async s => {
-    if (!s.threadUrl) {
-      try {
-        const url = await gateway.getThreadUrl(s.threadId)
-        if (url) { s.threadUrl = url; registry.persist() }
-      } catch {}
-    }
-  }))
 
   const entries: SessionEntry[] = all.map(s => ({ session: s }))
 

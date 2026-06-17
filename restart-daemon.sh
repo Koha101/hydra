@@ -8,7 +8,7 @@
 # Usage:
 #   ./restart-daemon.sh                              # uses env defaults
 #   SPAWN_CWD=~/my-project ./restart-daemon.sh       # explicit
-export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.npm-global/bin:$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

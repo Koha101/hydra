@@ -34,6 +34,8 @@ export type SessionInfo = {
   threadUrl?: string
   capabilities?: SessionCapabilities
   status?: 'live' | 'dead'
+  worktreeRepo?: string
+  worktreePath?: string
 }
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
@@ -107,6 +109,8 @@ export class SessionRegistry {
   readonly threadToSession = new Map<string, string>()
   private readonly sessionsFile: string
 
+  private readonly manifestFile: string
+
   constructor() {
     this.sessionsFile = join(STATE_DIR, 'sessions.json')
     this.manifestFile = join(STATE_DIR, 'recovery-manifest.json')
@@ -171,8 +175,6 @@ export class SessionRegistry {
     return this.sessions.get(mappedSession) ?? null
   }
 
-  private readonly manifestFile: string
-
   deadSessions(): SessionInfo[] {
     return [...this.sessions.values()].filter(s => s.status === 'dead')
   }
@@ -198,6 +200,26 @@ export class SessionRegistry {
       this.threadToSession.delete(threadId)
       this.persist()
     }
+  }
+
+  readRecoveryManifest(): RecoveryManifest | null {
+    try {
+      const raw = readFileSync(this.manifestFile, 'utf8')
+      const manifest = JSON.parse(raw) as RecoveryManifest
+      const TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - manifest.createdAt > TTL_MS) {
+        process.stderr.write(`daemon: recovery manifest expired (>24h), deleting\n`)
+        unlinkSync(this.manifestFile)
+        return null
+      }
+      return manifest
+    } catch {
+      return null
+    }
+  }
+
+  deleteRecoveryManifest(): void {
+    try { unlinkSync(this.manifestFile) } catch {}
   }
 
   private loadPersisted(): void {
@@ -227,10 +249,9 @@ export class SessionRegistry {
   }
 
   private writeRecoveryManifest(deadSessions: SessionInfo[]): void {
-    const manifestPath = this.manifestFile
     let existing: SessionInfo[] = []
     try {
-      const raw = readFileSync(manifestPath, 'utf8')
+      const raw = readFileSync(this.manifestFile, 'utf8')
       const prev = JSON.parse(raw) as RecoveryManifest
       const TTL_MS = 24 * 60 * 60 * 1000
       if (Date.now() - prev.createdAt < TTL_MS) {
@@ -254,33 +275,11 @@ export class SessionRegistry {
       version: 1,
     }
     try {
-      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+      writeFileSync(this.manifestFile, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
       process.stderr.write(`daemon: wrote recovery manifest with ${existing.length} session(s)\n`)
     } catch (err) {
       process.stderr.write(`daemon: failed to write recovery manifest: ${err}\n`)
     }
-  }
-
-  readRecoveryManifest(): RecoveryManifest | null {
-    const manifestPath = this.manifestFile
-    try {
-      const raw = readFileSync(manifestPath, 'utf8')
-      const manifest = JSON.parse(raw) as RecoveryManifest
-      const TTL_MS = 24 * 60 * 60 * 1000
-      if (Date.now() - manifest.createdAt > TTL_MS) {
-        process.stderr.write(`daemon: recovery manifest expired (>24h), deleting\n`)
-        unlinkSync(manifestPath)
-        return null
-      }
-      return manifest
-    } catch {
-      return null
-    }
-  }
-
-  deleteRecoveryManifest(): void {
-    const manifestPath = this.manifestFile
-    try { unlinkSync(manifestPath) } catch {}
   }
 }
 

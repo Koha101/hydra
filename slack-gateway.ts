@@ -7,6 +7,7 @@
 
 import { App, type MessageEvent, type GenericMessageEvent, type BotMessageEvent } from '@slack/bolt'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { sanitizeFilename } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -27,9 +28,7 @@ const HEALTH_CHECK_MS = 60_000
 const HEALTH_CHECK_FAST_MS = 10_000
 const STALE_THRESHOLD_MS = 3 * 60_000
 const HEARTBEAT_WRITE_THROTTLE_MS = 10_000
-const MAX_RECONNECT_ATTEMPTS = 6
-const RECONNECT_BACKOFF_BASE_MS = 10_000
-const RECONNECT_BACKOFF_CAP_MS = 5 * 60_000
+const MAX_RECONNECT_ATTEMPTS = 2
 const NETWORK_CHECK_TIMEOUT_MS = 5_000
 
 /**
@@ -61,7 +60,6 @@ export class SlackGateway implements ChatGateway {
   private threadDeleteHandler: ((threadId: string) => void) | null = null
   private messageDeleteHandler: ((messageId: string, threadId: string | null) => void) | null = null
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
-  private reactionHandler: ((event: import('./gateway.js').ReactionEvent) => Promise<void>) | null = null
   private recentSentIds = new Set<string>()
   private appToken: string
   private token: string | null = null
@@ -222,21 +220,6 @@ export class SlackGateway implements ChatGateway {
       })
     })
 
-    // Handle reaction events
-    this.app.event('reaction_added', async ({ event }) => {
-      this.touchHeartbeat()
-      if (!this.reactionHandler) return
-      const channelId = event.item.type === 'message' ? event.item.channel : null
-      const messageId = event.item.type === 'message' ? event.item.ts : null
-      if (!channelId || !messageId) return
-      this.reactionHandler({
-        channelId,
-        messageId,
-        userId: event.user,
-        emoji: event.reaction,
-      }).catch(e => process.stderr.write(`slack gateway: reaction handler error: ${e}\n`))
-    })
-
     await this.app.start()
 
     // Get bot identity
@@ -284,10 +267,6 @@ export class SlackGateway implements ChatGateway {
 
   onButtonClick(handler: (click: ButtonClick) => void): void {
     this.buttonClickHandler = handler
-  }
-
-  onReaction(handler: (event: import('./gateway.js').ReactionEvent) => Promise<void>): void {
-    this.reactionHandler = handler
   }
 
   /** Parse composite thread IDs (channelId:threadTs) into channel + thread_ts */
@@ -540,17 +519,27 @@ export class SlackGateway implements ChatGateway {
 
   async downloadAttachments(channelId: string, messageId: string, inboxDir: string): Promise<DownloadedFile[]> {
     if (!this.app) throw new Error('not connected')
-    const { channel } = this.parseChannelId(channelId)
+    const { channel, threadTs } = this.parseChannelId(channelId)
 
-    // Fetch the specific message
-    const result = await this.app.client.conversations.history({
-      channel,
-      latest: messageId,
-      inclusive: true,
-      limit: 1,
-    })
-
-    const msg = result.messages?.[0]
+    let msg: any
+    if (threadTs) {
+      const result = await this.app.client.conversations.replies({
+        channel,
+        ts: threadTs,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.find(m => m.ts === messageId)
+    } else {
+      const result = await this.app.client.conversations.history({
+        channel,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.[0]
+    }
     if (!msg || !msg.files?.length) return []
 
     const results: DownloadedFile[] = []
@@ -567,10 +556,9 @@ export class SlackGateway implements ChatGateway {
       })
       const buf = Buffer.from(await res.arrayBuffer())
 
-      const name = file.name ?? `${file.id}`
-      const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'
-      const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-      const path = `${inboxDir}/${Date.now()}-${file.id}.${ext}`
+      const name = file.name || `${file.id}`
+      const sanitizedName = sanitizeFilename(name, `${file.id}`)
+      const path = `${inboxDir}/${Date.now()}-${sanitizedName}`
       mkdirSync(inboxDir, { recursive: true })
       writeFileSync(path, buf)
 
@@ -784,9 +772,7 @@ export class SlackGateway implements ChatGateway {
         this.onReconnectAfterOutage(gapMs)
       }
     } catch (err) {
-      const backoffMs = Math.min(RECONNECT_BACKOFF_BASE_MS * Math.pow(2, this.reconnectAttempts - 1), RECONNECT_BACKOFF_CAP_MS)
-      this.setHealthCheckInterval(backoffMs)
-      process.stderr.write(`slack gateway: reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed, next check in ${Math.round(backoffMs / 1000)}s: ${err}\n`)
+      process.stderr.write(`slack gateway: reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed: ${err}\n`)
       this.writeHeartbeat()
     } finally {
       this.reconnecting = false
@@ -864,6 +850,8 @@ export class SlackGateway implements ChatGateway {
       '⏯️': 'play_pause',
       '🔁': 'repeat',
       '💀': 'skull',
+      '💥': 'boom',
+      '🧟': 'zombie',
     }
     if (map[emoji]) return map[emoji]
     // If it's already a text name (no colons), return as-is

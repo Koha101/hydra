@@ -82,18 +82,36 @@ export type ButtonClick = {
   clearButtons: (text: string) => Promise<void>
 }
 
-export type ReactionEvent = {
-  channelId: string
-  messageId: string
-  userId: string
-  emoji: string
-}
-
 export type ThreadStarterInfo = {
   threadName: string
   starterUser: string
   starterContent: string
   starterId: string
+}
+
+/**
+ * Sanitize an attachment filename for safe local storage.
+ * - Strips leading dots (prevents hidden files)
+ * - Replaces non-alphanumeric/dot/dash/underscore chars
+ * - Truncates to maxLen chars (preserving extension when possible)
+ * - Falls back to fallbackId if the result is empty
+ */
+export function sanitizeFilename(raw: string, fallbackId: string, maxLen = 200): string {
+  const cleaned = raw.replace(/^\.+/, '').replace(/[^a-zA-Z0-9._-]/g, '_')
+  let result: string
+  if (cleaned.length > maxLen) {
+    const dotIdx = cleaned.lastIndexOf('.')
+    if (dotIdx > 0) {
+      const ext = cleaned.slice(dotIdx)
+      const stem = cleaned.slice(0, maxLen - ext.length)
+      result = stem + ext
+    } else {
+      result = cleaned.slice(0, maxLen)
+    }
+  } else {
+    result = cleaned
+  }
+  return result || fallbackId
 }
 
 export interface ChatGateway {
@@ -117,7 +135,6 @@ export interface ChatGateway {
   onThreadDelete(handler: (threadId: string) => void): void
   onMessageDelete(handler: (messageId: string, threadId: string | null) => void): void
   onButtonClick(handler: (click: ButtonClick) => void): void
-  onReaction?(handler: (event: ReactionEvent) => Promise<void>): void
 
   // Sending
   send(channelId: string, text: string, opts?: {

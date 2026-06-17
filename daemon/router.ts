@@ -23,7 +23,7 @@ async function buildNotificationPayload(
   let downloadedFiles: DownloadedFile[] = []
   if (msg.attachments.length > 0) {
     try {
-      downloadedFiles = await gateway.downloadAttachments(chatId, msg.id, INBOX_DIR)
+      downloadedFiles = await gateway.downloadAttachments(msg.channelId, msg.id, INBOX_DIR)
     } catch (err) {
       process.stderr.write(`daemon: auto-download failed for ${msg.id}: ${err}\n`)
     }
@@ -112,26 +112,6 @@ gateway.onMessageDelete((messageId, threadId) => {
 })
 
 // ---------------------------------------------------------------------------
-// Reaction-based message deletion (:hocho: on bot messages)
-// ---------------------------------------------------------------------------
-
-const DELETE_EMOJI = 'hocho'
-
-if (gateway.onReaction) {
-  gateway.onReaction(async (event) => {
-    if (event.emoji !== DELETE_EMOJI) return
-    const access = loadAccess()
-    if (!access.allowFrom.includes(event.userId)) return
-    try {
-      await gateway.delete(event.channelId, event.messageId)
-      process.stderr.write(`daemon: deleted message ${event.messageId} in ${event.channelId} (${DELETE_EMOJI} reaction from ${event.userId})\n`)
-    } catch (err) {
-      process.stderr.write(`daemon: failed to delete message ${event.messageId}: ${err}\n`)
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Inbound message routing
 // ---------------------------------------------------------------------------
 
@@ -148,6 +128,17 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const topic = spawnMatch[1].trim()
       if (topic) {
         void handleSpawnIntercept(msg, topic, access)
+        return
+      }
+    }
+
+    // spawn-wt: repo_name topic — shorthand for worktree spawns
+    const spawnWtMatch = msg.content.match(/^(?:spawn-wt:|\/spawn-wt)\s*(\S+)\s+([\s\S]+)/i)
+    if (spawnWtMatch) {
+      const repo = spawnWtMatch[1].trim()
+      const topic = spawnWtMatch[2].trim()
+      if (repo && topic) {
+        void handleSpawnIntercept(msg, `worktree:${repo} ${topic}`, access)
         return
       }
     }
@@ -188,7 +179,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const recoverMatch = msg.content.match(/^(?:\/recover-all|recover-all|\/recover|recover)\s*(.*)?$/i)
+    const recoverMatch = msg.content.match(/^(?:\/recover|recover)\s*(.*)?$/i)
     if (recoverMatch && !msg.isThread) {
       void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
       return
