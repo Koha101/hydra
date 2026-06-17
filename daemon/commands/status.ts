@@ -112,10 +112,11 @@ export function debouncedRefreshListDisplay(): void {
 async function refreshListDisplay(): Promise<void> {
   if (lastListMsgs.length === 0) return
   const now = Date.now()
-  const all = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
+  const live = registry.liveSessions()
+  const all = live.sort((a, b) => b.lastActive - a.lastActive)
 
   let output: string
-  if (registry.size === 0) {
+  if (live.length === 0) {
     output = 'No active sessions.'
   } else {
     const entries: SessionEntry[] = all.map(s => ({ session: s }))
@@ -153,13 +154,14 @@ async function refreshListDisplay(): Promise<void> {
 
 export async function handleListIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '📊').catch(() => {})
-  if (registry.size === 0) {
+  const live = registry.liveSessions()
+  if (live.length === 0) {
     try { await gateway.send(msg.channelId, 'No active sessions.', { replyTo: msg.id }) } catch {}
     return
   }
 
   const now = Date.now()
-  const all = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
+  const all = live.sort((a, b) => b.lastActive - a.lastActive)
 
   // Backfill threadUrl for sessions that predate the caching feature
   await Promise.all(all.map(async s => {
