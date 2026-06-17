@@ -203,10 +203,23 @@ export class DiscordGateway implements ChatGateway {
     return edited.id
   }
 
+  async delete(channelId: string, messageId: string): Promise<void> {
+    const ch = await this.fetchTextChannel(channelId)
+    const msg = await ch.messages.fetch(messageId)
+    await msg.delete()
+  }
+
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     const ch = await this.fetchTextChannel(channelId)
     const msg = await ch.messages.fetch(messageId)
     await msg.react(emoji)
+  }
+
+  async unreact(channelId: string, messageId: string, emoji: string): Promise<void> {
+    const ch = await this.fetchTextChannel(channelId)
+    const msg = await ch.messages.fetch(messageId)
+    const botReaction = msg.reactions.cache.find(r => r.emoji.name === emoji)
+    if (botReaction) await botReaction.users.remove(this.client.user!.id)
   }
 
   async typing(channelId: string): Promise<void> {

@@ -31,6 +31,8 @@ export type SessionInfo = {
   originType?: 'spawn' | 'fork' | 'handoff'
   originFrom?: string
   capabilities?: SessionCapabilities
+  respawnCount?: number
+  threadUrl?: string
 }
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }

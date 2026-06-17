@@ -1,4 +1,4 @@
-import { statSync } from 'fs'
+import { readFileSync, writeFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR, PLATFORM } from '../config.js'
@@ -11,8 +11,10 @@ import type { InboundMessage } from '../../gateway.js'
 export const daemonStartedAt = Date.now()
 
 // ---------------------------------------------------------------------------
-// List display helpers
+// List display helpers (shared by handleListIntercept and refreshListDisplay)
 // ---------------------------------------------------------------------------
+
+type SessionEntry = { session: SessionInfo; latestLine?: string }
 
 function listTimeBucket(lastActiveMs: number, now: number): string {
   const diffH = (now - lastActiveMs) / 3_600_000
@@ -28,8 +30,6 @@ function listTimeBucket(lastActiveMs: number, now: number): string {
   return `${daysDiff} days ago`
 }
 
-type SessionEntry = { session: SessionInfo; url?: string; latestLine?: string }
-
 function formatSessionEntry(e: SessionEntry): string {
   const s = e.session
   const desc = s.description ?? fallbackDescription(s.topic)
@@ -38,7 +38,8 @@ function formatSessionEntry(e: SessionEntry): string {
   const ctx = getContextPercent(s.tmuxName)
   const disconnected = transport.has(s.sessionId) ? '' : ' ⚠️'
   const emoji = sessionEmoji(s.tmuxName)
-  const title = e.url ? `[**${desc}**](${e.url})` : `**${desc}**`
+  const url = s.threadUrl
+  const title = url ? `[**${desc}**](${url})` : `**${desc}**`
   const provenance = s.originFrom ? ` ← ${s.originType === 'handoff' ? '🤝' : '🍴'} (${s.originFrom})` : ''
   const lines = [
     `${emoji} \`${s.tmuxName}\`${disconnected}${provenance}`,
@@ -65,6 +66,75 @@ function buildListOutput(list: SessionEntry[], now: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-refresh: FILO queue of up to 5 list-session messages that get silently
+// edited on lifecycle events. edit_message doesn't trigger push notifications.
+// ---------------------------------------------------------------------------
+
+const LIST_MSGS_FILE = join(STATE_DIR, 'list-messages.json')
+const MAX_LIST_MSGS = 5
+let lastListMsgs: Array<{ channelId: string; messageId: string }> = []
+
+function persistListMsgs(): void {
+  try {
+    writeFileSync(LIST_MSGS_FILE, JSON.stringify(lastListMsgs) + '\n', { mode: 0o600 })
+  } catch (err) {
+    process.stderr.write(`daemon: failed to persist list-messages: ${err}\n`)
+  }
+}
+
+function loadPersistedListMsgs(): void {
+  try {
+    const raw = readFileSync(LIST_MSGS_FILE, 'utf8')
+    lastListMsgs = JSON.parse(raw) as Array<{ channelId: string; messageId: string }>
+    if (lastListMsgs.length > 0) {
+      process.stderr.write(`daemon: restored ${lastListMsgs.length} list message(s)\n`)
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      process.stderr.write(`daemon: failed to load list-messages: ${err}\n`)
+    }
+  }
+}
+
+loadPersistedListMsgs()
+
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+export function debouncedRefreshListDisplay(): void {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void refreshListDisplay()
+  }, 500)
+}
+
+async function refreshListDisplay(): Promise<void> {
+  if (lastListMsgs.length === 0) return
+  const now = Date.now()
+  const all = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
+
+  let output: string
+  if (registry.size === 0) {
+    output = 'No active sessions.'
+  } else {
+    const entries: SessionEntry[] = all.map(s => ({ session: s }))
+    output = buildListOutput(entries, now)
+  }
+
+  let changed = false
+  for (let i = lastListMsgs.length - 1; i >= 0; i--) {
+    const lm = lastListMsgs[i]
+    try {
+      await gateway.edit(lm.channelId, lm.messageId, output)
+    } catch {
+      lastListMsgs.splice(i, 1)
+      changed = true
+    }
+  }
+  if (changed) persistListMsgs()
+}
+
+// ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
 
@@ -78,16 +148,22 @@ export async function handleListIntercept(msg: InboundMessage): Promise<void> {
   const now = Date.now()
   const all = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
 
-  const entries: SessionEntry[] = await Promise.all(all.map(async s => ({
-    session: s,
-    url: await gateway.getThreadUrl(s.threadId).catch(() => ''),
-  })))
+  const entries: SessionEntry[] = all.map(s => ({ session: s }))
 
+  // Phase 1: post immediately without latest-message info, grouped by time
   let sentMsg: { id: string } | undefined
   try {
     sentMsg = await gateway.send(msg.channelId, buildListOutput(entries, now), { replyTo: msg.id, unfurl: false })
   } catch { return }
 
+  // Track for auto-refresh on lifecycle events (FILO — most recent first)
+  if (sentMsg) {
+    lastListMsgs.unshift({ channelId: msg.channelId, messageId: sentMsg.id })
+    if (lastListMsgs.length > MAX_LIST_MSGS) lastListMsgs.pop()
+    persistListMsgs()
+  }
+
+  // Phase 2: fetch latest message per thread in parallel, then edit
   const latestInfos = await Promise.all(entries.map(async (e): Promise<string | undefined> => {
     try {
       const msgs = await gateway.fetchMessages(e.session.threadId, 1)

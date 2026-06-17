@@ -3,6 +3,7 @@ import { gateway } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { killSession, doSpawnSession, discoverClaudeSessionId } from '../session-lifecycle.js'
+import { debouncedRefreshListDisplay } from './status.js'
 import { fallbackDescription, formatDuration, getContextPercent } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
@@ -14,6 +15,7 @@ export async function handleThreadKillIntercept(msg: InboundMessage): Promise<vo
   }
   void gateway.react(msg.channelId, msg.id, '☠️').catch(() => {})
   await killSession(info, 'session ended')
+  debouncedRefreshListDisplay()
 }
 
 export async function handleForkIntercept(msg: InboundMessage, description?: string): Promise<void> {
@@ -71,6 +73,8 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
+
+    debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: fork intercept failed: ${errMsg}\n`)
@@ -92,8 +96,8 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
     return
   }
 
-  const lines = await Promise.all(forks.sort((a, b) => a.createdAt - b.createdAt).map(async s => {
-    const url = await gateway.getThreadUrl(s.threadId).catch(() => '')
+  const lines = forks.sort((a, b) => a.createdAt - b.createdAt).map(s => {
+    const url = s.threadUrl ?? ''
     const desc = s.description ?? fallbackDescription(s.topic)
     const ctx = getContextPercent(s.tmuxName)
     const msgs = s.messageCount ?? 0
@@ -101,7 +105,7 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
     const e = sessionEmoji(s.tmuxName)
     const title = url ? `[**${desc}**](${url})` : `**${desc}**`
     return `╰ ${e} \`${s.tmuxName}\` — ${title}\n    ◦ ${ctx} (${msgs} msgs · ${duration})`
-  }))
+  })
 
   const pe = sessionEmoji(info.tmuxName)
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}

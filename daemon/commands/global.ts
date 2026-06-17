@@ -6,6 +6,7 @@ import { gateway, STATE_DIR } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession } from '../session-lifecycle.js'
+import { debouncedRefreshListDisplay } from './status.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
@@ -14,8 +15,24 @@ const RESTART_PENDING_FILE = join(STATE_DIR, 'restart-pending.json')
 export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
 
+  // If spawn is typed in a thread with a dead session, target that thread so it gets reused
+  let chatId = msg.channelId
+  if (msg.isThread && msg.existingThreadId) {
+    const staleId = registry.getByThread(msg.existingThreadId)
+    if (staleId && registry.has(staleId)) {
+      const staleInfo = registry.get(staleId)!
+      let tmuxAlive = false
+      try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+      if (tmuxAlive) {
+        try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
+      } else {
+        chatId = msg.existingThreadId
+      }
+    }
+  }
+
   try {
-    const result = await doSpawnSession(topic, msg.channelId, msg.id)
+    const result = await doSpawnSession(topic, chatId, msg.id)
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
@@ -34,6 +51,8 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
+
+    debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: spawn intercept failed: ${errMsg}\n`)
@@ -56,6 +75,7 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
   }
   await killSession(target, 'session ended')
   try { await gateway.send(msg.channelId, `Killed session **${target.tmuxName}**`, { replyTo: msg.id }) } catch {}
+  debouncedRefreshListDisplay()
 }
 
 export async function handleRestartIntercept(msg: InboundMessage): Promise<void> {

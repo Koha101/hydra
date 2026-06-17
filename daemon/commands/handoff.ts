@@ -5,6 +5,7 @@ import { gateway, STATE_DIR } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession } from '../session-lifecycle.js'
+import { debouncedRefreshListDisplay } from './status.js'
 import { fallbackDescription, getContextPercent } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
@@ -230,6 +231,8 @@ export async function handleGoIntercept(msg: InboundMessage): Promise<void> {
     try {
       await gateway.send(info.threadId, `${ce} \`${result.name}\` is live. Type \`kill\` here to end \`${info.tmuxName}\`.`)
     } catch {}
+
+    debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: handoff go failed: ${errMsg}\n`)

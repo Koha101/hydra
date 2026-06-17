@@ -262,7 +262,7 @@ const mcp = new Server(
       '',
       'Messages arrive as <channel source="..." chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments are pre-downloaded — the downloaded_files attribute contains local file paths (semicolon-separated) ready to read directly. For older messages without downloaded_files, call download_attachment(chat_id, message_id) as fallback. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
-      'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
+      'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, edit_message for interim progress updates, and delete_message to remove a message. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
       'Format replies in standard (GitHub-flavored) Markdown — it renders natively in the chat. Bold is **double asterisks**; italic is *single asterisk* or _underscores_. Do NOT use single-asterisk for bold (that renders as italic). The full palette renders: `inline code`, ```fenced code blocks```, > blockquotes, "- "/"1." lists (nesting ok), | tables |, --- dividers, [links](url), and :emoji:/unicode. How much structure to use is your judgment — just use this syntax so it renders.',
       '',
@@ -353,6 +353,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
           text: { type: 'string' },
         },
         required: ['chat_id', 'message_id', 'text'],
+      },
+    },
+    {
+      name: 'delete_message',
+      description: 'Delete a message. Bot can delete its own messages; in DMs the bot can also delete user messages.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          message_id: { type: 'string' },
+        },
+        required: ['chat_id', 'message_id'],
       },
     },
     {

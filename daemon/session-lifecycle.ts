@@ -4,7 +4,7 @@ import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
+import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH, STATE_DIR } from './config.js'
 import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
@@ -96,6 +96,31 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     targetChannelId = DEFAULT_SESSION_CHANNEL
   }
 
+  // Clean up dead session in this thread before spawning
+  let respawnCount = 0
+  if (threadId) {
+    const staleId = registry.getByThread(threadId)
+    if (staleId) {
+      const stale = registry.get(staleId)
+      if (stale) {
+        try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+          respawnCount = (stale.respawnCount ?? 0) + 1
+          const anchor = gateway.getThreadAnchor(threadId)
+          if (anchor) {
+            void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+            const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+            const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
+            void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
+            if (respawnCount > 1) {
+              void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
+            }
+          }
+          await killSession(stale, 'replaced by new spawn')
+        }
+      }
+    }
+  }
+
   // Create thread if we don't have one yet
   if (!threadId) {
     if (messageId && targetChannelId === chatId) {
@@ -132,6 +157,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
+  const pluginDir = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord', '0.0.4')
   const channelFlag = `plugin:discord@claude-plugins-official`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required -- set it to the working directory for spawned sessions')
@@ -168,6 +194,22 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
+  // Build MCP config JSON for the bridge plugin (--channels is broken in Claude Code ≥2.1.x)
+  const mcpConfig = JSON.stringify({
+    mcpServers: {
+      'hydra-bridge': {
+        command: 'bun',
+        args: ['run', '--cwd', pluginDir, '--shell=bun', '--silent', 'start'],
+        env: {
+          DAEMON_SOCK: SOCK_PATH,
+          HYDRA_SESSION_ID: sessionId,
+        },
+      },
+    },
+  })
+  const mcpConfigPath = join(STATE_DIR, `mcp-${sessionId}.json`)
+  writeFileSync(mcpConfigPath, mcpConfig)
+
   // Build claude command -- fork adds --resume --fork-session
   const claudeArgs = isFork
     ? [
@@ -176,10 +218,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         `--fork-session`,
         `--model ${shq(SPAWN_MODEL)}`,
         `--channels ${shq(channelFlag)}`,
+        `--mcp-config ${shq(mcpConfigPath)}`,
         `--dangerously-skip-permissions`,
         shq(prompt),
       ].join(' ')
-    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --mcp-config ${shq(mcpConfigPath)} --dangerously-skip-permissions ${shq(prompt)}`
 
   const inner = [
     `cd ${shq(spawnCwd)}`,
@@ -216,14 +259,16 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     cwd: spawnCwd,
     platform: PLATFORM,
   }
+  const url = await gateway.getThreadUrl(threadId!)
+
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom, capabilities,
+    threadUrl: url || undefined,
+    ...(respawnCount > 0 ? { respawnCount } : {}),
   })
   registry.setThread(threadId!, sessionId)
   registry.persist()
-
-  const url = await gateway.getThreadUrl(threadId!)
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
