@@ -120,7 +120,21 @@ async function refreshListDisplay(): Promise<void> {
     output = 'No active sessions.'
   } else {
     const entries: SessionEntry[] = all.map(s => ({ session: s }))
-    output = buildListOutput(entries, now)
+
+    // Phase 2: fetch latest message per thread in parallel (mirrors handleListIntercept)
+    const latestInfos = await Promise.all(entries.map(async (e): Promise<string | undefined> => {
+      try {
+        const msgs = await gateway.fetchMessages(e.session.threadId, 1)
+        if (msgs.length === 0) return undefined
+        const m = msgs[0]
+        const who = m.authorId === gateway.botId ? `<@${gateway.botId}>` : 'you'
+        const msgUrl = gateway.getMessageUrl(e.session.threadId, m.id)
+        return msgUrl ? `[📩 latest](${msgUrl}) — by ${who}` : `📩 latest — by ${who}`
+      } catch { return undefined }
+    }))
+
+    const enriched = entries.map((e, i) => ({ ...e, latestLine: latestInfos[i] }))
+    output = buildListOutput(enriched, now)
   }
 
   let changed = false
