@@ -2,6 +2,7 @@ import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { createServer, type Socket } from 'net'
 import { execSync } from 'child_process'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
+import { setAnchorState } from './anchor-state.js'
 import { registry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -149,12 +150,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
     try {
       await gateway.send(info.threadId, `_Session crashed._ Use \`resume\` to reconnect or \`respawn\` to start fresh.`)
     } catch {}
-    const anchor = gateway.getThreadAnchor(info.threadId)
-    if (anchor) {
-      void gateway.unreact(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
-      void gateway.unreact(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
-      void gateway.react(anchor.channelId, anchor.messageId, '💥').catch(() => {})
-    }
+    await setAnchorState(info.threadId, 'crashed')
   }
 }
 

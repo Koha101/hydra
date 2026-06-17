@@ -9,6 +9,7 @@ import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+import { setAnchorState } from './anchor-state.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -22,7 +23,7 @@ export const killsInProgress = new Set<string>()
 // Kill session
 // ---------------------------------------------------------------------------
 
-export async function killSession(info: SessionInfo, reason: string, opts?: { skipAnchorEmoji?: boolean }): Promise<void> {
+export async function killSession(info: SessionInfo, reason: string): Promise<void> {
   if (killsInProgress.has(info.sessionId)) return
   killsInProgress.add(info.sessionId)
 
@@ -33,14 +34,7 @@ export async function killSession(info: SessionInfo, reason: string, opts?: { sk
       process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
     }
 
-    if (!opts?.skipAnchorEmoji) {
-      const anchor = gateway.getThreadAnchor(info.threadId)
-      if (anchor) {
-        void gateway.unreact(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
-        void gateway.unreact(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
-        void gateway.react(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
-      }
-    }
+    await setAnchorState(info.threadId, 'killed')
 
     const tmuxName = info.tmuxName
     try {
@@ -145,28 +139,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); staleAlive = true } catch {}
         if (!staleAlive) {
           respawnCount = (stale.respawnCount ?? 0) + 1
-          await killSession(stale, 'replaced by new spawn', { skipAnchorEmoji: true })
+          await killSession(stale, 'replaced by new spawn')
           registry.delete(stale.sessionId)
         }
       }
     }
-    // Anchor emoji lifecycle — resilient: works whether or not a stale session
-    // was in the registry (handles kill→respawn where session was already deleted)
-    const anchor = gateway.getThreadAnchor(threadId)
-    if (anchor) {
-      void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
-      void gateway.unreact(anchor.channelId, anchor.messageId, '💥').catch(() => {})
-      void gateway.react(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
-      if (respawnCount > 0) {
-        void gateway.react(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
-        const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
-        const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
-        void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
-        if (respawnCount > 1) {
-          void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
-        }
-      }
-    }
+    await setAnchorState(threadId, respawnCount > 0 ? 'zombie' : 'live', respawnCount)
   }
 
   // Create thread if we don't have one yet
