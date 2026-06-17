@@ -141,20 +141,23 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         if (!staleAlive) {
           respawnCount = (stale.respawnCount ?? 0) + 1
           await killSession(stale, 'replaced by new spawn')
-          const anchor = gateway.getThreadAnchor(threadId)
-          if (anchor) {
-            // Resurrection: clear death indicators, restore life indicators
-            void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
-            void gateway.unreact(anchor.channelId, anchor.messageId, '💥').catch(() => {})
-            void gateway.react(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
-            void gateway.react(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
-            const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
-            const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
-            void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
-            if (respawnCount > 1) {
-              void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
-            }
-          }
+        }
+      }
+    }
+    // Anchor emoji lifecycle — resilient: works whether or not a stale session
+    // was in the registry (handles kill→respawn where session was already deleted)
+    const anchor = gateway.getThreadAnchor(threadId)
+    if (anchor) {
+      void gateway.unreact(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+      void gateway.unreact(anchor.channelId, anchor.messageId, '💥').catch(() => {})
+      void gateway.react(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
+      if (respawnCount > 0) {
+        void gateway.react(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
+        const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+        const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
+        void gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx]).catch(() => {})
+        if (respawnCount > 1) {
+          void gateway.unreact(anchor.channelId, anchor.messageId, COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)]).catch(() => {})
         }
       }
     }
