@@ -3,7 +3,7 @@ import { createServer, type Socket } from 'net'
 import { execSync } from 'child_process'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
 import { setAnchorState } from './anchor-state.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
 import { pendingPermissions } from './permission.js'
@@ -147,6 +147,20 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
   if (!tmuxAlive) {
     process.stderr.write(`daemon: session ${info.tmuxName} crashed (tmux dead, bridge disconnected)\n`)
     registry.markDead(sessionId)
+
+    // Co-update ThreadInfo
+    const thread = threadRegistry.get(info.threadId)
+    if (thread) {
+      thread.currentSessionId = null
+      const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+      if (histEntry) {
+        histEntry.endedAt = Date.now()
+        histEntry.messageCount = info.messageCount ?? 0
+        histEntry.claudeSessionId = info.claudeSessionId
+      }
+      threadRegistry.persist()
+    }
+
     try {
       await gateway.send(info.threadId, `_Session crashed._ Use \`resume\` to reconnect or \`respawn\` to start fresh.`)
     } catch {}

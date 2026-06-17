@@ -2,6 +2,7 @@
 // States: live 🚀 | killed ☠️ | crashed 💥 | zombie 🚀🧟+count (resurrected)
 // Clears all state emoji before applying the new state to avoid races between callers.
 import { gateway } from './config.js'
+import { threadRegistry } from './sessions.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
@@ -44,5 +45,13 @@ export async function setAnchorState(
         }
       }
       break
+  }
+
+  // Co-update ThreadInfo
+  const thread = threadRegistry.get(threadId)
+  if (thread) {
+    thread.anchorState = state
+    thread.respawnCount = respawnCount ?? thread.respawnCount
+    threadRegistry.persist()
   }
 }

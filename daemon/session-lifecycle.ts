@@ -5,7 +5,7 @@ import { join, resolve } from 'path'
 import { homedir } from 'os'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
-import { registry, sessionEmoji } from './sessions.js'
+import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -60,6 +60,19 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 
     info.status = 'killed'
     registry.persist()
+
+    // Co-update ThreadInfo
+    const thread = threadRegistry.get(info.threadId)
+    if (thread) {
+      thread.currentSessionId = null
+      const histEntry = thread.sessionHistory.find(h => h.sessionId === info.sessionId)
+      if (histEntry) {
+        histEntry.endedAt = Date.now()
+        histEntry.messageCount = info.messageCount ?? 0
+        histEntry.claudeSessionId = info.claudeSessionId
+      }
+      threadRegistry.persist()
+    }
 
     setTimeout(() => {
       const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
@@ -364,6 +377,41 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   })
   registry.setThread(threadId!, sessionId)
   registry.persist()
+
+  // Co-update ThreadInfo
+  let thread = threadRegistry.get(threadId!)
+  if (!thread) {
+    thread = {
+      threadId: threadId!,
+      anchorMessageId,
+      threadUrl: url || undefined,
+      topic,
+      description: undefined,
+      anchorState: 'live',
+      respawnCount,
+      currentSessionId: sessionId,
+      createdAt: now,
+      lastActive: now,
+      totalMessages: 0,
+      sessionHistory: [],
+    }
+    threadRegistry.set(threadId!, thread)
+  } else {
+    thread.currentSessionId = sessionId
+    thread.lastActive = now
+    thread.threadUrl = url || thread.threadUrl
+    if (respawnCount > 0) thread.respawnCount = respawnCount
+  }
+  thread.sessionHistory.push({
+    sessionId,
+    tmuxName,
+    originType: originType!,
+    originFrom,
+    startedAt: now,
+    messageCount: 0,
+    claudeSessionId: undefined,
+  })
+  threadRegistry.persist()
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
