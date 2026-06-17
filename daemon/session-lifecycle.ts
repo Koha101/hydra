@@ -130,8 +130,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     } else {
       targetChannelId = DEFAULT_SESSION_CHANNEL
     }
+  }
 
   // Clean up dead session in this thread before spawning
+  // (runs for all paths: explicit existingThreadId, channel lookup, or spawn-in-dead-thread)
   if (threadId) {
     const staleId = registry.getByThread(threadId)
     if (staleId) {
@@ -199,7 +201,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       })
       threadId = thread.id
     }
-  }
   }
 
   const channelFlag = `plugin:discord@claude-plugins-official`
