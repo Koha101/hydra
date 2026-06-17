@@ -245,7 +245,9 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
   void gateway.react(msg.channelId, msg.id, '💚').catch(() => {})
   const uptimeMin = Math.round((Date.now() - daemonStartedAt) / 60000)
   const liveSessions = registry.liveSessions()
-  const detached = threadRegistry.detachedThreads()
+  const recoverable = threadRegistry.detachedThreads()
+  const allDetached = threadRegistry.allDetachedThreads()
+  const killedCount = allDetached.length - recoverable.length
   const connected = liveSessions.filter(s => transport.has(s.sessionId))
   const disconnected = liveSessions.filter(s => !transport.has(s.sessionId))
   const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
@@ -261,7 +263,7 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
     `• Uptime: ${uptimeMin}m`,
     `• Gateway: ${PLATFORM}`,
     `• Heartbeat: ${heartbeatAge}`,
-    `• Sessions: ${connected.length} connected${disconnected.length > 0 ? `, ${disconnected.length} disconnected` : ''}${detached.length > 0 ? `, ${detached.length} recoverable` : ''}`,
+    `• Sessions: ${connected.length} connected${disconnected.length > 0 ? `, ${disconnected.length} disconnected` : ''}${recoverable.length > 0 ? `, ${recoverable.length} recoverable` : ''}${killedCount > 0 ? `, ${killedCount} killed` : ''}`,
     `• Queued messages: ${queuedMsgCount}`,
   ]
 

@@ -255,8 +255,13 @@ export class ThreadRegistry {
     return this.threads.values()
   }
 
-  /** Threads with no current session — replacement for deadSessions() */
+  /** Crashed threads eligible for recovery (not intentionally killed) */
   detachedThreads(): ThreadInfo[] {
+    return [...this.threads.values()].filter(t => t.currentSessionId === null && t.anchorState === 'crashed')
+  }
+
+  /** All threads with no current session (killed + crashed) */
+  allDetachedThreads(): ThreadInfo[] {
     return [...this.threads.values()].filter(t => t.currentSessionId === null)
   }
 
