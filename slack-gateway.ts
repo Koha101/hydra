@@ -852,6 +852,7 @@ export class SlackGateway implements ChatGateway {
       '💀': 'skull',
       '💥': 'boom',
       '🧟': 'zombie',
+      '🔮': 'crystal_ball',
     }
     if (map[emoji]) return map[emoji]
     // If it's already a text name (no colons), return as-is
