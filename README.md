@@ -157,6 +157,23 @@ Spawn isolated Claude sessions from chat:
 
 Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts. Kill them manually with `kill: <name>`.
 
+## Git Workflow
+
+**`live` is the primary branch.** It runs the daemon and is the source of truth.
+
+- **Branch features off `live`**, not `main`. `live` carries cherry-picks and hotfixes that `main` doesn't have — branching from `main` causes merges to silently drop `live`-only changes.
+- **PR to `main`** for upstream review (Sam's review gate). PRs to `main` are for code review, not deployment.
+- **Cherry-pick or merge into `live`** to deploy immediately. Don't wait for the PR to merge.
+- **Periodically sync:** merge `live` → `main` to keep `main` current, or rebase feature branches onto `live` before merging.
+
+```
+live  ◄── branch features from here, cherry-pick/merge back here
+  │
+  └── PR ──► main  (review gate, not deployment gate)
+```
+
+**Why:** Multiple sessions work on `live` concurrently. If a feature branch forks from `main`, its merge into `live` can silently overwrite code that was cherry-picked to `live` but isn't on `main` yet.
+
 ## Files
 
 | File | Purpose |
