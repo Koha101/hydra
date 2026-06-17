@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync, statSync } from 'fs'
+import { readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR, PLATFORM } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { fallbackDescription, formatDuration, getContextPercent } from '../util.js'
+import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export const daemonStartedAt = Date.now()
@@ -77,7 +77,7 @@ let lastListMsgs: Array<{ channelId: string; messageId: string }> = []
 
 function persistListMsgs(): void {
   try {
-    writeFileSync(LIST_MSGS_FILE, JSON.stringify(lastListMsgs) + '\n', { mode: 0o600 })
+    atomicWriteFileSync(LIST_MSGS_FILE, JSON.stringify(lastListMsgs) + '\n')
   } catch (err) {
     process.stderr.write(`daemon: failed to persist list-messages: ${err}\n`)
   }

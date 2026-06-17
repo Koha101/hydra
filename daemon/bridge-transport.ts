@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import type { Socket } from 'net'
 import { STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
+import { atomicWriteFileSync } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,7 +103,7 @@ export class BridgeTransport {
         if (queue.length > 0) data[sid] = queue
       }
       if (Object.keys(data).length > 0) {
-        writeFileSync(this.queueFile, JSON.stringify(data) + '\n', { mode: 0o600 })
+        atomicWriteFileSync(this.queueFile, JSON.stringify(data) + '\n')
       } else {
         try { unlinkSync(this.queueFile) } catch {}
       }

@@ -1,8 +1,10 @@
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
+import { readFileSync, unlinkSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
+import { atomicWriteFileSync } from './util.js'
+import type { AnchorState } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,7 +149,7 @@ export class SessionRegistry {
   persist(): void {
     try {
       const data = [...this.sessions.values()]
-      writeFileSync(this.sessionsFile, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+      atomicWriteFileSync(this.sessionsFile, JSON.stringify(data, null, 2) + '\n')
     } catch (err) {
       process.stderr.write(`daemon: failed to persist sessions: ${err}\n`)
     }
@@ -281,7 +283,7 @@ export class SessionRegistry {
       version: 1,
     }
     try {
-      writeFileSync(this.manifestFile, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+      atomicWriteFileSync(this.manifestFile, JSON.stringify(manifest, null, 2) + '\n')
       process.stderr.write(`daemon: wrote recovery manifest with ${existing.length} session(s)\n`)
     } catch (err) {
       process.stderr.write(`daemon: failed to write recovery manifest: ${err}\n`)

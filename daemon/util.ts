@@ -1,7 +1,13 @@
-import { realpathSync } from 'fs'
+import { realpathSync, writeFileSync, renameSync } from 'fs'
 import { join, sep } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR } from './config.js'
+
+export function atomicWriteFileSync(filePath: string, data: string, mode?: number): void {
+  const tmp = filePath + '.tmp'
+  writeFileSync(tmp, data, { mode: mode ?? 0o600 })
+  renameSync(tmp, filePath)
+}
 
 export function fallbackDescription(topic: string): string {
   const firstLine = topic.split('\n')[0].replace(/^\/\S+\s*/, '').trim()
