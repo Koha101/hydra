@@ -82,6 +82,13 @@ export type ButtonClick = {
   clearButtons: (text: string) => Promise<void>
 }
 
+export type ReactionEvent = {
+  channelId: string
+  messageId: string
+  userId: string
+  emoji: string
+}
+
 export type ThreadStarterInfo = {
   threadName: string
   starterUser: string
@@ -110,6 +117,7 @@ export interface ChatGateway {
   onThreadDelete(handler: (threadId: string) => void): void
   onMessageDelete(handler: (messageId: string, threadId: string | null) => void): void
   onButtonClick(handler: (click: ButtonClick) => void): void
+  onReaction?(handler: (event: ReactionEvent) => Promise<void>): void
 
   // Sending
   send(channelId: string, text: string, opts?: {

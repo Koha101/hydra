@@ -61,6 +61,7 @@ export class SlackGateway implements ChatGateway {
   private threadDeleteHandler: ((threadId: string) => void) | null = null
   private messageDeleteHandler: ((messageId: string, threadId: string | null) => void) | null = null
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
+  private reactionHandler: ((event: import('./gateway.js').ReactionEvent) => Promise<void>) | null = null
   private recentSentIds = new Set<string>()
   private appToken: string
   private token: string | null = null
@@ -221,6 +222,21 @@ export class SlackGateway implements ChatGateway {
       })
     })
 
+    // Handle reaction events
+    this.app.event('reaction_added', async ({ event }) => {
+      this.touchHeartbeat()
+      if (!this.reactionHandler) return
+      const channelId = event.item.type === 'message' ? event.item.channel : null
+      const messageId = event.item.type === 'message' ? event.item.ts : null
+      if (!channelId || !messageId) return
+      this.reactionHandler({
+        channelId,
+        messageId,
+        userId: event.user,
+        emoji: event.reaction,
+      }).catch(e => process.stderr.write(`slack gateway: reaction handler error: ${e}\n`))
+    })
+
     await this.app.start()
 
     // Get bot identity
@@ -268,6 +284,10 @@ export class SlackGateway implements ChatGateway {
 
   onButtonClick(handler: (click: ButtonClick) => void): void {
     this.buttonClickHandler = handler
+  }
+
+  onReaction(handler: (event: import('./gateway.js').ReactionEvent) => Promise<void>): void {
+    this.reactionHandler = handler
   }
 
   /** Parse composite thread IDs (channelId:threadTs) into channel + thread_ts */
