@@ -100,29 +100,35 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const threadName = `${tmuxName}: ${topic}`.slice(0, 100)
   const isFork = !!opts?.forkFrom
   const isHandoff = !!opts?.handedOffFrom
-  const originType: 'spawn' | 'fork' | 'handoff' = isFork ? 'fork' : isHandoff ? 'handoff' : 'spawn'
-  const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom
+  const isResume = !!opts?.resumeFrom
+  const isResurrect = !!opts?.existingThreadId && !isResume
+  const originType: SessionInfo['originType'] = isFork ? 'fork' : isHandoff ? 'handoff' : isResurrect ? 'resurrect' : 'spawn'
+  const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom ?? opts?.resurrectFrom
 
-  // Determine where to create the thread
-  let targetChannelId = chatId
-  if (targetChannelId) {
-    try {
-      const ch = await gateway.fetchChannel(targetChannelId)
-      if (ch.isThread) {
-        threadId = ch.id
-      } else if (ch.isDM && !gateway.canThreadInDM) {
-        // DMs can't host threads on this platform -- redirect to a guild channel
-        targetChannelId = DEFAULT_SESSION_CHANNEL
-      }
-    } catch {
-      targetChannelId = DEFAULT_SESSION_CHANNEL
-    }
-  } else {
-    targetChannelId = DEFAULT_SESSION_CHANNEL
+  if (opts?.existingThreadId) {
+    threadId = opts.existingThreadId
   }
 
-  // Clean up dead session in this thread before spawning
+  // Determine where to create the thread
   let respawnCount = 0
+  let targetChannelId = chatId
+  if (!threadId) {
+    if (targetChannelId) {
+      try {
+        const ch = await gateway.fetchChannel(targetChannelId)
+        if (ch.isThread) {
+          threadId = ch.id
+        } else if (ch.isDM && !gateway.canThreadInDM) {
+          targetChannelId = DEFAULT_SESSION_CHANNEL
+        }
+      } catch {
+        targetChannelId = DEFAULT_SESSION_CHANNEL
+      }
+    } else {
+      targetChannelId = DEFAULT_SESSION_CHANNEL
+    }
+
+  // Clean up dead session in this thread before spawning
   if (threadId) {
     const staleId = registry.getByThread(threadId)
     if (staleId) {
@@ -180,6 +186,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       })
       threadId = thread.id
     }
+  }
   }
 
   const channelFlag = `plugin:discord@claude-plugins-official`
@@ -278,22 +285,44 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `Mention you were forked from **${originFrom}** and describe your focus.`,
       `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
     ].join('\n')
+  } else if (isResurrect) {
+    prompt = [
+      `You are ${tmuxName}, a resurrected session resuming work in an existing thread.`,
+      ``,
+      `Your chat thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
+      `Read your memory files for context.`,
+      `Use fetch_messages(channel="${threadId}", limit=50) to read the thread history.`,
+      `Reconstruct context and continue from where the previous session left off.`,
+      `Post a summary of what you found and what you're picking up using reply(chat_id=${threadId}).`,
+      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
+    ].join('\n')
   } else {
     prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
-  // Build claude command -- fork adds --resume --fork-session
-  const claudeArgs = isFork
-    ? [
-        `claude`,
-        `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
-        `--fork-session`,
-        `--model ${shq(SPAWN_MODEL)}`,
-        `--channels ${shq(channelFlag)}`,
-        `--dangerously-skip-permissions`,
-        shq(prompt),
-      ].join(' ')
-    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+  // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
+  let claudeArgs: string
+  if (isFork) {
+    claudeArgs = [
+      `claude`,
+      `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
+      `--fork-session`,
+      `--model ${shq(SPAWN_MODEL)}`,
+      `--channels ${shq(channelFlag)}`,
+      `--dangerously-skip-permissions`,
+      shq(prompt),
+    ].join(' ')
+  } else if (isResume) {
+    claudeArgs = [
+      `claude`,
+      `--resume ${shq(opts!.resumeFrom!)}`,
+      `--model ${shq(SPAWN_MODEL)}`,
+      `--channels ${shq(channelFlag)}`,
+      `--dangerously-skip-permissions`,
+    ].join(' ')
+  } else {
+    claudeArgs = `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+  }
 
   const inner = [
     `cd ${shq(effectiveCwd)}`,
@@ -343,6 +372,64 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   registry.persist()
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
+}
+
+// ---------------------------------------------------------------------------
+// Recovery primitives — shared by resume/respawn commands and recover cascade
+// ---------------------------------------------------------------------------
+
+export const HEALTH_TIMEOUT_MS = 30_000
+
+export function waitForBridge(sessionId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    if (transport.has(sessionId)) { resolve(true); return }
+    const interval = setInterval(() => {
+      if (transport.has(sessionId)) {
+        clearInterval(interval)
+        clearTimeout(timer)
+        resolve(true)
+      }
+    }, 1_000)
+    const timer = setTimeout(() => {
+      clearInterval(interval)
+      resolve(false)
+    }, timeoutMs)
+  })
+}
+
+export async function tryResume(dead: { topic: string; threadId: string; claudeSessionId?: string; threadUrl?: string }): Promise<SpawnResult | null> {
+  if (!dead.claudeSessionId) return null
+  try {
+    const result = await doSpawnSession(dead.topic, undefined, undefined, {
+      existingThreadId: dead.threadId,
+      resumeFrom: dead.claudeSessionId,
+    })
+    const ok = await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)
+    if (!ok) {
+      const info = registry.get(result.sessionId)
+      if (info) await killSession(info, 'resume health check failed').catch(() => {})
+      return null
+    }
+    transport.sendOrQueue(result.sessionId, {
+      type: 'notification',
+      content: `[system] You were interrupted by a system crash and have been recovered with full conversation context. Check your thread for any messages you may have missed, and continue where you left off.`,
+      meta: { chat_id: dead.threadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+    })
+    return result
+  } catch {
+    return null
+  }
+}
+
+export async function tryRespawn(threadId: string, topic: string, resurrectFrom?: string): Promise<SpawnResult | null> {
+  try {
+    return await doSpawnSession(topic, undefined, undefined, {
+      existingThreadId: threadId,
+      resurrectFrom,
+    })
+  } catch {
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

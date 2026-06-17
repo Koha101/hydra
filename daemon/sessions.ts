@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
@@ -28,11 +28,12 @@ export type SessionInfo = {
   description?: string
   messageCount?: number
   claudeSessionId?: string
-  originType?: 'spawn' | 'fork' | 'handoff'
+  originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
-  capabilities?: SessionCapabilities
   respawnCount?: number
   threadUrl?: string
+  capabilities?: SessionCapabilities
+  status?: 'live' | 'dead'
   worktreeRepo?: string
   worktreePath?: string
 }
@@ -43,6 +44,15 @@ export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
   handedOffFrom?: string
   artifact?: string
+  existingThreadId?: string
+  resurrectFrom?: string
+  resumeFrom?: string
+}
+
+export type RecoveryManifest = {
+  sessions: SessionInfo[]
+  createdAt: number
+  version: 1
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +109,11 @@ export class SessionRegistry {
   readonly threadToSession = new Map<string, string>()
   private readonly sessionsFile: string
 
+  private readonly manifestFile: string
+
   constructor() {
     this.sessionsFile = join(STATE_DIR, 'sessions.json')
+    this.manifestFile = join(STATE_DIR, 'recovery-manifest.json')
     this.loadPersisted()
   }
 
@@ -141,7 +154,7 @@ export class SessionRegistry {
   }
 
   pickSessionName(): string {
-    const used = new Set([...this.sessions.values()].map(s => s.tmuxName))
+    const used = new Set([...this.sessions.values()].filter(s => s.status !== 'dead').map(s => s.tmuxName))
     try {
       const tmuxOut = execSync('tmux ls -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' })
       for (const line of tmuxOut.split('\n')) {
@@ -162,31 +175,110 @@ export class SessionRegistry {
     return this.sessions.get(mappedSession) ?? null
   }
 
+  deadSessions(): SessionInfo[] {
+    return [...this.sessions.values()].filter(s => s.status === 'dead')
+  }
+
+  liveSessions(): SessionInfo[] {
+    return [...this.sessions.values()].filter(s => s.status !== 'dead')
+  }
+
+  markDead(sessionId: string): void {
+    const info = this.sessions.get(sessionId)
+    if (info) {
+      info.status = 'dead'
+      this.persist()
+    }
+  }
+
+  removeDead(threadId: string): void {
+    const sessionId = this.threadToSession.get(threadId)
+    if (!sessionId) return
+    const info = this.sessions.get(sessionId)
+    if (info?.status === 'dead') {
+      this.sessions.delete(sessionId)
+      this.threadToSession.delete(threadId)
+      this.persist()
+    }
+  }
+
+  readRecoveryManifest(): RecoveryManifest | null {
+    try {
+      const raw = readFileSync(this.manifestFile, 'utf8')
+      const manifest = JSON.parse(raw) as RecoveryManifest
+      const TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - manifest.createdAt > TTL_MS) {
+        process.stderr.write(`daemon: recovery manifest expired (>24h), deleting\n`)
+        unlinkSync(this.manifestFile)
+        return null
+      }
+      return manifest
+    } catch {
+      return null
+    }
+  }
+
+  deleteRecoveryManifest(): void {
+    try { unlinkSync(this.manifestFile) } catch {}
+  }
+
   private loadPersisted(): void {
     try {
       const raw = readFileSync(this.sessionsFile, 'utf8')
       const data = JSON.parse(raw) as SessionInfo[]
-      let restored = 0
-      let dead = 0
+      let live = 0, dead = 0
       for (const info of data) {
-        try {
-          execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-        } catch {
-          dead++
-          continue
-        }
+        let tmuxAlive = false
+        try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+        info.status = tmuxAlive ? 'live' : 'dead'
         this.sessions.set(info.sessionId, info)
         this.threadToSession.set(info.threadId, info.sessionId)
-        restored++
+        if (tmuxAlive) live++; else dead++
       }
-      if (restored > 0 || dead > 0) {
-        process.stderr.write(`daemon: restored ${restored} session(s), pruned ${dead} dead\n`)
+      if (live > 0 || dead > 0) {
+        process.stderr.write(`daemon: restored ${live} live, ${dead} dead session(s)\n`)
       }
-      if (dead > 0) this.persist()
+      if (dead > 0) {
+        this.writeRecoveryManifest(data.filter(s => s.status === 'dead'))
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
       }
+    }
+  }
+
+  private writeRecoveryManifest(deadSessions: SessionInfo[]): void {
+    let existing: SessionInfo[] = []
+    try {
+      const raw = readFileSync(this.manifestFile, 'utf8')
+      const prev = JSON.parse(raw) as RecoveryManifest
+      const TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - prev.createdAt < TTL_MS) {
+        existing = prev.sessions
+      } else {
+        process.stderr.write(`daemon: discarding stale recovery manifest (>24h)\n`)
+      }
+    } catch {}
+
+    const seen = new Set(existing.map(s => s.threadId))
+    for (const s of deadSessions) {
+      if (!seen.has(s.threadId)) {
+        existing.push(s)
+        seen.add(s.threadId)
+      }
+    }
+
+    const manifest: RecoveryManifest = {
+      sessions: existing,
+      createdAt: Date.now(),
+      version: 1,
+    }
+    try {
+      writeFileSync(this.manifestFile, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+      process.stderr.write(`daemon: wrote recovery manifest with ${existing.length} session(s)\n`)
+    } catch (err) {
+      process.stderr.write(`daemon: failed to write recovery manifest: ${err}\n`)
     }
   }
 }
