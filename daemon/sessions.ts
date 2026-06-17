@@ -226,11 +226,9 @@ export class SessionRegistry {
     try {
       const raw = readFileSync(this.sessionsFile, 'utf8')
       const data = JSON.parse(raw) as SessionInfo[]
-      let live = 0, dead = 0, killed = 0, pruned = 0
-      const KILLED_TTL_MS = 24 * 60 * 60 * 1000
+      let live = 0, dead = 0, killed = 0
       for (const info of data) {
         if (info.status === 'killed') {
-          if (Date.now() - info.lastActive > KILLED_TTL_MS) { pruned++; continue }
           this.sessions.set(info.sessionId, info)
           this.threadToSession.set(info.threadId, info.sessionId)
           killed++
@@ -244,7 +242,7 @@ export class SessionRegistry {
         if (tmuxAlive) live++; else dead++
       }
       if (live > 0 || dead > 0 || killed > 0) {
-        process.stderr.write(`daemon: restored ${live} live, ${dead} dead, ${killed} killed session(s)${pruned > 0 ? ` (pruned ${pruned} stale)` : ''}\n`)
+        process.stderr.write(`daemon: restored ${live} live, ${dead} dead, ${killed} killed session(s)\n`)
       }
       if (dead > 0) {
         this.writeRecoveryManifest(data.filter(s => s.status === 'dead'))
