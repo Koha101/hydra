@@ -40,7 +40,6 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** �
 
 > **Use your own app — don't share one.** A Slack app is a single event stream: pointing a second daemon at the same app token splits messages unpredictably across both. One app per deployment.
 
-> **Existing apps:** if you're adding `reaction_added` to an app that was already installed, you must **reinstall the app** (Install App → Reinstall to Workspace) for the new event subscription to take effect. New events don't activate until Slack re-authorizes the scopes.
 
 ## 2. Generate the two tokens
 
