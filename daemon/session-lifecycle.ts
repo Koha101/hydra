@@ -19,6 +19,24 @@ const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
 export const killsInProgress = new Set<string>()
 
+export function detachSession(sessionId: string): void {
+  const info = registry.get(sessionId)
+  if (!info) return
+  const thread = threadRegistry.get(info.threadId)
+  if (thread) {
+    thread.currentSessionId = null
+    const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+    if (histEntry) {
+      histEntry.endedAt = Date.now()
+      histEntry.messageCount = info.messageCount ?? 0
+      histEntry.claudeSessionId = info.claudeSessionId
+    }
+    threadRegistry.persist()
+  }
+  registry.delete(sessionId)
+  registry.persist()
+}
+
 // ---------------------------------------------------------------------------
 // Kill session
 // ---------------------------------------------------------------------------
@@ -58,21 +76,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       } catch {}
     }
 
-    info.status = 'killed'
-    registry.persist()
-
-    // Co-update ThreadInfo
-    const thread = threadRegistry.get(info.threadId)
-    if (thread) {
-      thread.currentSessionId = null
-      const histEntry = thread.sessionHistory.find(h => h.sessionId === info.sessionId)
-      if (histEntry) {
-        histEntry.endedAt = Date.now()
-        histEntry.messageCount = info.messageCount ?? 0
-        histEntry.claudeSessionId = info.claudeSessionId
-      }
-      threadRegistry.persist()
-    }
+    detachSession(info.sessionId)
 
     setTimeout(() => {
       const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
@@ -144,18 +148,20 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   // Clean up dead session in this thread before spawning
   // (runs for all paths: explicit existingThreadId, channel lookup, or spawn-in-dead-thread)
   if (threadId) {
-    const staleId = registry.getByThread(threadId)
-    if (staleId) {
-      const stale = registry.get(staleId)
+    const existingThread = threadRegistry.get(threadId)
+    if (existingThread?.currentSessionId) {
+      const stale = registry.get(existingThread.currentSessionId)
       if (stale) {
         let staleAlive = false
         try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); staleAlive = true } catch {}
         if (!staleAlive) {
-          respawnCount = (stale.respawnCount ?? 0) + 1
           await killSession(stale, 'replaced by new spawn')
-          registry.delete(stale.sessionId)
         }
       }
+    }
+    // Only increment respawnCount when a stale session was actually replaced
+    if (existingThread && existingThread.currentSessionId === null) {
+      respawnCount = existingThread.respawnCount + 1
     }
     await setAnchorState(threadId, respawnCount > 0 ? 'zombie' : 'live', respawnCount)
   }
@@ -369,13 +375,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const url = await gateway.getThreadUrl(threadId!)
 
   registry.set(sessionId, {
-    sessionId, topic, threadId: threadId!, anchorMessageId, createdAt: now, lastActive: now,
+    sessionId, threadId: threadId!, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom, capabilities,
-    threadUrl: url || undefined,
-    ...(respawnCount > 0 ? { respawnCount } : {}),
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
   })
-  registry.setThread(threadId!, sessionId)
   registry.persist()
 
   // Co-update ThreadInfo

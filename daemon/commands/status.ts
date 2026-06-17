@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR, PLATFORM } from '../config.js'
-import { registry, sessionEmoji } from '../sessions.js'
+import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
@@ -32,13 +32,14 @@ function listTimeBucket(lastActiveMs: number, now: number): string {
 
 function formatSessionEntry(e: SessionEntry): string {
   const s = e.session
-  const desc = s.description ?? fallbackDescription(s.topic)
+  const thread = threadRegistry.get(s.threadId)
+  const desc = s.description ?? fallbackDescription(thread?.topic ?? '')
   const duration = formatDuration(Date.now() - s.createdAt)
   const msgCount = s.messageCount ?? 0
   const ctx = getContextPercent(s.tmuxName)
-  const badge = s.status === 'dead' ? ' ☠️' : transport.has(s.sessionId) ? '' : ' ⚠️'
+  const badge = transport.has(s.sessionId) ? '' : ' ⚠️'
   const emoji = sessionEmoji(s.tmuxName)
-  const url = s.threadUrl
+  const url = thread?.threadUrl
   const title = url ? `[**${desc}**](${url})` : `**${desc}**`
   const provenanceEmoji = s.originType === 'handoff' ? '🤝' : s.originType === 'resurrect' ? '🫀' : '🍴'
   const provenance = s.originFrom ? ` ← ${provenanceEmoji} (${s.originFrom})` : ''
@@ -218,7 +219,8 @@ export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
   const duration = formatDuration(Date.now() - info.createdAt)
   const msgs = info.messageCount ?? 0
   const status = transport.has(info.sessionId) ? 'connected' : 'disconnected'
-  const desc = info.description ?? fallbackDescription(info.topic)
+  const thread = threadRegistry.get(info.threadId)
+  const desc = info.description ?? fallbackDescription(thread?.topic ?? '')
 
   const forkCount = [...registry.values()].filter(s => s.originType === 'fork' && s.originFrom === info.tmuxName).length
 
@@ -243,7 +245,7 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
   void gateway.react(msg.channelId, msg.id, '💚').catch(() => {})
   const uptimeMin = Math.round((Date.now() - daemonStartedAt) / 60000)
   const liveSessions = registry.liveSessions()
-  const deadSessions = registry.deadSessions()
+  const detached = threadRegistry.detachedThreads()
   const connected = liveSessions.filter(s => transport.has(s.sessionId))
   const disconnected = liveSessions.filter(s => !transport.has(s.sessionId))
   const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
@@ -259,15 +261,19 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
     `• Uptime: ${uptimeMin}m`,
     `• Gateway: ${PLATFORM}`,
     `• Heartbeat: ${heartbeatAge}`,
-    `• Sessions: ${connected.length} connected${disconnected.length > 0 ? `, ${disconnected.length} disconnected` : ''}${deadSessions.length > 0 ? `, ${deadSessions.length} dead` : ''}`,
+    `• Sessions: ${connected.length} connected${disconnected.length > 0 ? `, ${disconnected.length} disconnected` : ''}${detached.length > 0 ? `, ${detached.length} recoverable` : ''}`,
     `• Queued messages: ${queuedMsgCount}`,
   ]
 
   if (disconnected.length > 0) {
     lines.push(`• ⚠️ Disconnected: ${disconnected.map(s => s.tmuxName).join(', ')}`)
   }
-  if (deadSessions.length > 0) {
-    lines.push(`• ☠️ Dead (recoverable): ${deadSessions.map(s => s.tmuxName).join(', ')}`)
+  if (detached.length > 0) {
+    const names = detached.map(t => {
+      const last = t.sessionHistory[t.sessionHistory.length - 1]
+      return last?.tmuxName ?? t.threadId.slice(0, 8)
+    })
+    lines.push(`• 💤 Recoverable threads: ${names.join(', ')}`)
   }
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}

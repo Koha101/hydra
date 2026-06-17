@@ -1,6 +1,6 @@
 import { statSync } from 'fs'
 import { gateway, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
@@ -193,11 +193,12 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'list_sessions': {
         const sorted = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
         const list = sorted.map(s => {
-          const desc = s.description ?? fallbackDescription(s.topic)
+          const thread = threadRegistry.get(s.threadId)
+          const desc = s.description ?? fallbackDescription(thread?.topic ?? '')
           return {
             name: s.tmuxName,
             description: desc,
-            url: s.threadUrl ?? '',
+            url: thread?.threadUrl ?? '',
             context: getContextPercent(s.tmuxName),
             messages: s.messageCount ?? 0,
             running_for: formatDuration(Date.now() - s.createdAt),
@@ -226,7 +227,8 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
         if (sessionId) {
           targetId = sessionId
         } else if (threadId) {
-          targetId = registry.getByThread(threadId)
+          const thread = threadRegistry.get(threadId)
+          targetId = thread?.currentSessionId ?? undefined
         }
 
         if (!targetId || !registry.has(targetId)) {

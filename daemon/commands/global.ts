@@ -3,8 +3,8 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { gateway, STATE_DIR } from '../config.js'
-import { registry, sessionEmoji } from '../sessions.js'
-import type { SessionInfo } from '../sessions.js'
+import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
+import type { ThreadInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
@@ -19,9 +19,9 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   // If spawn is typed in a thread with a dead session, target that thread so it gets reused
   let chatId = msg.channelId
   if (msg.isThread && msg.existingThreadId) {
-    const staleId = registry.getByThread(msg.existingThreadId)
-    if (staleId && registry.has(staleId)) {
-      const staleInfo = registry.get(staleId)!
+    const thread = threadRegistry.get(msg.existingThreadId)
+    if (thread?.currentSessionId && registry.has(thread.currentSessionId)) {
+      const staleInfo = registry.get(thread.currentSessionId)!
       let tmuxAlive = false
       try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
       if (tmuxAlive) {
@@ -29,6 +29,8 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
       } else {
         chatId = msg.existingThreadId
       }
+    } else if (thread && !thread.currentSessionId) {
+      chatId = msg.existingThreadId
     }
   }
 
@@ -65,7 +67,8 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
   void gateway.react(msg.channelId, msg.id, '☠️').catch(() => {})
   let target: ReturnType<typeof registry.get>
   for (const s of registry.values()) {
-    if (s.tmuxName === name || s.topic.toLowerCase() === name.toLowerCase()) {
+    const t = threadRegistry.get(s.threadId)
+    if (s.tmuxName === name || (t?.topic ?? '').toLowerCase() === name.toLowerCase()) {
       target = s
       break
     }
@@ -177,22 +180,29 @@ let recoveryInProgress = false
 const MAX_CONCURRENT = 2
 const STAGGER_MS = 5_000
 
-async function recoverOne(dead: SessionInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
-  const originalName = dead.tmuxName
+async function recoverOne(thread: ThreadInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
+  const lastSession = thread.sessionHistory[thread.sessionHistory.length - 1]
+  const originalName = lastSession?.tmuxName ?? thread.threadId.slice(0, 8)
+  const claudeSessionId = lastSession?.claudeSessionId
 
-  if (dead.claudeSessionId) {
-    const result = await tryResume(dead)
+  if (claudeSessionId) {
+    const result = await tryResume({
+      topic: thread.topic,
+      threadId: thread.threadId,
+      claudeSessionId,
+      threadUrl: thread.threadUrl,
+    })
     if (result) {
-      return { name: originalName, method: 'resumed', newName: result.name, threadUrl: dead.threadUrl }
+      return { name: originalName, method: 'resumed', newName: result.name, threadUrl: thread.threadUrl }
     }
     process.stderr.write(`daemon: recover ${originalName}: resume failed or health check timed out, falling back to resurrect\n`)
   }
 
-  const result = await tryRespawn(dead.threadId, dead.topic, originalName)
+  const result = await tryRespawn(thread.threadId, thread.topic, originalName)
   if (result) {
-    return { name: originalName, method: 'resurrected', newName: result.name, threadUrl: dead.threadUrl }
+    return { name: originalName, method: 'resurrected', newName: result.name, threadUrl: thread.threadUrl }
   }
-  return { name: originalName, method: 'failed', reason: 'both resume and resurrect failed', threadUrl: dead.threadUrl }
+  return { name: originalName, method: 'failed', reason: 'both resume and resurrect failed', threadUrl: thread.threadUrl }
 }
 
 export async function handleRecoverIntercept(msg: InboundMessage, targetName?: string): Promise<void> {
@@ -203,17 +213,20 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
     return
   }
 
-  const allDead = registry.deadSessions()
-  if (allDead.length === 0) {
-    try { await gateway.send(msg.channelId, 'No dead sessions to recover.', { replyTo: msg.id }) } catch {}
+  const detached = threadRegistry.detachedThreads()
+  if (detached.length === 0) {
+    try { await gateway.send(msg.channelId, 'No recoverable threads.', { replyTo: msg.id }) } catch {}
     return
   }
 
-  let targets = allDead
+  let targets = detached
   if (targetName && targetName !== 'all') {
-    targets = targets.filter(s => s.tmuxName === targetName)
+    targets = targets.filter(t => {
+      const last = t.sessionHistory[t.sessionHistory.length - 1]
+      return last?.tmuxName === targetName
+    })
     if (targets.length === 0) {
-      try { await gateway.send(msg.channelId, `"${targetName}" not found in dead sessions.`, { replyTo: msg.id }) } catch {}
+      try { await gateway.send(msg.channelId, `"${targetName}" not found in recoverable threads.`, { replyTo: msg.id }) } catch {}
       return
     }
   }
@@ -233,17 +246,18 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
 
     while (queue.length > 0) {
       while (active < MAX_CONCURRENT && queue.length > 0) {
-        const dead = queue.shift()!
+        const thread = queue.shift()!
+        const lastName = thread.sessionHistory[thread.sessionHistory.length - 1]?.tmuxName ?? thread.threadId.slice(0, 8)
         active++
 
-        recoverOne(dead).then(r => {
+        recoverOne(thread).then(r => {
           results.push(r)
           if (r.method !== 'failed') {
             const e = sessionEmoji(r.newName)
-            void gateway.send(dead.threadId, `🔮 ${e} \`${r.newName}\` recovered (${r.method})`).catch(() => {})
+            void gateway.send(thread.threadId, `🔮 ${e} \`${r.newName}\` recovered (${r.method})`).catch(() => {})
           }
         }).catch(err => {
-          results.push({ name: dead.tmuxName, method: 'failed' as const, reason: String(err) })
+          results.push({ name: lastName, method: 'failed' as const, reason: String(err) })
         }).finally(() => {
           active--
         })
@@ -271,11 +285,4 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
   if (failed.length > 0) lines.push(`• ${failed.length} failed: ${failed.map(r => `${fmtName(r)} (${r.reason})`).join(', ')}`)
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
-
-  const succeeded = results.filter(r => r.method !== 'failed')
-  for (const r of succeeded) {
-    const t = targets.find(t => t.tmuxName === r.name)
-    if (t) registry.removeDead(t.threadId)
-  }
-  registry.deleteRecoveryManifest()
 }
