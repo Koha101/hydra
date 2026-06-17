@@ -6,6 +6,23 @@ import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
 
+const SEND_RETRY_ATTEMPTS = 3
+const SEND_RETRY_BASE_MS = 1_000
+
+async function retrySend<T>(fn: () => Promise<T>): Promise<T> {
+  for (let i = 0; i < SEND_RETRY_ATTEMPTS; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (i === SEND_RETRY_ATTEMPTS - 1) throw err
+      const delay = SEND_RETRY_BASE_MS * Math.pow(2, i)
+      process.stderr.write(`daemon: send failed (attempt ${i + 1}/${SEND_RETRY_ATTEMPTS}), retrying in ${delay}ms: ${err instanceof Error ? err.message : err}\n`)
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+  throw new Error('unreachable')
+}
+
 // ---------------------------------------------------------------------------
 // Bridge tool definitions (sent to bridges on registration for dynamic refresh)
 // ---------------------------------------------------------------------------
@@ -81,10 +98,10 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
               reply_to != null &&
               replyMode !== 'off' &&
               (replyMode === 'all' || i === 0)
-            const sent = await gateway.send(chat_id, chunks[i], {
+            const sent = await retrySend(() => gateway.send(chat_id, chunks[i], {
               ...(i === 0 && files.length > 0 ? { files } : {}),
               ...(shouldReplyTo ? { replyTo: reply_to } : {}),
-            })
+            }))
             sentIds.push(sent.id)
           }
         } catch (err) {
@@ -119,12 +136,12 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       }
 
       case 'react': {
-        await gateway.react(args.chat_id as string, args.message_id as string, args.emoji as string)
+        await retrySend(() => gateway.react(args.chat_id as string, args.message_id as string, args.emoji as string))
         return { content: [{ type: 'text', text: 'reacted' }] }
       }
 
       case 'edit_message': {
-        const edited = await gateway.edit(args.chat_id as string, args.message_id as string, args.text as string)
+        const edited = await retrySend(() => gateway.edit(args.chat_id as string, args.message_id as string, args.text as string))
         return { content: [{ type: 'text', text: `edited (id: ${edited})` }] }
       }
 
