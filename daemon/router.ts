@@ -6,8 +6,8 @@ import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
-import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept } from './commands/thread.js'
+import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
@@ -179,6 +179,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
+    const recoverMatch = msg.content.match(/^(?:\/recover|recover)\s*(.*)?$/i)
+    if (recoverMatch && !msg.isThread) {
+      void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
+      return
+    }
+
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
     if (threadKillMatch) {
       void handleThreadKillIntercept(msg)
@@ -192,6 +198,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     if (msg.isThread) {
+      const resumeMatch = msg.content.match(/^(?:\/resume|resume)\s*$/i)
+      if (resumeMatch) {
+        void handleResumeIntercept(msg)
+        return
+      }
+
+      const respawnMatch = msg.content.match(/^(?:\/respawn|respawn)(?::?\s*([\s\S]+))?$/i)
+      if (respawnMatch) {
+        void handleRespawnIntercept(msg, respawnMatch[1]?.trim() || undefined)
+        return
+      }
+
       const forkMatch = msg.content.match(/^(?:fork|\/fork)(?::\s*([\s\S]+))?$/i)
       if (forkMatch) {
         void handleForkIntercept(msg, forkMatch[1]?.trim())
