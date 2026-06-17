@@ -36,12 +36,12 @@ function formatSessionEntry(e: SessionEntry): string {
   const duration = formatDuration(Date.now() - s.createdAt)
   const msgCount = s.messageCount ?? 0
   const ctx = getContextPercent(s.tmuxName)
-  const disconnected = transport.has(s.sessionId) ? '' : ' ⚠️'
+  const badge = s.status === 'dead' ? ' ☠️' : transport.has(s.sessionId) ? '' : ' ⚠️'
   const emoji = sessionEmoji(s.tmuxName)
   const title = e.url ? `[**${desc}**](${e.url})` : `**${desc}**`
   const provenance = s.originFrom ? ` ← ${s.originType === 'handoff' ? '🤝' : '🍴'} (${s.originFrom})` : ''
   const lines = [
-    `${emoji} \`${s.tmuxName}\`${disconnected}${provenance}`,
+    `${emoji} \`${s.tmuxName}\`${badge}${provenance}`,
     `- ${title}`,
     `- ${ctx} (${msgCount} msgs · ${duration})`,
   ]
@@ -149,8 +149,10 @@ export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
 export async function handleHealthIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '💚').catch(() => {})
   const uptimeMin = Math.round((Date.now() - daemonStartedAt) / 60000)
-  const connectedSessions = [...registry.values()].filter(s => transport.has(s.sessionId))
-  const disconnectedSessions = [...registry.values()].filter(s => !transport.has(s.sessionId))
+  const liveSessions = registry.liveSessions()
+  const deadSessions = registry.deadSessions()
+  const connected = liveSessions.filter(s => transport.has(s.sessionId))
+  const disconnected = liveSessions.filter(s => !transport.has(s.sessionId))
   const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
 
   let heartbeatAge = 'n/a'
@@ -164,12 +166,15 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
     `• Uptime: ${uptimeMin}m`,
     `• Gateway: ${PLATFORM}`,
     `• Heartbeat: ${heartbeatAge}`,
-    `• Sessions: ${registry.size} total (${connectedSessions.length} connected, ${disconnectedSessions.length} disconnected)`,
+    `• Sessions: ${connected.length} connected${disconnected.length > 0 ? `, ${disconnected.length} disconnected` : ''}${deadSessions.length > 0 ? `, ${deadSessions.length} dead` : ''}`,
     `• Queued messages: ${queuedMsgCount}`,
   ]
 
-  if (disconnectedSessions.length > 0) {
-    lines.push(`• Disconnected: ${disconnectedSessions.map(s => s.tmuxName).join(', ')}`)
+  if (disconnected.length > 0) {
+    lines.push(`• ⚠️ Disconnected: ${disconnected.map(s => s.tmuxName).join(', ')}`)
+  }
+  if (deadSessions.length > 0) {
+    lines.push(`• ☠️ Dead (recoverable): ${deadSessions.map(s => s.tmuxName).join(', ')}`)
   }
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
