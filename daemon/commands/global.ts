@@ -161,7 +161,6 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Other:**',
     '• 📋 `commands` — this list',
-    '• 🔪 react `:hocho:` on any bot message to delete it',
   ].join('\n')
   try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
 }

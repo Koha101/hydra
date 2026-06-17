@@ -3,6 +3,7 @@ import { gateway } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn } from '../session-lifecycle.js'
+import { COUNT_EMOJI } from '../anchor-state.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { fallbackDescription, formatDuration, getContextPercent, reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
@@ -143,7 +144,13 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
     if (result) {
       registry.removeDead(threadId)
       const e = sessionEmoji(result.name)
-      try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+      const info = registry.get(result.sessionId)
+      const count = info?.respawnCount ?? 0
+      const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
+      try {
+        const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed${countLabel} — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
+        if (count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+      } catch {}
       const mainBridge = transport.get('main')
       if (mainBridge) {
         transport.sendToBridge(mainBridge, {
@@ -165,7 +172,13 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
       })
       registry.removeDead(threadId)
       const e = sessionEmoji(forkResult.name)
-      try { await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id }) } catch {}
+      const forkInfo = registry.get(forkResult.sessionId)
+      const forkCount = forkInfo?.respawnCount ?? 0
+      const forkCountLabel = forkCount > 0 ? ` ${COUNT_EMOJI[Math.min(forkCount - 1, COUNT_EMOJI.length - 1)]}` : ''
+      try {
+        const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed${forkCountLabel} (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id })
+        if (forkCount > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+      } catch {}
       const mainBridge = transport.get('main')
       if (mainBridge) {
         transport.sendToBridge(mainBridge, {
@@ -182,11 +195,18 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
   }
 
   // Tier 3: respawn (fresh session reads thread history)
-  const result = await tryRespawn(threadId, dead.topic, dead.tmuxName)
-  if (result) {
+  const t3result = await tryRespawn(threadId, dead.topic, dead.tmuxName)
+  if (t3result) {
     registry.removeDead(threadId)
-    const e = sessionEmoji(result.name)
-    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned (resume unavailable — reading thread history).\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+    const e = sessionEmoji(t3result.name)
+    const t3info = registry.get(t3result.sessionId)
+    const t3count = t3info?.respawnCount ?? 0
+    const T3_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+    const t3label = t3count > 0 ? ` ${T3_EMOJI[Math.min(t3count - 1, T3_EMOJI.length - 1)]}` : ''
+    try {
+      const sent = await gateway.send(msg.channelId, `🔁 ${e} \`${t3result.name}\` respawned${t3label} (resume unavailable — reading thread history).\nView in any terminal: \`tmux attach -t ${t3result.name}\``, { replyTo: msg.id })
+      if (t3count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+    } catch {}
     debouncedRefreshListDisplay()
   } else {
     await reportError(msg.channelId, msg.id, 'resume', 'all recovery methods failed')
@@ -221,7 +241,13 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
   if (result) {
     if (dead) registry.removeDead(threadId)
     const e = sessionEmoji(result.name)
-    try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
+    const info = registry.get(result.sessionId)
+    const count = info?.respawnCount ?? 0
+    const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
+    try {
+      const sent = await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned${countLabel} — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
+      if (count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+    } catch {}
     const mainBridge = transport.get('main')
     if (mainBridge) {
       transport.sendToBridge(mainBridge, {
