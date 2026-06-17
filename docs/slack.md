@@ -29,7 +29,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) â†’ **Create New App** â†
     ] }
   },
   "settings": {
-    "event_subscriptions": { "bot_events": ["app_mention", "message.channels", "message.groups", "message.im"] },
+    "event_subscriptions": { "bot_events": ["app_mention", "message.channels", "message.groups", "message.im", "reaction_added"] },
     "interactivity": { "is_enabled": true },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
