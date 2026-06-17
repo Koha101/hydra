@@ -122,7 +122,6 @@ if (gateway.onReaction) {
     if (event.emoji !== DELETE_EMOJI) return
     const access = loadAccess()
     if (!access.allowFrom.includes(event.userId)) return
-    if (!gateway.wasSentByUs(event.messageId)) return
     try {
       await gateway.delete(event.channelId, event.messageId)
       process.stderr.write(`daemon: deleted message ${event.messageId} in ${event.channelId} (${DELETE_EMOJI} reaction from ${event.userId})\n`)
