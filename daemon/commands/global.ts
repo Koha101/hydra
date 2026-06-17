@@ -259,7 +259,7 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
   const failed = results.filter(r => r.method === 'failed') as Array<{ name: string; method: 'failed'; reason: string }>
 
   const fmtName = (r: { name: string; threadUrl?: string }) =>
-    r.threadUrl ? `<${r.threadUrl}|\`${r.name}\`>` : `\`${r.name}\``
+    r.threadUrl ? `[\`${r.name}\`](${r.threadUrl})` : `\`${r.name}\``
 
   const lines = [`🔮 **Recovery complete** — ${results.length} session(s)`]
   if (resumed.length > 0) lines.push(`• ${resumed.length} resumed (full context): ${resumed.map(fmtName).join(', ')}`)

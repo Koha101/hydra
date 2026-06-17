@@ -110,7 +110,7 @@ async function startGateway(attempt = 0): Promise<void> {
     const manifest = registry.readRecoveryManifest()
     if (manifest && manifest.sessions.length > 0) {
       const sessionLines = manifest.sessions.map(s => {
-        const link = s.threadUrl ? `<${s.threadUrl}|\`${s.tmuxName}\`>` : `\`${s.tmuxName}\``
+        const link = s.threadUrl ? `[\`${s.tmuxName}\`](${s.threadUrl})` : `\`${s.tmuxName}\``
         const topicPreview = s.topic.slice(0, 60) + (s.topic.length > 60 ? '…' : '')
         return `• ${link} — ${topicPreview}`
       })

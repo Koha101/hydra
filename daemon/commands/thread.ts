@@ -166,6 +166,14 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
       registry.removeDead(threadId)
       const e = sessionEmoji(forkResult.name)
       try { await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id }) } catch {}
+      const mainBridge = transport.get('main')
+      if (mainBridge) {
+        transport.sendToBridge(mainBridge, {
+          type: 'notification',
+          content: `[system] ⏯️ ${e} \`${forkResult.name}\` resumed via fork in thread (was ${dead.tmuxName})`,
+          meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+        })
+      }
       debouncedRefreshListDisplay()
       return
     } catch {
