@@ -248,8 +248,10 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
 
-  for (const t of targets) {
-    registry.removeDead(t.threadId)
+  const succeeded = results.filter(r => r.method !== 'failed')
+  for (const r of succeeded) {
+    const t = targets.find(t => t.tmuxName === r.name)
+    if (t) registry.removeDead(t.threadId)
   }
   registry.deleteRecoveryManifest()
 }

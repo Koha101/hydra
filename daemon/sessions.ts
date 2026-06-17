@@ -149,7 +149,7 @@ export class SessionRegistry {
   }
 
   pickSessionName(): string {
-    const used = new Set([...this.sessions.values()].map(s => s.tmuxName))
+    const used = new Set([...this.sessions.values()].filter(s => s.status !== 'dead').map(s => s.tmuxName))
     try {
       const tmuxOut = execSync('tmux ls -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' })
       for (const line of tmuxOut.split('\n')) {
