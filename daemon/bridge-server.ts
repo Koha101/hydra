@@ -144,6 +144,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 
   if (!tmuxAlive) {
     process.stderr.write(`daemon: session ${info.tmuxName} crashed (tmux dead, bridge disconnected)\n`)
+    registry.markDead(sessionId)
     try {
       await gateway.send(info.threadId, `_Session crashed._ Use \`resume\` to reconnect or \`respawn\` to start fresh.`)
     } catch {}

@@ -141,6 +141,7 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
 
   const result = await tryResume(dead)
   if (result) {
+    registry.removeDead(threadId)
     const e = sessionEmoji(result.name)
     try { await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
     const mainBridge = transport.get('main')
@@ -183,6 +184,7 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
 
   const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom)
   if (result) {
+    if (dead) registry.removeDead(threadId)
     const e = sessionEmoji(result.name)
     try { await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id }) } catch {}
     const mainBridge = transport.get('main')
