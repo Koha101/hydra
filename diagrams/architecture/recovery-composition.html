@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html style="margin:0;padding:0">
+<head>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #FFFFFF; }
+  .container { padding: 24px 30px 80px 30px; }
+  h1 { font-family: -apple-system, system-ui, sans-serif; font-size: 20px; color: #0F172A; text-align: center; margin-bottom: 4px; }
+  p { font-family: -apple-system, system-ui, sans-serif; font-size: 12px; color: #64748B; text-align: center; margin-bottom: 16px; }
+  .mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Recovery Composition — Three-Tier Architecture</h1>
+<p>Shared primitives power both standalone commands and the batch orchestrator. Same pattern at every zoom level.</p>
+
+<pre class="mermaid">
+graph TB
+    subgraph Detection["Detection — Crash signals"]
+        RM["RecoveryManifest<br/><i>loadPersisted() writes on boot</i><br/><small>sessions.ts</small>"]
+        CSD["checkSessionDeath()<br/><i>bridge disconnect + tmux dead<br/>→ post to thread: use resume or respawn</i><br/><small>bridge-server.ts</small>"]
+    end
+
+    subgraph Commands["Commands — User-facing entrypoints"]
+        REC["recover 🔮<br/><i>DM-scoped<br/>batch: all dead sessions</i><br/><small>commands/global.ts</small>"]
+        RSP["respawn 🔁<br/><i>thread-scoped<br/>fresh session, reads thread</i><br/><small>commands/thread.ts</small>"]
+        RES["resume ⏯️<br/><i>thread-scoped<br/>reconnect to Claude session</i><br/><small>commands/thread.ts</small>"]
+    end
+
+    subgraph Cascade["Cascade — recovery orchestration"]
+        RO["recoverOne()<br/><i>try resume → fallback to respawn</i><br/><small>commands/global.ts</small>"]
+    end
+
+    subgraph Primitives["Primitives — Shared, composable"]
+        TR["tryResume()<br/><i>--resume + health check</i><br/><small>session-lifecycle.ts</small>"]
+        TRS["tryRespawn()<br/><i>existingThreadId + fetch_messages</i><br/><small>session-lifecycle.ts</small>"]
+        RE["reportError()<br/><i>:x: + react + suggestion</i><br/><small>util.ts</small>"]
+    end
+
+    subgraph Infrastructure["Infrastructure — Spawn + lifecycle"]
+        DSS["doSpawnSession()<br/><i>SpawnOpts: resumeFrom / existingThreadId</i><br/><small>session-lifecycle.ts</small>"]
+        KS["killSession()<br/><i>notify + cleanup + tmux kill</i><br/><small>session-lifecycle.ts</small>"]
+        WFB["waitForBridge()<br/><i>poll transport, 30s timeout</i><br/><small>session-lifecycle.ts</small>"]
+    end
+
+    RM -->|feeds| REC
+    CSD -->|suggests| RSP
+    CSD -->|suggests| RES
+
+    REC -->|iterates| RO
+    RO -->|calls| TR
+    RO -->|tier 2 fallback| TRS
+    RES -->|calls| TR
+    RES -->|on fail| TRS
+    RSP -->|calls| TRS
+    RES -->|on fail| RE
+    RSP -->|on fail| RE
+
+    TR -->|spawns with resumeFrom| DSS
+    TRS -->|spawns with existingThreadId| DSS
+    TR -->|on timeout| KS
+    TR -->|health check| WFB
+
+    style Detection fill:#FEF3C7,stroke:#F59E0B,color:#0F172A
+    style Commands fill:#DBEAFE,stroke:#3B82F6,color:#0F172A
+    style Cascade fill:#FEF9C3,stroke:#CA8A04,color:#0F172A
+    style Primitives fill:#DCFCE7,stroke:#22C55E,color:#0F172A
+    style Infrastructure fill:#F1F5F9,stroke:#94A3B8,color:#0F172A
+</pre>
+</div>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default', flowchart: { nodeSpacing: 30, rankSpacing: 50, curve: 'basis' } })</script>
+</body>
+</html>
