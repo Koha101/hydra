@@ -68,6 +68,8 @@ export async function killSession(info: SessionInfo, reason: string, opts?: { sk
     registry.persist()
 
     setTimeout(() => {
+      const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
+      if (current) { killsInProgress.delete(info.sessionId); return }
       try {
         execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
         execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
@@ -130,8 +132,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     } else {
       targetChannelId = DEFAULT_SESSION_CHANNEL
     }
+  }
 
   // Clean up dead session in this thread before spawning
+  // (runs for all paths: explicit existingThreadId, channel lookup, or spawn-in-dead-thread)
   if (threadId) {
     const staleId = registry.getByThread(threadId)
     if (staleId) {
@@ -199,7 +203,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       })
       threadId = thread.id
     }
-  }
   }
 
   const channelFlag = `plugin:discord@claude-plugins-official`

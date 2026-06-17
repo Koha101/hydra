@@ -2,9 +2,9 @@ import { execSync } from 'child_process'
 import { gateway } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { killSession, doSpawnSession, discoverClaudeSessionId } from '../session-lifecycle.js'
+import { killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
-import { fallbackDescription, formatDuration, getContextPercent } from '../util.js'
+import { fallbackDescription, formatDuration, getContextPercent, reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleThreadKillIntercept(msg: InboundMessage): Promise<void> {
@@ -109,4 +109,157 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
 
   const pe = sessionEmoji(info.tmuxName)
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}
+}
+
+export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
+  if (!msg.isThread) {
+    await reportError(msg.channelId, msg.id, 'resume', 'must be used in a thread')
+    return
+  }
+
+  const threadId = msg.existingThreadId ?? msg.channelId
+  const staleId = registry.getByThread(threadId)
+  const dead = staleId ? registry.get(staleId) : null
+
+  if (!dead) {
+    await reportError(msg.channelId, msg.id, 'resume', 'no session found in this thread', 'Use `respawn` to start a fresh session that reads this thread.')
+    return
+  }
+
+  let tmuxAlive = false
+  try { execSync(`tmux has-session -t '${dead.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+  if (tmuxAlive) {
+    void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+    try { await gateway.send(msg.channelId, `Session **${dead.tmuxName}** is already running.`, { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+
+  // Three-tier cascade: resume → fork-from-dead → respawn
+  if (dead.claudeSessionId) {
+    // Tier 1: full resume (--resume, same conversation)
+    const result = await tryResume(dead)
+    if (result) {
+      registry.removeDead(threadId)
+      const e = sessionEmoji(result.name)
+      const info = registry.get(result.sessionId)
+      const count = info?.respawnCount ?? 0
+      const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+      const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
+      try {
+        const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed${countLabel} — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
+        if (count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+      } catch {}
+      const mainBridge = transport.get('main')
+      if (mainBridge) {
+        transport.sendToBridge(mainBridge, {
+          type: 'notification',
+          content: `[system] ⏯️ ${e} \`${result.name}\` resumed in thread (was ${dead.tmuxName})`,
+          meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+        })
+      }
+      debouncedRefreshListDisplay()
+      return
+    }
+    process.stderr.write(`daemon: resume tier 1 (--resume) failed for ${dead.tmuxName}, trying fork-from-dead\n`)
+
+    // Tier 2: fork from dead session (--resume --fork-session, transcript copy)
+    try {
+      const forkResult = await doSpawnSession(dead.topic, undefined, undefined, {
+        existingThreadId: dead.threadId,
+        forkFrom: { claudeSessionId: dead.claudeSessionId, parentName: dead.tmuxName },
+      })
+      registry.removeDead(threadId)
+      const e = sessionEmoji(forkResult.name)
+      const forkInfo = registry.get(forkResult.sessionId)
+      const forkCount = forkInfo?.respawnCount ?? 0
+      const FCOUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+      const forkCountLabel = forkCount > 0 ? ` ${FCOUNT_EMOJI[Math.min(forkCount - 1, FCOUNT_EMOJI.length - 1)]}` : ''
+      try {
+        const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed${forkCountLabel} (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id })
+        if (forkCount > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+      } catch {}
+      const mainBridge = transport.get('main')
+      if (mainBridge) {
+        transport.sendToBridge(mainBridge, {
+          type: 'notification',
+          content: `[system] ⏯️ ${e} \`${forkResult.name}\` resumed via fork in thread (was ${dead.tmuxName})`,
+          meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+        })
+      }
+      debouncedRefreshListDisplay()
+      return
+    } catch {
+      process.stderr.write(`daemon: resume tier 2 (fork-from-dead) failed for ${dead.tmuxName}, falling back to respawn\n`)
+    }
+  }
+
+  // Tier 3: respawn (fresh session reads thread history)
+  const t3result = await tryRespawn(threadId, dead.topic, dead.tmuxName)
+  if (t3result) {
+    registry.removeDead(threadId)
+    const e = sessionEmoji(t3result.name)
+    const t3info = registry.get(t3result.sessionId)
+    const t3count = t3info?.respawnCount ?? 0
+    const T3_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+    const t3label = t3count > 0 ? ` ${T3_EMOJI[Math.min(t3count - 1, T3_EMOJI.length - 1)]}` : ''
+    try {
+      const sent = await gateway.send(msg.channelId, `🔁 ${e} \`${t3result.name}\` respawned${t3label} (resume unavailable — reading thread history).\nView in any terminal: \`tmux attach -t ${t3result.name}\``, { replyTo: msg.id })
+      if (t3count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+    } catch {}
+    debouncedRefreshListDisplay()
+  } else {
+    await reportError(msg.channelId, msg.id, 'resume', 'all recovery methods failed')
+  }
+}
+
+export async function handleRespawnIntercept(msg: InboundMessage, topic?: string): Promise<void> {
+  if (!msg.isThread) {
+    await reportError(msg.channelId, msg.id, 'respawn', 'must be used in a thread')
+    return
+  }
+
+  const threadId = msg.existingThreadId ?? msg.channelId
+  const staleId = registry.getByThread(threadId)
+  const dead = staleId ? registry.get(staleId) : null
+
+  if (dead) {
+    let tmuxAlive = false
+    try { execSync(`tmux has-session -t '${dead.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
+    if (tmuxAlive) {
+      await reportError(msg.channelId, msg.id, 'respawn', `thread has a live session (**${dead.tmuxName}**)`, 'Use `kill` first, or `spawn:` for a new thread.')
+      return
+    }
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
+
+  const resolvedTopic = topic || dead?.topic || 'respawned session'
+  const resurrectFrom = dead?.tmuxName
+
+  const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom)
+  if (result) {
+    if (dead) registry.removeDead(threadId)
+    const e = sessionEmoji(result.name)
+    const info = registry.get(result.sessionId)
+    const count = info?.respawnCount ?? 0
+    const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+    const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
+    try {
+      const sent = await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned${countLabel} — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
+      if (count > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
+    } catch {}
+    const mainBridge = transport.get('main')
+    if (mainBridge) {
+      transport.sendToBridge(mainBridge, {
+        type: 'notification',
+        content: `[system] 🔁 ${e} \`${result.name}\` respawned in thread${resurrectFrom ? ` (was ${resurrectFrom})` : ''}`,
+        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    debouncedRefreshListDisplay()
+  } else {
+    await reportError(msg.channelId, msg.id, 'respawn', 'failed to spawn session')
+  }
 }

@@ -247,7 +247,6 @@ export class SessionRegistry {
       if (dead > 0) {
         this.writeRecoveryManifest(data.filter(s => s.status === 'dead'))
       }
-      if (pruned > 0) this.persist()
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
