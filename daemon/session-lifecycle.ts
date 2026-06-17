@@ -66,6 +66,8 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     registry.persist()
 
     setTimeout(() => {
+      const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
+      if (current) { killsInProgress.delete(info.sessionId); return }
       try {
         execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
         execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
