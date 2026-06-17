@@ -27,7 +27,9 @@ const HEALTH_CHECK_MS = 60_000
 const HEALTH_CHECK_FAST_MS = 10_000
 const STALE_THRESHOLD_MS = 3 * 60_000
 const HEARTBEAT_WRITE_THROTTLE_MS = 10_000
-const MAX_RECONNECT_ATTEMPTS = 2
+const MAX_RECONNECT_ATTEMPTS = 6
+const RECONNECT_BACKOFF_BASE_MS = 10_000
+const RECONNECT_BACKOFF_CAP_MS = 5 * 60_000
 const NETWORK_CHECK_TIMEOUT_MS = 5_000
 
 /**
@@ -762,7 +764,9 @@ export class SlackGateway implements ChatGateway {
         this.onReconnectAfterOutage(gapMs)
       }
     } catch (err) {
-      process.stderr.write(`slack gateway: reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed: ${err}\n`)
+      const backoffMs = Math.min(RECONNECT_BACKOFF_BASE_MS * Math.pow(2, this.reconnectAttempts - 1), RECONNECT_BACKOFF_CAP_MS)
+      this.setHealthCheckInterval(backoffMs)
+      process.stderr.write(`slack gateway: reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed, next check in ${Math.round(backoffMs / 1000)}s: ${err}\n`)
       this.writeHeartbeat()
     } finally {
       this.reconnecting = false
