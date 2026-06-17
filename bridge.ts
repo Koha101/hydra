@@ -56,7 +56,9 @@ const SOCKET_PATH = resolveSocketPath()
 // NB: must NOT be plain SESSION_ID — Claude Code overwrites that env var with its own
 // session id when it launches MCP subprocesses, so the daemon-assigned id would be lost.
 const SESSION_ID = process.env.HYDRA_SESSION_ID ?? 'main'
+const IS_MAIN = SESSION_ID === 'main'
 const RECONNECT_INTERVAL = 5000
+const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 const CLAUDE_SESSION_ID_ENV_NAMES = ['CLAUDE_CODE_SESSION_ID', 'SESSION_ID']
 
@@ -85,6 +87,7 @@ let socketReady = false
 // ── Dynamic tool list (updated on daemon registration) ────────────────
 
 let dynamicTools: Array<Record<string, unknown>> | null = null
+let sessionCapabilities: Record<string, unknown> | null = null
 
 // ── Socket connection ──────────────────────────────────────────────────
 
@@ -107,6 +110,12 @@ function handleDaemonMessage(msg: Record<string, unknown>): void {
     case 'registered': {
       process.stderr.write(`bridge: registered as session ${msg.sessionId}\n`)
       socketReady = true
+
+      const caps = msg.capabilities as Record<string, unknown> | undefined
+      if (caps) {
+        sessionCapabilities = caps
+        process.stderr.write(`bridge: capabilities received: role=${caps.role}\n`)
+      }
 
       // Update tool list if daemon sent one (dynamic tool refresh)
       const tools = msg.tools as Array<Record<string, unknown>> | undefined
@@ -289,9 +298,15 @@ mcp.setNotificationHandler(
 
 // ── Tool definitions ───────────────────────────────────────────────────
 
+const SESSION_INFO_TOOL = {
+  name: 'get_session_info',
+  description: 'Get information about this session: role, available tools, model, working directory, platform. Use this to understand your own capabilities.',
+  inputSchema: { type: 'object' as const, properties: {} },
+}
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
-  if (dynamicTools) return { tools: dynamicTools }
-  return { tools: [
+  if (dynamicTools) return { tools: [SESSION_INFO_TOOL, ...dynamicTools] }
+  const fallback = [
     {
       name: 'reply',
       description:
@@ -436,7 +451,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ['session_id', 'description'],
       },
     },
-  ] }
+  ]
+  const filtered = IS_MAIN ? fallback : fallback.filter(t => !MAIN_ONLY_TOOLS.has(t.name))
+  return { tools: [SESSION_INFO_TOOL, ...filtered] }
 })
 
 // ── Tool call handler (relay to daemon) ────────────────────────────────
@@ -444,6 +461,24 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const name = req.params.name
   const args = req.params.arguments ?? {}
+
+  if (name === 'get_session_info') {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          session_id: SESSION_ID,
+          capabilities: sessionCapabilities ?? {
+            role: IS_MAIN ? 'main' : 'worker',
+            tools: [],
+            model: 'unknown',
+            cwd: process.cwd(),
+            platform: 'unknown',
+          },
+        }, null, 2),
+      }],
+    }
+  }
 
   if (!sock || sock.destroyed || !socketReady) {
     return {
