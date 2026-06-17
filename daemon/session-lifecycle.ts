@@ -62,8 +62,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       } catch {}
     }
 
-    registry.deleteThread(info.threadId)
-    registry.delete(info.sessionId)
+    info.status = 'killed'
     registry.persist()
 
     setTimeout(() => {

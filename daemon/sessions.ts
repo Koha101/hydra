@@ -33,7 +33,7 @@ export type SessionInfo = {
   respawnCount?: number
   threadUrl?: string
   capabilities?: SessionCapabilities
-  status?: 'live' | 'dead'
+  status?: 'live' | 'dead' | 'killed'
   worktreeRepo?: string
   worktreePath?: string
 }
@@ -154,7 +154,7 @@ export class SessionRegistry {
   }
 
   pickSessionName(): string {
-    const used = new Set([...this.sessions.values()].filter(s => s.status !== 'dead').map(s => s.tmuxName))
+    const used = new Set([...this.sessions.values()].filter(s => s.status !== 'dead' && s.status !== 'killed').map(s => s.tmuxName))
     try {
       const tmuxOut = execSync('tmux ls -F "#{session_name}" 2>/dev/null', { encoding: 'utf8' })
       for (const line of tmuxOut.split('\n')) {
@@ -180,7 +180,7 @@ export class SessionRegistry {
   }
 
   liveSessions(): SessionInfo[] {
-    return [...this.sessions.values()].filter(s => s.status !== 'dead')
+    return [...this.sessions.values()].filter(s => s.status !== 'dead' && s.status !== 'killed')
   }
 
   markDead(sessionId: string): void {
@@ -195,7 +195,7 @@ export class SessionRegistry {
     const sessionId = this.threadToSession.get(threadId)
     if (!sessionId) return
     const info = this.sessions.get(sessionId)
-    if (info?.status === 'dead') {
+    if (info?.status === 'dead' || info?.status === 'killed') {
       this.sessions.delete(sessionId)
       this.threadToSession.delete(threadId)
       this.persist()
@@ -226,8 +226,16 @@ export class SessionRegistry {
     try {
       const raw = readFileSync(this.sessionsFile, 'utf8')
       const data = JSON.parse(raw) as SessionInfo[]
-      let live = 0, dead = 0
+      let live = 0, dead = 0, killed = 0, pruned = 0
+      const KILLED_TTL_MS = 24 * 60 * 60 * 1000
       for (const info of data) {
+        if (info.status === 'killed') {
+          if (Date.now() - info.lastActive > KILLED_TTL_MS) { pruned++; continue }
+          this.sessions.set(info.sessionId, info)
+          this.threadToSession.set(info.threadId, info.sessionId)
+          killed++
+          continue
+        }
         let tmuxAlive = false
         try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
         info.status = tmuxAlive ? 'live' : 'dead'
@@ -235,12 +243,13 @@ export class SessionRegistry {
         this.threadToSession.set(info.threadId, info.sessionId)
         if (tmuxAlive) live++; else dead++
       }
-      if (live > 0 || dead > 0) {
-        process.stderr.write(`daemon: restored ${live} live, ${dead} dead session(s)\n`)
+      if (live > 0 || dead > 0 || killed > 0) {
+        process.stderr.write(`daemon: restored ${live} live, ${dead} dead, ${killed} killed session(s)${pruned > 0 ? ` (pruned ${pruned} stale)` : ''}\n`)
       }
       if (dead > 0) {
         this.writeRecoveryManifest(data.filter(s => s.status === 'dead'))
       }
+      if (pruned > 0) this.persist()
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
