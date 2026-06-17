@@ -90,7 +90,7 @@ process.on('uncaughtException', err => {
 // Gateway (created here, wired by daemon.ts orchestrator)
 // ---------------------------------------------------------------------------
 
-const heartbeatPath = join(STATE_DIR, 'daemon.alive')
+export const heartbeatPath = join(STATE_DIR, 'daemon.alive')
 
 export let gateway: ChatGateway
 

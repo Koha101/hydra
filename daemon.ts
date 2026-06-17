@@ -11,7 +11,7 @@
 import { join } from 'path'
 import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
 
-import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH } from './daemon/config.js'
+import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
@@ -81,7 +81,6 @@ try {
 // ---------------------------------------------------------------------------
 
 const OUTAGE_THRESHOLD_MS = 10 * 60_000
-const heartbeatPath = join(STATE_DIR, 'daemon.alive')
 let startupGapMs: number | null = null
 try {
   const lastHeartbeat = parseInt(readFileSync(heartbeatPath, 'utf8').trim(), 10)
@@ -113,6 +112,7 @@ async function startGateway(attempt = 0): Promise<void> {
       process.exit(1)
     }
     process.stderr.write(`daemon: gateway start failed (attempt ${attempt + 1}/${GATEWAY_MAX_RETRIES}), retrying in ${GATEWAY_RETRY_INTERVAL_MS / 1000}s: ${err}\n`)
+    try { writeFileSync(heartbeatPath, String(Date.now()) + '\n') } catch {}
     await new Promise(r => setTimeout(r, GATEWAY_RETRY_INTERVAL_MS))
     return startGateway(attempt + 1)
   }
