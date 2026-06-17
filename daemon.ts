@@ -9,9 +9,9 @@
  */
 
 import { join } from 'path'
-import { copyFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
+import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
 
-import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH } from './daemon/config.js'
+import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
@@ -26,27 +26,29 @@ import './daemon/router.js'
 // Recovery report on reconnect
 // ---------------------------------------------------------------------------
 
-if (gateway.onReconnectAfterOutage !== undefined) {
-  gateway.onReconnectAfterOutage = (gapMs: number) => {
-    const hrs = Math.floor(gapMs / 3_600_000)
-    const mins = Math.floor((gapMs % 3_600_000) / 60_000)
-    const duration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`
-    const connected = [...registry.values()].filter(s => transport.has(s.sessionId)).length
-    const disconnected = [...registry.values()].filter(s => !transport.has(s.sessionId)).length
-    const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
-    const report = [
-      `**Recovery report** — back online after ${duration} outage`,
-      `• Sessions: ${registry.size} total (${connected} connected, ${disconnected} disconnected)`,
-      `• Queued messages: ${queuedMsgCount}`,
-    ].join('\n')
-    const access = loadAccess()
-    for (const userId of access.allowFrom) {
-      void gateway.sendDM(userId, report).catch(e =>
-        process.stderr.write(`daemon: recovery report DM failed: ${e}\n`),
-      )
-    }
-    process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
+function sendRecoveryReport(gapMs: number): void {
+  const hrs = Math.floor(gapMs / 3_600_000)
+  const mins = Math.floor((gapMs % 3_600_000) / 60_000)
+  const duration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`
+  const connected = [...registry.values()].filter(s => transport.has(s.sessionId)).length
+  const disconnected = [...registry.values()].filter(s => !transport.has(s.sessionId)).length
+  const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)
+  const report = [
+    `**Recovery report** — back online after ${duration} outage`,
+    `• Sessions: ${registry.size} total (${connected} connected, ${disconnected} disconnected)`,
+    `• Queued messages: ${queuedMsgCount}`,
+  ].join('\n')
+  const access = loadAccess()
+  for (const userId of access.allowFrom) {
+    void gateway.sendDM(userId, report).catch(e =>
+      process.stderr.write(`daemon: recovery report DM failed: ${e}\n`),
+    )
   }
+  process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
+}
+
+if ('onReconnectAfterOutage' in gateway) {
+  gateway.onReconnectAfterOutage = sendRecoveryReport
 }
 
 // ---------------------------------------------------------------------------
@@ -75,36 +77,68 @@ try {
 }
 
 // ---------------------------------------------------------------------------
+// Startup-time outage detection — check heartbeat gap from prior daemon
+// ---------------------------------------------------------------------------
+
+const OUTAGE_THRESHOLD_MS = 10 * 60_000
+let startupGapMs: number | null = null
+try {
+  const lastHeartbeat = parseInt(readFileSync(heartbeatPath, 'utf8').trim(), 10)
+  if (lastHeartbeat > 0) {
+    const gapMs = Date.now() - lastHeartbeat
+    if (gapMs > OUTAGE_THRESHOLD_MS) startupGapMs = gapMs
+  }
+} catch {}
+
+// ---------------------------------------------------------------------------
 // Gateway start & graceful shutdown
 // ---------------------------------------------------------------------------
 
-gateway.start(TOKEN!).then(() => {
-  process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
-  void announceRestartComplete()
+const GATEWAY_RETRY_INTERVAL_MS = 10_000
+const GATEWAY_MAX_RETRIES = 30
 
-  const manifest = registry.readRecoveryManifest()
-  if (manifest && manifest.sessions.length > 0) {
-    const sessionLines = manifest.sessions.map(s => {
-      const link = s.threadUrl ? `<${s.threadUrl}|\`${s.tmuxName}\`>` : `\`${s.tmuxName}\``
-      const topicPreview = s.topic.slice(0, 60) + (s.topic.length > 60 ? '…' : '')
-      return `• ${link} — ${topicPreview}`
-    })
-    const access = loadAccess()
-    const msg = [
-      `⚡ Found ${manifest.sessions.length} dead session(s) from crash:`,
-      ...sessionLines,
-      `Reply \`recover-all\` to revive all, or \`recover-all <name>\` for a specific one.`,
-    ].join('\n')
-    for (const userId of access.allowFrom) {
-      void gateway.sendDM(userId, msg).catch(e =>
-        process.stderr.write(`daemon: recovery DM failed: ${e}\n`),
-      )
+async function startGateway(attempt = 0): Promise<void> {
+  try {
+    await gateway.start(TOKEN!)
+    process.stderr.write(`daemon: ${PLATFORM} gateway started\n`)
+    void announceRestartComplete()
+    if (startupGapMs !== null) {
+      sendRecoveryReport(startupGapMs)
+      startupGapMs = null
     }
+
+    const manifest = registry.readRecoveryManifest()
+    if (manifest && manifest.sessions.length > 0) {
+      const sessionLines = manifest.sessions.map(s => {
+        const link = s.threadUrl ? `<${s.threadUrl}|\`${s.tmuxName}\`>` : `\`${s.tmuxName}\``
+        const topicPreview = s.topic.slice(0, 60) + (s.topic.length > 60 ? '…' : '')
+        return `• ${link} — ${topicPreview}`
+      })
+      const access = loadAccess()
+      const msg = [
+        `⚡ Found ${manifest.sessions.length} dead session(s) from crash:`,
+        ...sessionLines,
+        `Reply \`recover-all\` to revive all, or \`recover-all <name>\` for a specific one.`,
+      ].join('\n')
+      for (const userId of access.allowFrom) {
+        void gateway.sendDM(userId, msg).catch(e =>
+          process.stderr.write(`daemon: recovery DM failed: ${e}\n`),
+        )
+      }
+    }
+  } catch (err) {
+    if (attempt >= GATEWAY_MAX_RETRIES) {
+      process.stderr.write(`daemon: gateway start failed after ${attempt} attempts, exiting: ${err}\n`)
+      process.exit(1)
+    }
+    process.stderr.write(`daemon: gateway start failed (attempt ${attempt + 1}/${GATEWAY_MAX_RETRIES}), retrying in ${GATEWAY_RETRY_INTERVAL_MS / 1000}s: ${err}\n`)
+    try { writeFileSync(heartbeatPath, String(Date.now()) + '\n') } catch {}
+    await new Promise(r => setTimeout(r, GATEWAY_RETRY_INTERVAL_MS))
+    return startGateway(attempt + 1)
   }
-}).catch(err => {
-  process.stderr.write(`daemon: gateway start failed: ${err}\n`)
-  process.exit(1)
-})
+}
+
+void startGateway()
 
 let shuttingDown = false
 
