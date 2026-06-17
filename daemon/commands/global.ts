@@ -140,6 +140,8 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Global (work from anywhere):**',
     '• `new session: <topic>` / `spawn: <topic>` — spawn an isolated Claude session in its own thread',
+    '• `spawn-wt: <repo> <topic>` — spawn in a git worktree (e.g. `spawn-wt: options_bot fix the bug`)',
+    '  also: `spawn: wt:repo <topic>` or `spawn: worktree:repo <topic>`',
     '• `list sessions` — show all running sessions with lineage',
     '• `kill session: <name>` — terminate a named session',
     '• `health` / `status` — daemon health and diagnostics',

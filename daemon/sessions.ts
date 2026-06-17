@@ -33,6 +33,8 @@ export type SessionInfo = {
   capabilities?: SessionCapabilities
   respawnCount?: number
   threadUrl?: string
+  worktreeRepo?: string
+  worktreePath?: string
 }
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }

@@ -1,14 +1,16 @@
 import { randomUUID } from 'crypto'
 import { execSync, execFileSync } from 'child_process'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { homedir } from 'os'
 
-import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH, STATE_DIR } from './config.js'
+import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
 import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+
+const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
 // ---------------------------------------------------------------------------
 // Kill guard
@@ -43,6 +45,21 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 
     transport.disconnect(info.sessionId)
 
+    if (info.worktreePath && info.worktreeRepo) {
+      const branch = `wt/${info.tmuxName}`
+      try {
+        execSync(`git -C ${shq(info.worktreeRepo)} worktree remove ${shq(info.worktreePath)} --force`, { stdio: 'pipe' })
+        process.stderr.write(`daemon: removed worktree ${info.worktreePath}\n`)
+      } catch (err) {
+        process.stderr.write(`daemon: worktree removal failed: ${err instanceof Error ? err.message : String(err)}\n`)
+      }
+      try { execSync(`git -C ${shq(info.worktreeRepo)} worktree prune`, { stdio: 'pipe' }) } catch {}
+      try {
+        execSync(`git -C ${shq(info.worktreeRepo)} branch -D ${shq(branch)}`, { stdio: 'pipe' })
+        process.stderr.write(`daemon: deleted branch ${branch}\n`)
+      } catch {}
+    }
+
     registry.deleteThread(info.threadId)
     registry.delete(info.sessionId)
     registry.persist()
@@ -69,6 +86,14 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 export async function doSpawnSession(topic: string, chatId?: string, messageId?: string, opts?: SpawnOpts): Promise<SpawnResult> {
   let threadId: string | undefined
   let anchorMessageId: string | undefined
+
+  // Parse worktree:repo_name prefix early so it doesn't leak into thread names/prompts
+  let worktreeTarget: string | undefined
+  const worktreeMatch = topic.match(/^(?:worktree|wt):(\S+)\s+/)
+  if (worktreeMatch) {
+    worktreeTarget = worktreeMatch[1]
+    topic = topic.slice(worktreeMatch[0].length)
+  }
 
   const sessionId = randomUUID()
   const tmuxName = registry.pickSessionName()
@@ -157,13 +182,76 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
-  const pluginDir = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord', '0.0.4')
   const channelFlag = `plugin:discord@claude-plugins-official`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required -- set it to the working directory for spawned sessions')
 
-  // POSIX single-quote helper: wraps any string so the shell treats it 100% literally.
-  const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
+  let worktreeRepo: string | undefined
+  let worktreePath: string | undefined
+  let effectiveCwd = spawnCwd
+  if (worktreeTarget) {
+    const repoName = worktreeTarget
+    const repoDir = resolve(spawnCwd, repoName)
+
+    // Verify the target is a git repo
+    try {
+      execSync(`git -C ${shq(repoDir)} rev-parse --git-dir`, { stdio: 'pipe' })
+    } catch {
+      throw new Error(`worktree target "${repoName}" is not a git repo at ${repoDir}`)
+    }
+
+    const wtDir = resolve(repoDir, '..', `.worktrees`, `${repoName}-${tmuxName}`)
+    const branch = `wt/${tmuxName}`
+
+    // Clean up stale worktree/branch from previous runs
+    try { execSync(`git -C ${shq(repoDir)} worktree remove ${shq(wtDir)} --force 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    try { execSync(`git -C ${shq(repoDir)} worktree prune 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    try { execSync(`git -C ${shq(repoDir)} branch -D ${shq(branch)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+
+    try {
+      execFileSync('git', ['-C', repoDir, 'worktree', 'add', '-b', branch, wtDir], { stdio: 'pipe' })
+      process.stderr.write(`daemon: created worktree ${wtDir} (branch ${branch})\n`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`failed to create worktree: ${msg}`)
+    }
+
+    worktreeRepo = repoDir
+    worktreePath = wtDir
+    effectiveCwd = wtDir
+
+    const claudeJsonPath = join(CLAUDE_CONFIG, '.claude.json')
+    try {
+      const claudeJson = JSON.parse(readFileSync(claudeJsonPath, 'utf8'))
+      if (!claudeJson.projects) claudeJson.projects = {}
+      const trustEntry = {
+        allowedTools: [] as string[],
+        mcpContextUris: [] as string[],
+        mcpServers: {} as Record<string, unknown>,
+        enabledMcpjsonServers: [] as string[],
+        disabledMcpjsonServers: [] as string[],
+        hasTrustDialogAccepted: true,
+        hasClaudeMdExternalIncludesApproved: true,
+        hasClaudeMdExternalIncludesWarningShown: true,
+        hasCompletedProjectOnboarding: true,
+        projectOnboardingSeenCount: 0,
+      }
+      let changed = false
+      for (const p of [wtDir, repoDir]) {
+        const existing = claudeJson.projects[p]
+        if (!existing || !existing.hasClaudeMdExternalIncludesApproved) {
+          claudeJson.projects[p] = { ...existing, ...trustEntry }
+          changed = true
+        }
+      }
+      if (changed) {
+        writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n')
+        process.stderr.write(`daemon: pre-approved trust for worktree paths\n`)
+      }
+    } catch (err) {
+      process.stderr.write(`daemon: trust pre-approval failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
+    }
+  }
 
   let prompt: string
   if (isHandoff) {
@@ -194,22 +282,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
-  // Build MCP config JSON for the bridge plugin (--channels is broken in Claude Code ≥2.1.x)
-  const mcpConfig = JSON.stringify({
-    mcpServers: {
-      'hydra-bridge': {
-        command: 'bun',
-        args: ['run', '--cwd', pluginDir, '--shell=bun', '--silent', 'start'],
-        env: {
-          DAEMON_SOCK: SOCK_PATH,
-          HYDRA_SESSION_ID: sessionId,
-        },
-      },
-    },
-  })
-  const mcpConfigPath = join(STATE_DIR, `mcp-${sessionId}.json`)
-  writeFileSync(mcpConfigPath, mcpConfig)
-
   // Build claude command -- fork adds --resume --fork-session
   const claudeArgs = isFork
     ? [
@@ -218,14 +290,13 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         `--fork-session`,
         `--model ${shq(SPAWN_MODEL)}`,
         `--channels ${shq(channelFlag)}`,
-        `--mcp-config ${shq(mcpConfigPath)}`,
         `--dangerously-skip-permissions`,
         shq(prompt),
       ].join(' ')
-    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --mcp-config ${shq(mcpConfigPath)} --dangerously-skip-permissions ${shq(prompt)}`
+    : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
 
   const inner = [
-    `cd ${shq(spawnCwd)}`,
+    `cd ${shq(effectiveCwd)}`,
     `export HYDRA_SESSION_ID=${shq(sessionId)}`,
     `export DAEMON_SOCK=${shq(SOCK_PATH)}`,
     `export CLAUDE_CONFIG_DIR=${shq(CLAUDE_CONFIG)}`,
@@ -256,7 +327,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     role: 'worker',
     tools: computeToolsForSession(sessionId).map(t => t.name),
     model: SPAWN_MODEL,
-    cwd: spawnCwd,
+    cwd: effectiveCwd,
     platform: PLATFORM,
   }
   const url = await gateway.getThreadUrl(threadId!)
@@ -266,6 +337,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     tmuxName, listening: false, originType, originFrom, capabilities,
     threadUrl: url || undefined,
     ...(respawnCount > 0 ? { respawnCount } : {}),
+    ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
   })
   registry.setThread(threadId!, sessionId)
   registry.persist()

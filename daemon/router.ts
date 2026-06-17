@@ -132,6 +132,17 @@ gateway.onMessage(async (msg: InboundMessage) => {
       }
     }
 
+    // spawn-wt: repo_name topic — shorthand for worktree spawns
+    const spawnWtMatch = msg.content.match(/^(?:spawn-wt:|\/spawn-wt)\s*(\S+)\s+([\s\S]+)/i)
+    if (spawnWtMatch) {
+      const repo = spawnWtMatch[1].trim()
+      const topic = spawnWtMatch[2].trim()
+      if (repo && topic) {
+        void handleSpawnIntercept(msg, `worktree:${repo} ${topic}`, access)
+        return
+      }
+    }
+
     const killMatch = msg.content.match(/^(?:kill session:|kill:|\/kill)\s*(.+)/i)
     if (killMatch) {
       void handleKillIntercept(msg, killMatch[1].trim())

@@ -10,7 +10,7 @@
 #   CHAT_PLATFORM — discord (default) or slack
 #   HYDRA_STATE_DIR — state dir (socket, access.json, sessions)
 #   CLAUDE_CONFIG_DIR — config dir for spawned Claude sessions
-export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.npm-global/bin:$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"

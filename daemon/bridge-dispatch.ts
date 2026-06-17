@@ -18,7 +18,7 @@ export const BRIDGE_TOOLS = [
   { name: 'download_attachment', description: 'Download attachments from a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
   { name: 'create_thread', description: 'Create a thread in a channel.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, auto_archive_minutes: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } }, required: ['chat_id', 'name'] } },
   { name: 'fetch_messages', description: 'Fetch recent messages from a channel.', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'number' } }, required: ['channel'] } },
-  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['topic'] } },
+  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only. Pass worktree with a repo directory name (e.g. "options_bot") to spawn in an isolated git worktree.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' }, worktree: { type: 'string', description: 'Git repo subdirectory to create a worktree from (e.g. "options_bot", "anytester"). Session gets an isolated copy.' } }, required: ['topic'] } },
   { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
@@ -163,7 +163,9 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       }
 
       case 'spawn_session': {
-        const result = await doSpawnSession(args.topic as string, args.chat_id as string | undefined, args.message_id as string | undefined)
+        const worktree = args.worktree as string | undefined
+        const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
+        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined)
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }
 
