@@ -138,6 +138,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 
   const info = registry.get(sessionId)
   if (!info) return
+  if (info.status === 'killed') return
 
   let tmuxAlive = false
   try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
