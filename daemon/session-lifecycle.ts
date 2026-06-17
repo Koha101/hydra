@@ -22,7 +22,7 @@ export const killsInProgress = new Set<string>()
 // Kill session
 // ---------------------------------------------------------------------------
 
-export async function killSession(info: SessionInfo, reason: string): Promise<void> {
+export async function killSession(info: SessionInfo, reason: string, opts?: { skipAnchorEmoji?: boolean }): Promise<void> {
   if (killsInProgress.has(info.sessionId)) return
   killsInProgress.add(info.sessionId)
 
@@ -33,11 +33,13 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
     }
 
-    const anchor = gateway.getThreadAnchor(info.threadId)
-    if (anchor) {
-      void gateway.unreact(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
-      void gateway.unreact(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
-      void gateway.react(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+    if (!opts?.skipAnchorEmoji) {
+      const anchor = gateway.getThreadAnchor(info.threadId)
+      if (anchor) {
+        void gateway.unreact(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
+        void gateway.unreact(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
+        void gateway.react(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
+      }
     }
 
     const tmuxName = info.tmuxName
@@ -143,7 +145,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); staleAlive = true } catch {}
         if (!staleAlive) {
           respawnCount = (stale.respawnCount ?? 0) + 1
-          await killSession(stale, 'replaced by new spawn')
+          await killSession(stale, 'replaced by new spawn', { skipAnchorEmoji: true })
+          registry.delete(stale.sessionId)
         }
       }
     }
