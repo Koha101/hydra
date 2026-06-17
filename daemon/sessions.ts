@@ -398,7 +398,8 @@ export class ThreadRegistry {
   }
 
   private migrateFromSessions(sessionRegistry: SessionRegistry): void {
-    for (const session of sessionRegistry.values()) {
+    const sorted = [...sessionRegistry.values()].sort((a, b) => a.createdAt - b.createdAt)
+    for (const session of sorted) {
       const existing = this.threads.get(session.threadId)
       if (existing) {
         existing.sessionHistory.push({
