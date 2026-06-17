@@ -7,7 +7,7 @@ import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
 import { pendingPermissions } from './permission.js'
-import { discoverClaudeSessionId } from './session-lifecycle.js'
+import { discoverClaudeSessionId, detachSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import type { ButtonDef } from '../gateway.js'
 
@@ -38,6 +38,14 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         if (resolved) {
           info.claudeSessionId = resolved
           registry.persist()
+
+          // Flow claudeSessionId to thread history
+          const thread = threadRegistry.get(info.threadId)
+          if (thread) {
+            const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+            if (histEntry) histEntry.claudeSessionId = resolved
+            threadRegistry.persist()
+          }
         }
       }
 
@@ -139,27 +147,14 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 
   const info = registry.get(sessionId)
   if (!info) return
-  if (info.status === 'killed') return
 
   let tmuxAlive = false
   try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
 
   if (!tmuxAlive) {
     process.stderr.write(`daemon: session ${info.tmuxName} crashed (tmux dead, bridge disconnected)\n`)
-    registry.markDead(sessionId)
 
-    // Co-update ThreadInfo
-    const thread = threadRegistry.get(info.threadId)
-    if (thread) {
-      thread.currentSessionId = null
-      const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
-      if (histEntry) {
-        histEntry.endedAt = Date.now()
-        histEntry.messageCount = info.messageCount ?? 0
-        histEntry.claudeSessionId = info.claudeSessionId
-      }
-      threadRegistry.persist()
-    }
+    detachSession(sessionId)
 
     try {
       await gateway.send(info.threadId, `_Session crashed._ Use \`resume\` to reconnect or \`respawn\` to start fresh.`)

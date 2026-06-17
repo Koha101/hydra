@@ -1,5 +1,5 @@
 import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
@@ -77,6 +77,8 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
   const sessionInfo = registry.get(targetSessionId)
   if (sessionInfo) {
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
+    const thread = threadRegistry.get(sessionInfo.threadId)
+    if (thread) thread.totalMessages++
   }
   const chatId = sessionInfo?.threadId ?? msg.channelId
 
@@ -89,21 +91,24 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
 // ---------------------------------------------------------------------------
 
 gateway.onThreadDelete(threadId => {
-  const sessionId = registry.getByThread(threadId)
-  if (!sessionId) return
-  const info = registry.get(sessionId)
+  const thread = threadRegistry.get(threadId)
+  if (!thread?.currentSessionId) return
+  const info = registry.get(thread.currentSessionId)
   if (!info) return
   process.stderr.write(`daemon: thread ${threadId} deleted, killing session ${info.tmuxName}\n`)
-  void killSession(info, 'thread deleted')
+  void killSession(info, 'thread deleted').then(() => {
+    threadRegistry.delete(threadId)
+    threadRegistry.persist()
+  })
 })
 
 gateway.onMessageDelete((messageId, threadId) => {
   if (!threadId) return
-  const sessionId = registry.getByThread(threadId)
-  if (!sessionId) return
-  const info = registry.get(sessionId)
+  const thread = threadRegistry.get(threadId)
+  if (!thread?.currentSessionId) return
+  const info = registry.get(thread.currentSessionId)
   if (!info) return
-  if (info.anchorMessageId && messageId === info.anchorMessageId) {
+  if (thread.anchorMessageId && messageId === thread.anchorMessageId) {
     process.stderr.write(`daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
     void killSession(info, 'anchor message deleted')
   } else {
@@ -236,9 +241,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     if (msg.isThread) {
-      const mappedSession = registry.getByThread(msg.channelId)
-        ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
-      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
+      const thread = threadRegistry.get(msg.channelId)
+        ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+      const mappedSession = thread?.currentSessionId ?? undefined
+      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threads=${threadRegistry.threads.size}\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
         if (info) {
@@ -337,8 +343,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
   let effectiveChatId = chat_id
 
   if (msg.isThread) {
-    const mappedSession = registry.getByThread(msg.channelId)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const thread = threadRegistry.get(msg.channelId)
+      ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+    const mappedSession = thread?.currentSessionId ?? undefined
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
@@ -347,8 +354,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
-    const mappedSession = registry.getByThread(chat_id)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const thread = threadRegistry.get(chat_id)
+      ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+    const mappedSession = thread?.currentSessionId ?? undefined
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!

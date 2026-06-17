@@ -25,6 +25,18 @@ import './daemon/router.js'
 // Boot thread registry — loads threads.json or migrates from sessions on first run
 threadRegistry.boot(registry)
 
+// Startup reconciliation: ensure thread state matches session state
+for (const thread of threadRegistry.values()) {
+  if (thread.currentSessionId) {
+    const session = registry.get(thread.currentSessionId)
+    if (!session) {
+      process.stderr.write(`daemon: reconcile: thread ${thread.threadId} references missing session ${thread.currentSessionId}, detaching\n`)
+      thread.currentSessionId = null
+    }
+  }
+}
+threadRegistry.persist()
+
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
 // ---------------------------------------------------------------------------
@@ -110,16 +122,18 @@ async function startGateway(attempt = 0): Promise<void> {
       startupGapMs = null
     }
 
-    const manifest = registry.readRecoveryManifest()
-    if (manifest && manifest.sessions.length > 0) {
-      const sessionLines = manifest.sessions.map(s => {
-        const link = s.threadUrl ? `[\`${s.tmuxName}\`](${s.threadUrl})` : `\`${s.tmuxName}\``
-        const topicPreview = s.topic.slice(0, 60) + (s.topic.length > 60 ? '…' : '')
+    const detached = threadRegistry.detachedThreads()
+    if (detached.length > 0) {
+      const sessionLines = detached.map(t => {
+        const last = t.sessionHistory[t.sessionHistory.length - 1]
+        const name = last?.tmuxName ?? t.threadId.slice(0, 8)
+        const link = t.threadUrl ? `[\`${name}\`](${t.threadUrl})` : `\`${name}\``
+        const topicPreview = t.topic.slice(0, 60) + (t.topic.length > 60 ? '…' : '')
         return `• ${link} — ${topicPreview}`
       })
       const access = loadAccess()
       const msg = [
-        `⚡ Found ${manifest.sessions.length} dead session(s) from crash:`,
+        `⚡ Found ${detached.length} recoverable thread(s):`,
         ...sessionLines,
         `Reply \`recover\` to revive all, or \`recover <name>\` for a specific one.`,
       ].join('\n')
