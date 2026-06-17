@@ -8,13 +8,19 @@ import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSe
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
+const RETRYABLE_PATTERNS = /ECONNREFUSED|ECONNRESET|ENOTFOUND|EPIPE|socket hang up|not connected|network/i
+
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return RETRYABLE_PATTERNS.test(msg)
+}
 
 async function retrySend<T>(fn: () => Promise<T>): Promise<T> {
   for (let i = 0; i < SEND_RETRY_ATTEMPTS; i++) {
     try {
       return await fn()
     } catch (err) {
-      if (i === SEND_RETRY_ATTEMPTS - 1) throw err
+      if (i === SEND_RETRY_ATTEMPTS - 1 || !isRetryable(err)) throw err
       const delay = SEND_RETRY_BASE_MS * Math.pow(2, i)
       process.stderr.write(`daemon: send failed (attempt ${i + 1}/${SEND_RETRY_ATTEMPTS}), retrying in ${delay}ms: ${err instanceof Error ? err.message : err}\n`)
       await new Promise(r => setTimeout(r, delay))
@@ -117,7 +123,7 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       case 'fetch_messages': {
         const channelId = args.channel as string
         const limit = Math.min((args.limit as number) ?? 20, 100)
-        const msgs = await gateway.fetchMessages(channelId, limit)
+        const msgs = await retrySend(() => gateway.fetchMessages(channelId, limit))
         const botId = gateway.botId
         const out =
           msgs.length === 0
@@ -144,18 +150,18 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       }
 
       case 'delete_message': {
-        await gateway.delete(args.chat_id as string, args.message_id as string)
+        await retrySend(() => gateway.delete(args.chat_id as string, args.message_id as string))
         return { content: [{ type: 'text', text: 'deleted' }] }
       }
 
       case 'create_thread': {
         const threadName = (args.name as string).slice(0, 100)
-        const thread = await gateway.createThread(args.chat_id as string, threadName, {
+        const thread = await retrySend(() => gateway.createThread(args.chat_id as string, threadName, {
           messageId: args.message_id as string | undefined,
           archiveDuration: (args.auto_archive_minutes as number | undefined) ?? 1440,
           text: args.text as string | undefined,
           files: (args.files as string[] | undefined),
-        })
+        }))
         return {
           content: [{
             type: 'text',
