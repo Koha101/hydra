@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html style="margin:0;padding:0">
+<head>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #FFFFFF; }
+  .container { padding: 24px 30px 80px 30px; }
+  h1 { font-family: -apple-system, system-ui, sans-serif; font-size: 20px; color: #0F172A; text-align: center; margin-bottom: 4px; }
+  p { font-family: -apple-system, system-ui, sans-serif; font-size: 12px; color: #64748B; text-align: center; margin-bottom: 16px; }
+  .mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>respawn 🔁 — Flow Through Layers</h1>
+<p>Fresh session in existing thread. Reads thread history via fetch_messages before orienting. Always works.</p>
+
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant GW as gateway.ts
+    participant R as router.ts
+    participant CMD as commands/<br/>thread.ts
+    participant LC as session-<br/>lifecycle.ts
+    participant SR as sessions.ts<br/>SessionRegistry
+    participant BT as bridge-<br/>transport.ts
+    participant CC as Claude Code<br/>session
+
+    U->>GW: "respawn" (or "respawn: new topic") in thread
+    GW->>R: InboundMessage (isThread=true)
+    R->>CMD: handleRespawnIntercept(msg, topic?)
+    CMD->>GW: react(🔁)
+
+    Note over CMD,SR: Resolve topic
+    CMD->>SR: getByThread(existingThreadId)
+    SR-->>CMD: dead SessionInfo (or null)
+
+    alt thread has live session
+        CMD->>GW: reportError("thread has a live session — kill first")
+    else OK to respawn
+        CMD->>LC: tryRespawn(threadId, topic, resurrectFrom)
+        LC->>LC: doSpawnSession(topic, opts:<br/>{existingThreadId, resurrectFrom})
+
+        Note over LC,SR: Stale cleanup + anchor emoji
+        LC->>SR: getByThread(threadId)
+        LC->>LC: killSession(stale, "replaced by new spawn")
+        Note over LC: Anchor: ☠️/💥 removed<br/>🚀🧟 added, count incremented
+
+        Note over LC,CC: Session startup
+        LC->>LC: spawn tmux with<br/>claude --model ... --channels ...
+        Note over LC: isResurrect = true<br/>→ resurrect prompt:<br/>"Read thread via fetch_messages,<br/>reconstruct context, continue."
+        LC->>SR: register new session → same threadId
+
+        CC->>BT: bridge registers
+        CC->>GW: fetch_messages(channel=threadId, limit=50)
+        GW-->>CC: thread history
+        CC->>CC: reconstruct context from history
+        CC->>GW: reply(threadId, orientation summary)
+
+        LC-->>CMD: SpawnResult (success)
+        CMD->>SR: removeDead(threadId)
+        CMD->>GW: send(threadId, "🔁 respawned — reading thread history.")
+        CMD->>BT: notify main: "🔁 respawned in thread"
+        CMD->>CMD: debouncedRefreshListDisplay()
+    end
+</pre>
+</div>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default', sequence: { mirrorActors: false, messageMargin: 40, noteMargin: 10, actorMargin: 20, width: 180 } })</script>
+</body>
+</html>

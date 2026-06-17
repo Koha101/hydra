@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html style="margin:0;padding:0">
+<head>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #FFFFFF; }
+  .container { padding: 24px 30px 80px 30px; }
+  h1 { font-family: -apple-system, system-ui, sans-serif; font-size: 20px; color: #0F172A; text-align: center; margin-bottom: 4px; }
+  p { font-family: -apple-system, system-ui, sans-serif; font-size: 12px; color: #64748B; text-align: center; margin-bottom: 16px; }
+  .mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>resume ⏯️ — Flow Through Layers</h1>
+<p>Reconnect to dead Claude session via --resume. Full transcript restored. Falls back to reportError on failure.</p>
+
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant GW as gateway.ts
+    participant R as router.ts
+    participant CMD as commands/<br/>thread.ts
+    participant LC as session-<br/>lifecycle.ts
+    participant SR as sessions.ts<br/>SessionRegistry
+    participant BT as bridge-<br/>transport.ts
+    participant CC as Claude Code<br/>session
+
+    U->>GW: "resume" in dead thread
+    GW->>R: InboundMessage (isThread=true)
+    R->>CMD: handleResumeIntercept(msg)
+    CMD->>GW: react(⏯️)
+
+    Note over CMD,SR: Look up dead session
+    CMD->>SR: getByThread(existingThreadId)
+    SR-->>CMD: dead SessionInfo
+
+    alt no session found
+        CMD->>GW: reportError("no session in this thread")
+    else session alive (tmux running)
+        CMD->>GW: "Session is already running."
+    else session dead, no claudeSessionId
+        CMD->>GW: reportError("no Claude session ID — use respawn")
+    else session dead, has claudeSessionId
+        Note over CMD,CC: Tier 1: tryResume (--resume)
+
+        CMD->>LC: tryResume(dead)
+        LC->>LC: doSpawnSession(topic, opts:<br/>{existingThreadId, resumeFrom})
+        LC->>LC: spawn tmux with<br/>claude --resume claudeSessionId<br/>--channels plugin:discord@...
+        Note over LC: NO prompt arg<br/>(--resume reopens existing conversation)
+        LC->>SR: register new session → same threadId
+
+        rect rgb(255, 251, 235)
+            Note over LC,CC: Health check (30s)
+            LC->>BT: waitForBridge(sessionId, 30s)
+            CC->>BT: bridge registers
+            BT-->>LC: transport.has(sessionId) = true
+            Note over LC: Health check passed
+        end
+
+        LC-->>CMD: SpawnResult (success)
+        CMD->>SR: removeDead(threadId)
+        CMD->>GW: send(threadId, "⏯️ Resumed — full context restored.")
+        CMD->>BT: notify main: "⏯️ resumed in thread"
+        CMD->>CMD: debouncedRefreshListDisplay()
+
+        alt tryResume returned null (health check failed)
+            Note over CMD,CC: Tier 2: fork from dead session
+            CMD->>LC: doSpawnSession(topic, opts:<br/>{existingThreadId, forkFrom})
+            LC->>LC: claude --resume sessionId --fork-session
+            LC-->>CMD: SpawnResult
+            CMD->>GW: "⏯️ Resumed (forked — transcript preserved)."
+
+            alt fork also failed
+                Note over CMD,CC: Tier 3: tryRespawn (fallback)
+                CMD->>LC: tryRespawn(threadId, topic)
+                LC->>LC: doSpawnSession(topic, opts:<br/>{existingThreadId, resurrectFrom})
+                Note over LC: Fresh session reads thread<br/>via fetch_messages
+                LC-->>CMD: SpawnResult
+                CMD->>GW: "🔁 Respawned (resume unavailable)."
+
+                alt respawn also failed
+                    CMD->>GW: reportError("all recovery methods failed")
+                end
+            end
+        end
+    end
+</pre>
+</div>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default', sequence: { mirrorActors: false, messageMargin: 40, noteMargin: 10, actorMargin: 20, width: 180 } })</script>
+</body>
+</html>
