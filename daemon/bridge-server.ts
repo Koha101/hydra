@@ -150,7 +150,9 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
     } catch {}
     const anchor = gateway.getThreadAnchor(info.threadId)
     if (anchor) {
-      void gateway.react(anchor.channelId, anchor.messageId, '💀').catch(() => {})
+      void gateway.unreact(anchor.channelId, anchor.messageId, '🚀').catch(() => {})
+      void gateway.unreact(anchor.channelId, anchor.messageId, '🧟').catch(() => {})
+      void gateway.react(anchor.channelId, anchor.messageId, '💥').catch(() => {})
     }
   }
 }
