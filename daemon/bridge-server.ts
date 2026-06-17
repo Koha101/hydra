@@ -85,7 +85,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         if (info) info.lastActive = Date.now()
       }
 
-      void executeTool(name, args, conn.sessionId).then(result => {
+      void executeTool(name, args).then(result => {
         transport.sendToBridge(conn, {
           type: 'tool_result',
           id,

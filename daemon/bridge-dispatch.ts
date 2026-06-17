@@ -1,6 +1,5 @@
-import { statSync, mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs'
-import { join } from 'path'
-import { gateway, INBOX_DIR, STATE_DIR } from './config.js'
+import { statSync } from 'fs'
+import { gateway, INBOX_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
@@ -46,7 +45,6 @@ export const BRIDGE_TOOLS = [
   { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
-  { name: 'save_memory', description: 'Persist memory to this thread. Survives session death — injected into spawn prompt on resurrection. Write what a successor session needs: decisions and rationale, approaches that failed, current working state, key file references. Freeform markdown.', inputSchema: { type: 'object', properties: { content: { type: 'string', description: 'Freeform markdown. Write what matters for continuity.' } }, required: ['content'] } },
 ]
 
 export const SPAWN_MODEL = 'claude-opus-4-6[1m]'
@@ -61,7 +59,7 @@ export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
 // Tool execution
 // ---------------------------------------------------------------------------
 
-export async function executeTool(name: string, args: Record<string, unknown>, sessionId?: string): Promise<{ content: Array<{type: string; text: string}>; isError?: boolean }> {
+export async function executeTool(name: string, args: Record<string, unknown>): Promise<{ content: Array<{type: string; text: string}>; isError?: boolean }> {
   try {
     switch (name) {
       case 'reply': {
@@ -238,37 +236,6 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
         const info = registry.get(targetId)!
         await killSession(info, 'session ended')
         return { content: [{ type: 'text', text: `killed session ${targetId}` }] }
-      }
-
-      case 'save_memory': {
-        if (!sessionId) throw new Error('save_memory requires a session context')
-        const info = registry.get(sessionId)
-        if (!info) throw new Error('session not found')
-        const threadId = info.threadId
-        const content = args.content as string
-        if (!content?.trim()) throw new Error('content is required')
-
-        const memDir = join(STATE_DIR, 'thread-memory')
-        mkdirSync(memDir, { recursive: true })
-        const memFile = join(memDir, `${threadId}.md`)
-
-        const MAX_MEMORY_BYTES = 50 * 1024
-        let currentSize = 0
-        try { currentSize = statSync(memFile).size } catch {}
-
-        const block = `---\n_${new Date().toISOString()} · ${info.tmuxName}_\n\n${content.trim()}\n\n`
-
-        if (currentSize + Buffer.byteLength(block) > MAX_MEMORY_BYTES) {
-          return {
-            content: [{ type: 'text', text: `save_memory: thread memory at ${(currentSize / 1024).toFixed(1)}KB — at 50KB cap. Not written. Consolidate earlier entries or start fresh.` }],
-            isError: true,
-          }
-        }
-
-        appendFileSync(memFile, block)
-        const newSize = currentSize + Buffer.byteLength(block)
-        const warning = newSize > 40 * 1024 ? ` (${(newSize / 1024).toFixed(1)}KB / 50KB)` : ''
-        return { content: [{ type: 'text', text: `memory saved to thread${warning}` }] }
       }
 
       default:

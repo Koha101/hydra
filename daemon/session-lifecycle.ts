@@ -4,7 +4,7 @@ import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 
-import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH, STATE_DIR } from './config.js'
+import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
 import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
@@ -12,21 +12,6 @@ import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
 import { setAnchorState } from './anchor-state.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
-
-// ---------------------------------------------------------------------------
-// Thread memory
-// ---------------------------------------------------------------------------
-
-function readThreadMemory(threadId: string): string | null {
-  const memFile = join(STATE_DIR, 'thread-memory', `${threadId}.md`)
-  try {
-    if (!existsSync(memFile)) return null
-    const content = readFileSync(memFile, 'utf8').trim()
-    return content || null
-  } catch {
-    return null
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Kill guard
@@ -269,12 +254,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
-  // Inject thread memory for sessions resuming into an existing thread
-  const threadMemory = threadId ? readThreadMemory(threadId) : null
-  const memoryBlock = threadMemory
-    ? `\n\n<thread-memory>\n${threadMemory}\n</thread-memory>\nThe above is persistent memory saved by previous sessions in this thread. Use it to orient.`
-    : ''
-
   let prompt: string
   if (isHandoff) {
     const contextLine = opts!.artifact
@@ -289,7 +268,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `Send a greeting to your thread using reply(chat_id=${threadId}). In your greeting, include one sentence on what the previous session was working on and one sentence on where this session is heading.`,
       `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
       `After greeting, begin executing the Next action from the artifact immediately. Do not wait for user input unless there are critical questions that need the user's answer.`,
-    ].join('\n') + memoryBlock
+    ].join('\n')
   } else if (isFork) {
     prompt = [
       `You are ${tmuxName}, forked from ${originFrom}.`,
@@ -310,9 +289,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `Reconstruct context and continue from where the previous session left off.`,
       `Post a summary of what you found and what you're picking up using reply(chat_id=${threadId}).`,
       `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
-    ].join('\n') + memoryBlock
+    ].join('\n')
   } else {
-    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.` + memoryBlock
+    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
