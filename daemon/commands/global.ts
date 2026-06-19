@@ -28,6 +28,8 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
       } else {
         chatId = msg.existingThreadId
       }
+    } else {
+      chatId = msg.existingThreadId
     }
   }
 
