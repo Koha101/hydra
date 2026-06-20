@@ -35,6 +35,7 @@ export type SessionInfo = {
   threadUrl?: string
   worktreeRepo?: string
   worktreePath?: string
+  isJoinMember?: boolean
 }
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
@@ -43,6 +44,8 @@ export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
   handedOffFrom?: string
   artifact?: string
+  joinThread?: string                                          // join existing thread as member (skip thread creation)
+  promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +175,13 @@ export class SessionRegistry {
         try {
           execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
         } catch {
+          dead++
+          continue
+        }
+        // Orphaned join members (review critics/judges) can't be re-associated
+        // with their review state after restart — kill them immediately
+        if (info.isJoinMember) {
+          try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
           dead++
           continue
         }
