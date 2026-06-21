@@ -167,7 +167,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• `listen` / `pause` — toggle whether the session responds to all messages',
     '',
     '**Other:**',
-    '• `commands` — this directory',
+    '• `help` / `commands` — this directory',
   ].join('\n')
   try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
 }

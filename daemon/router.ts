@@ -175,7 +175,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands)\s*$/i)
+    const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands|\/help|help)\s*$/i)
     if (commandsMatch) {
       void handleCommandsIntercept(msg)
       return
