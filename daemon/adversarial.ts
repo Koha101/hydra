@@ -17,8 +17,9 @@ export type ReviewState = {
   rounds: number
   currentRound: number
   currentTurn: 'critic' | 'owner'
-  phase: 'debate' | 'complete' | 'cancelled'
+  phase: 'debate' | 'cleanup' | 'complete' | 'cancelled'
   consecutiveFailures: number
+  messageIds: string[]  // track all review messages for cleanup
   timeout?: ReturnType<typeof setTimeout>
   _disconnectTimer?: ReturnType<typeof setTimeout>
 }
@@ -73,6 +74,7 @@ export async function startReview(
     currentTurn: 'critic',
     phase: 'debate',
     consecutiveFailures: 0,
+    messageIds: [],
   }
 
   // Set maps synchronously before any await to prevent TOCTOU
@@ -82,10 +84,11 @@ export async function startReview(
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
-    await gateway.send(ownerThreadId, [
+    const ann = await gateway.send(ownerThreadId, [
       `**Adversarial Review** — ${rounds} round${rounds > 1 ? 's' : ''}`,
       `A critic will challenge the design. You defend.${topicLine}`,
     ].join('\n'))
+    state.messageIds.push(ann.id)
 
     // Notify owner to prepare
     transport.sendOrQueue(ownerSessionId, {
@@ -131,20 +134,26 @@ export async function cancelReview(reviewId: string): Promise<void> {
   threadToReview.delete(state.ownerThreadId)
   reviews.delete(reviewId)
   await gateway.send(state.ownerThreadId, `Review cancelled.`)
+
+  // Clean up review messages (cancel announcement stays for context)
+  void deleteReviewMessages(state).catch(err => {
+    process.stderr.write(`daemon: cancel cleanup failed: ${err}\n`)
+  })
 }
 
 // ---------------------------------------------------------------------------
 // Core reply handler — called from bridge-server for ALL reply tool calls
 // ---------------------------------------------------------------------------
 
-export function onReviewReply(sessionId: string, text: string, chatId: string): void {
-  // Check if this is a critic/judge posting
+export function onReviewReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
+  // Check if this is a critic posting
   const memberReviewId = sessionToReview.get(sessionId)
   if (memberReviewId) {
     const state = reviews.get(memberReviewId)
     if (!state || chatId !== state.ownerThreadId) return
 
     if (state.phase === 'debate' && state.currentTurn === 'critic' && state.criticSessionId === sessionId) {
+      state.messageIds.push(...sentMessageIds)
       onCriticPosted(state, text)
       return
     }
@@ -155,8 +164,18 @@ export function onReviewReply(sessionId: string, text: string, chatId: string): 
   const ownerReviewId = ownerToReview.get(sessionId)
   if (ownerReviewId) {
     const state = reviews.get(ownerReviewId)
-    if (!state || state.phase !== 'debate' || state.currentTurn !== 'owner') return
-    if (chatId !== state.ownerThreadId) return
+    if (!state || chatId !== state.ownerThreadId) return
+
+    if (state.phase === 'cleanup') {
+      // Don't push sentMessageIds — summary should survive deletion
+      if (text.toLowerCase().includes('review summary')) {
+        finalizeReview(state)
+      }
+      return
+    }
+
+    if (state.phase !== 'debate' || state.currentTurn !== 'owner') return
+    state.messageIds.push(...sentMessageIds)
     onOwnerPosted(state, text)
   }
 }
@@ -269,18 +288,61 @@ async function finishDebate(state: ReviewState): Promise<void> {
 }
 
 function completeReview(state: ReviewState): void {
+  state.phase = 'cleanup'
+
+  // Cleanup timeout: auto-finalize if owner doesn't post summary within 5 minutes
+  state.timeout = setTimeout(async () => {
+    process.stderr.write(`daemon: review cleanup timed out, auto-finalizing\n`)
+    await gateway.send(state.ownerThreadId, `**Review Summary** — auto-closed (owner did not post summary)`).catch(() => {})
+    finalizeReview(state)
+  }, 5 * 60 * 1000)
+
+  // Nudge owner to post a summary — messages stay visible until summary is posted
+  transport.sendOrQueue(state.ownerSessionId, {
+    type: 'notification',
+    content: [
+      `[system] Adversarial review complete (${state.rounds} round${state.rounds > 1 ? 's' : ''}).`,
+      `Post a brief summary to your thread. After you post, the review messages will be cleaned up.`,
+      ``,
+      `Use this format:`,
+      `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
+      `- ✅ issue — fixed/will fix`,
+      `- ⚠️ issue — acknowledged, deferred`,
+      `- ❌ issue — rebutted`,
+    ].join('\n'),
+    meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+  })
+}
+
+/** Delete review messages after owner posts summary. Serialized with delay to avoid rate limits. */
+async function deleteReviewMessages(state: ReviewState): Promise<void> {
+  let failures = 0
+  for (const msgId of state.messageIds) {
+    try {
+      await gateway.delete(state.ownerThreadId, msgId)
+    } catch (err) {
+      failures++
+      process.stderr.write(`daemon: review cleanup: failed to delete message ${msgId}: ${err}\n`)
+    }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  if (failures > 0) {
+    process.stderr.write(`daemon: review cleanup: ${failures}/${state.messageIds.length} message deletes failed\n`)
+  }
+}
+
+function finalizeReview(state: ReviewState): void {
+  if (state.phase !== 'cleanup') return  // guard against double-entry (timeout + reply race)
+  if (state.timeout) clearTimeout(state.timeout)
   state.phase = 'complete'
+
+  // Clear maps immediately — phase guard prevents re-entry
   ownerToReview.delete(state.ownerSessionId)
   threadToReview.delete(state.ownerThreadId)
   reviews.delete(state.reviewId)
 
-  void gateway.send(state.ownerThreadId, `**Review complete.**`)
-
-  // Nudge owner
-  transport.sendOrQueue(state.ownerSessionId, {
-    type: 'notification',
-    content: `[system] Adversarial review complete. Read the critique and your defense above, then decide on next steps.`,
-    meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+  void deleteReviewMessages(state).catch(err => {
+    process.stderr.write(`daemon: review message cleanup failed: ${err}\n`)
   })
 }
 
@@ -289,7 +351,8 @@ function completeReview(state: ReviewState): void {
 // ---------------------------------------------------------------------------
 
 async function spawnCritic(state: ReviewState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `Spawning critic...`)
+  const msg = await gateway.send(state.ownerThreadId, `Spawning critic...`)
+  state.messageIds.push(msg.id)
 
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
