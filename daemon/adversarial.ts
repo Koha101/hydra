@@ -3,6 +3,7 @@ import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
+import { getBuildByThread } from './build.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +62,9 @@ export async function startReview(
 ): Promise<ReviewState> {
   if (threadToReview.has(ownerThreadId)) {
     throw new Error('A review is already in progress in this thread')
+  }
+  if (getBuildByThread(ownerThreadId)) {
+    throw new Error('A build is in progress in this thread — finish or cancel it first')
   }
 
   const reviewId = randomUUID()
@@ -247,7 +251,7 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 
   if (state.currentRound >= state.rounds) {
     // Final round complete — kill critic, finish
-    void finishDebate(state).catch(err => {
+    void finishDebate(state, text).catch(err => {
       process.stderr.write(`daemon: finishDebate failed: ${err}\n`)
       void cancelReview(state.reviewId).catch(() => {})
       void gateway.send(state.ownerThreadId, `Review failed during cleanup: ${err}`).catch(() => {})
@@ -273,7 +277,7 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 // Phase transitions
 // ---------------------------------------------------------------------------
 
-async function finishDebate(state: ReviewState): Promise<void> {
+async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<void> {
   // Kill critic
   if (state.criticSessionId) {
     const info = registry.get(state.criticSessionId)
@@ -282,6 +286,12 @@ async function finishDebate(state: ReviewState): Promise<void> {
     }
     sessionToReview.delete(state.criticSessionId)
     state.criticSessionId = undefined
+  }
+
+  // If the owner's final defense already contains the summary, skip cleanup phase
+  if (lastOwnerText.toLowerCase().includes('review summary')) {
+    finalizeReview(state)
+    return
   }
 
   completeReview(state)

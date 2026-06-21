@@ -10,6 +10,7 @@ import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, hand
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
+import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -226,6 +227,24 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const cancelReviewMatch = msg.content.match(/^(?:\/cancel-review|cancel review)\s*$/i)
       if (cancelReviewMatch) {
         void handleCancelReviewIntercept(msg)
+        return
+      }
+
+      const buildWtMatch = msg.content.match(/^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i)
+      if (buildWtMatch) {
+        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), buildWtMatch[3]?.trim(), buildWtMatch[1].trim())
+        return
+      }
+
+      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      if (buildMatch) {
+        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildMatch[2]?.trim())
+        return
+      }
+
+      const cancelBuildMatch = msg.content.match(/^(?:\/cancel-build|cancel build)\s*$/i)
+      if (cancelBuildMatch) {
+        void handleCancelBuildIntercept(msg)
         return
       }
     }
