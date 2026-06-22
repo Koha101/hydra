@@ -64,6 +64,17 @@ const CRITIC_TIMEOUT_MS = 20 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
 
 // ---------------------------------------------------------------------------
+// Map cleanup — single function for all exit paths
+// ---------------------------------------------------------------------------
+
+function cleanupBuildMaps(state: BuildState): void {
+  if (state.criticSessionId) sessionToBuild.delete(state.criticSessionId)
+  ownerToBuild.delete(state.ownerSessionId)
+  threadToBuild.delete(state.ownerThreadId)
+  builds.delete(state.buildId)
+}
+
+// ---------------------------------------------------------------------------
 // State machine
 // ---------------------------------------------------------------------------
 
@@ -184,9 +195,7 @@ export async function startBuild(
     resetTimeout(state)
     return state
   } catch (err) {
-    builds.delete(buildId)
-    threadToBuild.delete(ownerThreadId)
-    ownerToBuild.delete(ownerSessionId)
+    cleanupBuildMaps(state)
     throw err
   }
 }
@@ -204,17 +213,19 @@ export async function cancelBuild(buildId: string): Promise<void> {
   if (state._heartbeat) clearInterval(state._heartbeat)
   if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
 
-  if (state.criticSessionId) {
-    const info = registry.get(state.criticSessionId)
-    if (info && !killsInProgress.has(state.criticSessionId)) {
-      await killSession(info, 'build cancelled')
+  try {
+    if (state.criticSessionId) {
+      const info = registry.get(state.criticSessionId)
+      if (info && !killsInProgress.has(state.criticSessionId)) {
+        await killSession(info, 'build cancelled')
+      }
     }
-    sessionToBuild.delete(state.criticSessionId)
+  } catch (err) {
+    process.stderr.write(`daemon: build cancel killSession failed: ${err}\n`)
+  } finally {
+    cleanupBuildMaps(state)
   }
 
-  ownerToBuild.delete(state.ownerSessionId)
-  threadToBuild.delete(state.ownerThreadId)
-  builds.delete(buildId)
   await gateway.send(state.ownerThreadId, `Build cancelled.`)
 
   cleanupWorktree(state)
@@ -377,11 +388,14 @@ function onCriticFeedback(state: BuildState, text: string): void {
 async function finishBuild(state: BuildState, lastCriticText: string): Promise<void> {
   // Kill critic
   if (state.criticSessionId) {
-    const info = registry.get(state.criticSessionId)
-    if (info && !killsInProgress.has(state.criticSessionId)) {
-      await killSession(info, 'build complete')
+    try {
+      const info = registry.get(state.criticSessionId)
+      if (info && !killsInProgress.has(state.criticSessionId)) {
+        await killSession(info, 'build complete')
+      }
+    } catch (err) {
+      process.stderr.write(`daemon: build finishBuild killSession failed: ${err}\n`)
     }
-    sessionToBuild.delete(state.criticSessionId)
     state.criticSessionId = undefined
   }
 
@@ -406,11 +420,9 @@ function completeBuild(state: BuildState, approved: boolean, lastCriticText: str
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
   })
 
-  // Finalize immediately — no cleanup phase needed since we keep build messages
+  // Finalize — keep build messages (they're the work product)
   state.phase = 'complete'
-  ownerToBuild.delete(state.ownerSessionId)
-  threadToBuild.delete(state.ownerThreadId)
-  builds.delete(state.buildId)
+  cleanupBuildMaps(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +488,7 @@ function resetTimeout(state: BuildState): void {
   const whose = state.phase === 'reviewing' ? 'critic' : 'owner'
   const timeoutMs = whose === 'critic' ? CRITIC_TIMEOUT_MS : OWNER_TIMEOUT_MS
 
-  // Heartbeat: check critic is alive + post status every 5 min
+  // Heartbeat: check critic tmux is alive every 5 min (silent unless dead)
   if (whose === 'critic' && state.criticSessionId) {
     const criticId = state.criticSessionId
     let elapsed = 0
@@ -486,7 +498,7 @@ function resetTimeout(state: BuildState): void {
       if (criticInfo) {
         try {
           execSync(`tmux has-session -t '${criticInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-          void gateway.send(state.ownerThreadId, `_Critic still reviewing (${elapsed}m elapsed)..._`).catch(() => {})
+          process.stderr.write(`daemon: build: critic ${criticInfo.tmuxName} alive (${elapsed}m elapsed)\n`)
         } catch {
           process.stderr.write(`daemon: build critic tmux session died\n`)
           if (state._heartbeat) clearInterval(state._heartbeat)

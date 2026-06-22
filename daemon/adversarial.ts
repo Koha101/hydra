@@ -14,6 +14,9 @@ import { createStateMachine } from './state-machine.js'
 export type ReviewPhase = 'critic_turn' | 'owner_turn' | 'cleanup' | 'complete' | 'cancelled'
 type ReviewEvent = 'critic_posted' | 'owner_posted' | 'final_round' | 'summary_posted' | 'timeout' | 'cancel'
 
+const OWNER_SENTINEL = '[owner→critic]'
+const CRITIC_SENTINEL = '[critic→owner]'
+
 export type ReviewState = {
   reviewId: string
   ownerThreadId: string
@@ -45,12 +48,23 @@ const reviewMachine = createStateMachine<ReviewPhase, ReviewEvent>('review', {
 // ---------------------------------------------------------------------------
 
 const reviews = new Map<string, ReviewState>()
-const sessionToReview = new Map<string, string>()  // critic -> reviewId
-const ownerToReview = new Map<string, string>()     // owner -> reviewId
-const threadToReview = new Map<string, string>()    // thread -> reviewId
+const sessionToReview = new Map<string, string>()
+const ownerToReview = new Map<string, string>()
+const threadToReview = new Map<string, string>()
 
 const CRITIC_TIMEOUT_MS = 10 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
+
+// ---------------------------------------------------------------------------
+// Map cleanup — single function for all exit paths
+// ---------------------------------------------------------------------------
+
+function cleanupReviewMaps(state: ReviewState): void {
+  if (state.criticSessionId) sessionToReview.delete(state.criticSessionId)
+  ownerToReview.delete(state.ownerSessionId)
+  threadToReview.delete(state.ownerThreadId)
+  reviews.delete(state.reviewId)
+}
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -108,16 +122,19 @@ export async function startReview(
 
     transport.sendOrQueue(ownerSessionId, {
       type: 'notification',
-      content: `[system] Adversarial review started (${rounds} rounds). A critic will challenge your design. When their critique arrives as a notification, defend your work by replying to your thread. Be specific — cite code and reasoning.`,
+      content: [
+        `[system] Adversarial review started (${rounds} rounds). A critic will challenge your design.`,
+        `When their critique arrives as a notification, defend your work by replying to your thread.`,
+        ``,
+        `**Message routing:** Your first line MUST be \`${OWNER_SENTINEL}\` when posting your defense. Messages without this tag are conversational and won't advance the review.`,
+      ].join('\n'),
       meta: { chat_id: ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
 
     await spawnCritic(state)
     return state
   } catch (err) {
-    reviews.delete(reviewId)
-    threadToReview.delete(ownerThreadId)
-    ownerToReview.delete(ownerSessionId)
+    cleanupReviewMaps(state)
     throw err
   }
 }
@@ -134,17 +151,19 @@ export async function cancelReview(reviewId: string): Promise<void> {
   if (state.timeout) clearTimeout(state.timeout)
   if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
 
-  if (state.criticSessionId) {
-    const info = registry.get(state.criticSessionId)
-    if (info && !killsInProgress.has(state.criticSessionId)) {
-      await killSession(info, 'review cancelled')
+  try {
+    if (state.criticSessionId) {
+      const info = registry.get(state.criticSessionId)
+      if (info && !killsInProgress.has(state.criticSessionId)) {
+        await killSession(info, 'review cancelled')
+      }
     }
-    sessionToReview.delete(state.criticSessionId)
+  } catch (err) {
+    process.stderr.write(`daemon: review cancel killSession failed: ${err}\n`)
+  } finally {
+    cleanupReviewMaps(state)
   }
 
-  ownerToReview.delete(state.ownerSessionId)
-  threadToReview.delete(state.ownerThreadId)
-  reviews.delete(reviewId)
   await gateway.send(state.ownerThreadId, `Review cancelled.`)
 
   void deleteReviewMessages(state).catch(err => {
@@ -157,18 +176,24 @@ export async function cancelReview(reviewId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function onReviewReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
+  const firstLine = text.split('\n')[0].trim()
+
   // Critic posting
   const memberReviewId = sessionToReview.get(sessionId)
   if (memberReviewId) {
     const state = reviews.get(memberReviewId)
     if (!state || chatId !== state.ownerThreadId || state.criticSessionId !== sessionId) return
 
+    // Only process messages with the critic sentinel
+    if (!firstLine.startsWith(CRITIC_SENTINEL)) return
+
     const result = reviewMachine.transition(state.phase, 'critic_posted')
     if (!result.ok) return
 
+    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
     state.messageIds.push(...sentMessageIds)
     state.phase = result.to
-    onCriticPosted(state, text)
+    onCriticPosted(state, bodyText)
     return
   }
 
@@ -178,9 +203,10 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
     const state = reviews.get(ownerReviewId)
     if (!state || chatId !== state.ownerThreadId) return
 
-    // Cleanup phase — check for summary
+    // Cleanup phase — check for summary (no sentinel needed, just keyword)
     if (state.phase === 'cleanup') {
-      if (text.toLowerCase().includes('review summary')) {
+      const summaryLine = firstLine.startsWith('**Review Summary**')
+      if (summaryLine) {
         const result = reviewMachine.transition(state.phase, 'summary_posted')
         if (result.ok) {
           state.phase = result.to
@@ -190,7 +216,10 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
       return
     }
 
-    // Debate — check if final round
+    // Only process messages with the owner sentinel
+    if (!firstLine.startsWith(OWNER_SENTINEL)) return
+
+    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
     const isFinalRound = state.currentRound >= state.rounds
     const event: ReviewEvent = isFinalRound ? 'final_round' : 'owner_posted'
     const result = reviewMachine.transition(state.phase, event)
@@ -200,12 +229,12 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
     state.phase = result.to
 
     if (isFinalRound) {
-      void finishDebate(state, text).catch(err => {
+      void finishDebate(state, bodyText).catch(err => {
         process.stderr.write(`daemon: finishDebate failed: ${err}\n`)
         void cancelReview(state.reviewId).catch(() => {})
       })
     } else {
-      onOwnerPosted(state, text)
+      onOwnerPosted(state, bodyText)
     }
   }
 }
@@ -259,7 +288,7 @@ function onCriticPosted(state: ReviewState, text: string): void {
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
-    content: `[Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread with your response.`,
+    content: `[Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread with \`${OWNER_SENTINEL}\` as the first line.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-critic', user_id: 'system', ts: new Date().toISOString() },
   })
 
@@ -274,7 +303,7 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 
   transport.sendOrQueue(state.criticSessionId!, {
     type: 'notification',
-    content: `[Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}.`,
+    content: `[Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}. First line must be \`${CRITIC_SENTINEL}\`.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-owner', user_id: 'system', ts: new Date().toISOString() },
   })
 
@@ -291,12 +320,11 @@ async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<
     if (info && !killsInProgress.has(state.criticSessionId)) {
       await killSession(info, 'debate complete')
     }
-    sessionToReview.delete(state.criticSessionId)
     state.criticSessionId = undefined
   }
 
   // If the owner's final defense already contains the summary, skip cleanup
-  if (lastOwnerText.toLowerCase().includes('review summary')) {
+  if (lastOwnerText.split('\n')[0].trim().startsWith('**Review Summary**')) {
     state.phase = 'complete'
     finalizeReview(state)
     return
@@ -351,9 +379,7 @@ function finalizeReview(state: ReviewState): void {
   if (state.phase !== 'complete') return
   if (state.timeout) clearTimeout(state.timeout)
 
-  ownerToReview.delete(state.ownerSessionId)
-  threadToReview.delete(state.ownerThreadId)
-  reviews.delete(state.reviewId)
+  cleanupReviewMaps(state)
 
   void deleteReviewMessages(state).catch(err => {
     process.stderr.write(`daemon: review message cleanup failed: ${err}\n`)
