@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto'
 import { execSync, execFileSync } from 'child_process'
 import { resolve } from 'path'
 import { gateway } from './config.js'
@@ -27,7 +26,6 @@ function taskToBranchName(task: string): string {
 // ---------------------------------------------------------------------------
 
 export type BuildState = {
-  buildId: string
   ownerThreadId: string
   ownerSessionId: string
   criticSessionId?: string
@@ -108,8 +106,7 @@ export async function startBuild(
     throw new Error('A review is in progress in this thread — finish or cancel it first')
   }
 
-  const buildId = randomUUID()
-  const shortId = buildId.slice(0, 8)
+  const shortId = Math.random().toString(36).slice(2, 10)
 
   // Create worktree if requested
   let worktreeRepo: string | undefined
@@ -147,7 +144,6 @@ export async function startBuild(
   }
 
   const state: BuildState = {
-    buildId,
     ownerThreadId,
     ownerSessionId,
     task: task ?? 'implement the design discussed above',
