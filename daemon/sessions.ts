@@ -47,6 +47,9 @@ export type SpawnOpts = {
   artifact?: string
   joinThread?: string                                          // join existing thread as member (skip thread creation)
   promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
+  existingThreadId?: string   // spawn into existing thread (skip thread creation)
+  resumeFrom?: string         // claude session ID to --resume from
+  resurrectFrom?: string      // name of the previous session (for prompt context)
 }
 
 // ---------------------------------------------------------------------------

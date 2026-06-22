@@ -205,6 +205,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
+    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*$/i)
+    if (recoverMatch) {
+      void handleRecoverIntercept(msg)
+      return
+    }
+
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
     if (threadKillMatch) {
       void handleThreadKillIntercept(msg)
@@ -251,6 +257,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const goMatch = msg.content.match(/^(?:\/go|go!)\s*$/i)
       if (goMatch) {
         void handleGoIntercept(msg)
+        return
+      }
+
+      const resumeMatch = msg.content.match(/^(?:resume|\/resume)\s*$/i)
+      if (resumeMatch) {
+        void handleResumeIntercept(msg)
+        return
+      }
+
+      const respawnMatch = msg.content.match(/^(?:respawn|\/respawn)(?::\s*([\s\S]+))?$/i)
+      if (respawnMatch) {
+        void handleRespawnIntercept(msg, respawnMatch[1]?.trim())
         return
       }
 

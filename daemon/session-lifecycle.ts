@@ -127,7 +127,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   let respawnCount = 0
   if (isJoin) {
     threadId = opts!.joinThread!
-  } else {
+  } else if (opts?.existingThreadId) {
+    threadId = opts.existingThreadId
+  }
+
+  if (!isJoin && !opts?.existingThreadId) {
     // Determine where to create the thread
     let targetChannelId = chatId
     if (targetChannelId) {
@@ -306,9 +310,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     ].join('\n')
   } else {
     prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context. To read prior conversation in your thread, use fetch_messages(channel="${threadId}") — this is your thread's history. Do NOT fetch from the parent channel ID alone, only from your full thread chat_id. Send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
+    if (opts?.resurrectFrom) {
+      prompt += `\n\nYou are continuing the work of **${opts.resurrectFrom}** which died. Read the thread history to understand what was in progress.`
+    }
   }
 
-  // Build claude command -- fork adds --resume --fork-session
+  // Build claude command -- fork adds --resume --fork-session, resume uses --resume
   const claudeArgs = isFork
     ? [
         `claude`,
@@ -319,6 +326,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         `--dangerously-skip-permissions`,
         shq(prompt),
       ].join(' ')
+    : opts?.resumeFrom
+    ? `claude --resume ${shq(opts.resumeFrom)} --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions`
     : `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
 
   const inner = [
@@ -397,6 +406,39 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   }
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
+}
+
+// ---------------------------------------------------------------------------
+// Recovery primitives
+// ---------------------------------------------------------------------------
+
+export async function tryResume(opts: {
+  topic: string
+  threadId: string
+  claudeSessionId: string
+  threadUrl?: string
+}): Promise<SpawnResult | null> {
+  try {
+    return await doSpawnSession(opts.topic, undefined, undefined, {
+      existingThreadId: opts.threadId,
+      resumeFrom: opts.claudeSessionId,
+    })
+  } catch (err) {
+    process.stderr.write(`daemon: tryResume failed: ${err}\n`)
+    return null
+  }
+}
+
+export async function tryRespawn(threadId: string, topic: string, resurrectFrom?: string): Promise<SpawnResult | null> {
+  try {
+    return await doSpawnSession(topic, undefined, undefined, {
+      existingThreadId: threadId,
+      resurrectFrom,
+    })
+  } catch (err) {
+    process.stderr.write(`daemon: tryRespawn failed: ${err}\n`)
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
