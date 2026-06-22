@@ -3,6 +3,7 @@ import { gateway } from '../config.js'
 import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn } from '../session-lifecycle.js'
+import { COUNT_EMOJI } from '../anchor-state.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { fallbackDescription, formatDuration, getContextPercent, reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
@@ -145,7 +146,6 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
       const e = sessionEmoji(result.name)
       const info = registry.get(result.sessionId)
       const count = info?.respawnCount ?? 0
-      const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
       const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
       try {
         const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${result.name}\` resumed${countLabel} — full context restored.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
@@ -174,8 +174,7 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
       const e = sessionEmoji(forkResult.name)
       const forkInfo = registry.get(forkResult.sessionId)
       const forkCount = forkInfo?.respawnCount ?? 0
-      const FCOUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
-      const forkCountLabel = forkCount > 0 ? ` ${FCOUNT_EMOJI[Math.min(forkCount - 1, FCOUNT_EMOJI.length - 1)]}` : ''
+      const forkCountLabel = forkCount > 0 ? ` ${COUNT_EMOJI[Math.min(forkCount - 1, COUNT_EMOJI.length - 1)]}` : ''
       try {
         const sent = await gateway.send(msg.channelId, `⏯️ ${e} \`${forkResult.name}\` resumed${forkCountLabel} (forked from dead session — transcript preserved).\nView in any terminal: \`tmux attach -t ${forkResult.name}\``, { replyTo: msg.id })
         if (forkCount > 0) void gateway.react(msg.channelId, sent.id, '🧟').catch(() => {})
@@ -244,7 +243,6 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
     const e = sessionEmoji(result.name)
     const info = registry.get(result.sessionId)
     const count = info?.respawnCount ?? 0
-    const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
     const countLabel = count > 0 ? ` ${COUNT_EMOJI[Math.min(count - 1, COUNT_EMOJI.length - 1)]}` : ''
     try {
       const sent = await gateway.send(msg.channelId, `🔁 ${e} \`${result.name}\` respawned${countLabel} — reading thread history.\nView in any terminal: \`tmux attach -t ${result.name}\``, { replyTo: msg.id })
