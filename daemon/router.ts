@@ -224,7 +224,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const cancelReviewMatch = msg.content.match(/^(?:\/cancel-review|cancel review)\s*$/i)
+      const cancelReviewMatch = msg.content.match(/^(?:\/cancel-review|cancel review|kill review)\s*$/i)
       if (cancelReviewMatch) {
         void handleCancelReviewIntercept(msg)
         return
@@ -242,7 +242,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const cancelBuildMatch = msg.content.match(/^(?:\/cancel-build|cancel build)\s*$/i)
+      const cancelBuildMatch = msg.content.match(/^(?:\/cancel-build|cancel build|kill build)\s*$/i)
       if (cancelBuildMatch) {
         void handleCancelBuildIntercept(msg)
         return
