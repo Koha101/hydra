@@ -180,6 +180,118 @@ describe('build transition table', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Review-specific transition table tests
+// ---------------------------------------------------------------------------
+
+type ReviewPhase = 'critic_turn' | 'owner_turn' | 'cleanup' | 'complete' | 'cancelled'
+type ReviewEvent = 'critic_posted' | 'owner_posted' | 'final_round' | 'summary_posted' | 'timeout' | 'cancel'
+
+const reviewTransitions = {
+  critic_turn: { critic_posted: 'owner_turn' as ReviewPhase, timeout: 'cancelled' as ReviewPhase, cancel: 'cancelled' as ReviewPhase },
+  owner_turn:  { owner_posted: 'critic_turn' as ReviewPhase, final_round: 'cleanup' as ReviewPhase, timeout: 'cancelled' as ReviewPhase, cancel: 'cancelled' as ReviewPhase },
+  cleanup:     { summary_posted: 'complete' as ReviewPhase, timeout: 'complete' as ReviewPhase },
+  complete:    {} as Partial<Record<ReviewEvent, ReviewPhase>>,
+  cancelled:   {} as Partial<Record<ReviewEvent, ReviewPhase>>,
+}
+
+describe('review transition table', () => {
+  const sm = createStateMachine<ReviewPhase, ReviewEvent>('review', reviewTransitions)
+
+  test('full 3-round review lifecycle', () => {
+    let phase: ReviewPhase = 'critic_turn'
+
+    // Round 1: critic posts, owner defends
+    let r = sm.transition(phase, 'critic_posted')
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('owner_turn')
+
+    r = sm.transition(phase, 'owner_posted')
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('critic_turn')
+
+    // Round 2: critic posts, owner defends
+    r = sm.transition(phase, 'critic_posted')
+    if (r.ok) phase = r.to
+    r = sm.transition(phase, 'owner_posted')
+    if (r.ok) phase = r.to
+    expect(phase).toBe('critic_turn')
+
+    // Round 3: critic posts, owner defends (final round)
+    r = sm.transition(phase, 'critic_posted')
+    if (r.ok) phase = r.to
+    r = sm.transition(phase, 'final_round')
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('cleanup')
+
+    // Summary posted
+    r = sm.transition(phase, 'summary_posted')
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('complete')
+  })
+
+  test('final_round only valid during owner_turn', () => {
+    expect(sm.transition('critic_turn', 'final_round').ok).toBe(false)
+    expect(sm.transition('cleanup', 'final_round').ok).toBe(false)
+    expect(sm.transition('owner_turn', 'final_round').ok).toBe(true)
+  })
+
+  test('summary_posted only valid during cleanup', () => {
+    expect(sm.transition('critic_turn', 'summary_posted').ok).toBe(false)
+    expect(sm.transition('owner_turn', 'summary_posted').ok).toBe(false)
+    expect(sm.transition('cleanup', 'summary_posted').ok).toBe(true)
+  })
+
+  test('cleanup timeout goes to complete (not cancelled)', () => {
+    const r = sm.transition('cleanup', 'timeout')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('complete')
+  })
+
+  test('owner cannot post during critic turn', () => {
+    expect(sm.transition('critic_turn', 'owner_posted').ok).toBe(false)
+    expect(sm.transition('critic_turn', 'final_round').ok).toBe(false)
+  })
+
+  test('critic cannot post during owner turn', () => {
+    expect(sm.transition('owner_turn', 'critic_posted').ok).toBe(false)
+  })
+
+  test('timeout cancels from active debate phases', () => {
+    for (const phase of ['critic_turn', 'owner_turn'] as ReviewPhase[]) {
+      const r = sm.transition(phase, 'timeout')
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.to).toBe('cancelled')
+    }
+  })
+
+  test('complete and cancelled are terminal', () => {
+    for (const phase of ['complete', 'cancelled'] as ReviewPhase[]) {
+      for (const event of ['critic_posted', 'owner_posted', 'final_round', 'summary_posted', 'timeout', 'cancel'] as ReviewEvent[]) {
+        expect(sm.transition(phase, event).ok).toBe(false)
+      }
+    }
+  })
+
+  test('1-round review: critic posts, owner defends (final), cleanup, complete', () => {
+    let phase: ReviewPhase = 'critic_turn'
+    let r = sm.transition(phase, 'critic_posted')
+    if (r.ok) phase = r.to
+    // Only 1 round — this is the final round
+    r = sm.transition(phase, 'final_round')
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('cleanup')
+    r = sm.transition(phase, 'summary_posted')
+    if (r.ok) phase = r.to
+    expect(phase).toBe('complete')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Sentinel detection tests
 // ---------------------------------------------------------------------------
 
