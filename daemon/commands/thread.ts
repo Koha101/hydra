@@ -110,3 +110,102 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
   const pe = sessionEmoji(info.tmuxName)
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// Resume / Recover
+// ---------------------------------------------------------------------------
+
+function isSessionDead(info: { tmuxName: string; sessionId: string }): boolean {
+  try {
+    execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+    return !transport.has(info.sessionId)  // tmux alive but bridge gone = Claude crashed inside
+  } catch {
+    return true  // tmux gone = fully dead
+  }
+}
+
+export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
+  // Find session that owned this thread (may be dead)
+  const threadId = msg.channelId
+  const sessionId = registry.getByThread(threadId)
+    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+
+  if (!sessionId) {
+    await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })
+    return
+  }
+
+  const info = registry.get(sessionId)
+  if (!info) {
+    await gateway.send(threadId, `Session not found.`, { replyTo: msg.id })
+    return
+  }
+
+  if (!isSessionDead(info)) {
+    await gateway.send(threadId, `**${info.tmuxName}** is still running. Talk to it or \`kill\` it first.`, { replyTo: msg.id })
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+
+  // Kill lingering tmux
+  try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+
+  // Try resume with saved Claude session ID
+  if (info.claudeSessionId) {
+    try {
+      const result = await doSpawnSession(info.topic, threadId, undefined, {
+        forkFrom: { claudeSessionId: info.claudeSessionId, parentName: info.tmuxName },
+      })
+
+      await gateway.send(threadId, `⏯️ Resumed as **${result.name}** — full context restored.${result.url ? ` ${result.url}` : ''}`, { replyTo: msg.id })
+      debouncedRefreshListDisplay()
+      return
+    } catch (err) {
+      process.stderr.write(`daemon: resume --resume failed: ${err}, falling back to respawn\n`)
+    }
+  }
+
+  // Fallback: respawn (fresh session reads thread history)
+  try {
+    const result = await doSpawnSession(info.topic, threadId, undefined)
+
+    await gateway.send(threadId, `🔁 Respawned as **${result.name}** — reading thread history.${result.url ? ` ${result.url}` : ''}`, { replyTo: msg.id })
+    debouncedRefreshListDisplay()
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    await gateway.send(threadId, `Resume failed: ${errMsg}`, { replyTo: msg.id })
+  }
+}
+
+export async function handleRecoverIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '🔮').catch(() => {})
+
+  const deadSessions = [...registry.values()].filter(s => isSessionDead(s))
+
+  if (deadSessions.length === 0) {
+    await gateway.send(msg.channelId, `No dead sessions found.`, { replyTo: msg.id })
+    return
+  }
+
+  await gateway.send(msg.channelId, `Recovering ${deadSessions.length} dead session${deadSessions.length > 1 ? 's' : ''}...`, { replyTo: msg.id })
+
+  let recovered = 0
+  for (const info of deadSessions) {
+    try {
+      try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+
+      const spawnOpts = info.claudeSessionId
+        ? { forkFrom: { claudeSessionId: info.claudeSessionId, parentName: info.tmuxName } }
+        : undefined
+
+      await doSpawnSession(info.topic, info.threadId, undefined, spawnOpts)
+      recovered++
+      await new Promise(r => setTimeout(r, 5000))  // stagger
+    } catch (err) {
+      process.stderr.write(`daemon: recover failed for ${info.tmuxName}: ${err}\n`)
+    }
+  }
+
+  await gateway.send(msg.channelId, `Recovered ${recovered}/${deadSessions.length} sessions.`)
+}

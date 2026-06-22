@@ -170,6 +170,8 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• `kill` — kill this session (thread-scoped)',
     '• `fork` / `fork: <focus>` — fork into a new thread with full history',
     '• `forks` — list forks from this thread',
+    '• `resume` — recover a dead session (tries full context restore, falls back to respawn)',
+    '• `recover` — batch recover all dead sessions (works from anywhere)',
     '',
     '**Multi-agent:**',
     '• `build [N] [task]` — owner implements, critic reviews (default 3 rounds)',
