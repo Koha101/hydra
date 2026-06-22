@@ -220,7 +220,7 @@ export type ThreadSessionEntry = {
 
 export type ThreadInfo = {
   threadId: string
-  anchorState: 'live' | 'crashed' | 'killed'
+  anchorState: 'live' | 'crashed' | 'killed' | 'zombie'
   topic: string
   respawnCount: number
   currentSessionId: string | null
@@ -237,53 +237,65 @@ export class ThreadRegistry {
   }
 
   boot(sessions: SessionRegistry): void {
+    let loaded = false
+
     // Try loading threads.json first
     try {
       const raw = readFileSync(this.threadsFile, 'utf8')
       const data = JSON.parse(raw) as ThreadInfo[]
       for (const t of data) this.threads.set(t.threadId, t)
       process.stderr.write(`daemon: loaded ${data.length} thread(s) from threads.json\n`)
-      return
+      loaded = true
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load threads.json: ${err}\n`)
       }
     }
 
-    // Migration: create ThreadInfo from existing sessions
-    const sorted = [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt)
-    for (const s of sorted) {
-      if (s.isJoinMember) continue
-      const existing = this.threads.get(s.threadId)
-      if (existing) {
-        existing.currentSessionId = s.sessionId
-        existing.sessionHistory.push({
-          tmuxName: s.tmuxName,
-          sessionId: s.sessionId,
-          claudeSessionId: s.claudeSessionId,
-          createdAt: s.createdAt,
-        })
-      } else {
-        this.threads.set(s.threadId, {
-          threadId: s.threadId,
-          anchorState: 'live',
-          topic: s.topic,
-          respawnCount: s.respawnCount ?? 0,
-          currentSessionId: s.sessionId,
-          sessionHistory: [{
+    // Migration: create ThreadInfo from existing sessions (first boot only)
+    if (!loaded) {
+      const sorted = [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt)
+      for (const s of sorted) {
+        if (s.isJoinMember) continue
+        const existing = this.threads.get(s.threadId)
+        if (existing) {
+          existing.currentSessionId = s.sessionId
+          existing.sessionHistory.push({
             tmuxName: s.tmuxName,
             sessionId: s.sessionId,
             claudeSessionId: s.claudeSessionId,
             createdAt: s.createdAt,
-          }],
-          threadUrl: s.threadUrl,
-        })
+          })
+        } else {
+          this.threads.set(s.threadId, {
+            threadId: s.threadId,
+            anchorState: 'live',
+            topic: s.topic,
+            respawnCount: s.respawnCount ?? 0,
+            currentSessionId: s.sessionId,
+            sessionHistory: [{
+              tmuxName: s.tmuxName,
+              sessionId: s.sessionId,
+              claudeSessionId: s.claudeSessionId,
+              createdAt: s.createdAt,
+            }],
+            threadUrl: s.threadUrl,
+          })
+        }
+      }
+      if (this.threads.size > 0) {
+        process.stderr.write(`daemon: migrated ${this.threads.size} thread(s) from sessions\n`)
       }
     }
-    if (this.threads.size > 0) {
-      process.stderr.write(`daemon: migrated ${this.threads.size} thread(s) from sessions\n`)
-      this.persist()
+
+    // Reconcile: detach threads referencing sessions that were pruned on load
+    for (const thread of this.threads.values()) {
+      if (thread.currentSessionId && !sessions.has(thread.currentSessionId)) {
+        process.stderr.write(`daemon: reconcile: thread ${thread.threadId} references missing session ${thread.currentSessionId}, detaching\n`)
+        thread.currentSessionId = null
+      }
     }
+    this.persist()
   }
 
   get(threadId: string): ThreadInfo | undefined { return this.threads.get(threadId) }
