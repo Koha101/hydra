@@ -18,7 +18,6 @@ export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin
 
 : "${HYDRA_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 : "${SPAWN_CWD:=$HOME}"
-: "${TMUX_SESSION:=discord-daemon}"
 
 # Resolve CHAT_PLATFORM: env var → state dir .env → probe both known dirs → default discord
 if [ -z "$CHAT_PLATFORM" ]; then
@@ -34,6 +33,8 @@ if [ "$CHAT_PLATFORM" = "slack" ]; then
 else
   : "${HYDRA_STATE_DIR:=${DISCORD_STATE_DIR:-$HOME/.claude/channels/discord}}"
 fi
+
+: "${TMUX_SESSION:=${CHAT_PLATFORM}-daemon}"
 
 HEARTBEAT="$HYDRA_STATE_DIR/daemon.alive"
 STALE_SECONDS=300
