@@ -21,6 +21,7 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
+import { getContextPercent } from './daemon/util.js'
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
@@ -119,6 +120,27 @@ async function startGateway(attempt = 0): Promise<void> {
 }
 
 void startGateway()
+
+// ---------------------------------------------------------------------------
+// Context usage alerts — check all sessions every 5 min
+// ---------------------------------------------------------------------------
+
+const CONTEXT_ALERT_THRESHOLD = 70
+const CONTEXT_CHECK_INTERVAL_MS = 5 * 60 * 1000
+const contextAlerted = new Set<string>()  // sessionIds already alerted
+
+setInterval(() => {
+  for (const info of registry.values()) {
+    const pct = getContextPercent(info.tmuxName)
+    if (pct === '?') continue
+    const num = parseInt(pct)
+    if (num >= CONTEXT_ALERT_THRESHOLD && !contextAlerted.has(info.sessionId)) {
+      contextAlerted.add(info.sessionId)
+      process.stderr.write(`daemon: context alert: ${info.tmuxName} at ${pct}\n`)
+      void gateway.send(info.threadId, `**${info.tmuxName}** is at **${pct}** context. Consider \`handoff\` to a fresh session before it fills up.`).catch(() => {})
+    }
+  }
+}, CONTEXT_CHECK_INTERVAL_MS)
 
 let shuttingDown = false
 
