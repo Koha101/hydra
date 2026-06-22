@@ -365,8 +365,8 @@ function finalizeReview(state: ReviewState): void {
 // ---------------------------------------------------------------------------
 
 async function spawnCritic(state: ReviewState): Promise<void> {
-  const msg = await gateway.send(state.ownerThreadId, `Spawning critic...`)
-  state.messageIds.push(msg.id)
+  const statusMsg = await gateway.send(state.ownerThreadId, `Spawning critic...`)
+  state.messageIds.push(statusMsg.id)
 
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
@@ -377,6 +377,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
 
     state.criticSessionId = result.sessionId
     sessionToReview.set(result.sessionId, state.reviewId)
+    void gateway.edit(state.ownerThreadId, statusMsg.id, `_Critic (**${result.name}**) spawned._`).catch(() => {})
     resetTimeout(state)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
