@@ -10,6 +10,7 @@ import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+import { setAnchorState } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Session death events
@@ -49,10 +50,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
         process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
       }
 
-      const anchor = gateway.getThreadAnchor(info.threadId)
-      if (anchor) {
-        void gateway.react(anchor.channelId, anchor.messageId, '☠️').catch(() => {})
-      }
+      void setAnchorState(info.threadId, 'killed').catch(() => {})
     }
 
     const tmuxName = info.tmuxName
@@ -389,6 +387,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     registry.addMember(threadId!, sessionId, opts?.memberLabel)
   }
   registry.persist()
+
+  void setAnchorState(threadId!, 'live').catch(() => {})
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
