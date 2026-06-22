@@ -110,7 +110,7 @@ export function sessionEmoji(name: string): string {
 export class SessionRegistry {
   readonly sessions = new Map<string, SessionInfo>()
   readonly threadToSession = new Map<string, string>()
-  private readonly threadMembers = new Map<string, ThreadMember[]>()
+  private readonly threadMembers = new Map<string, ThreadMember[]>() // in-memory only — not persisted across daemon restarts
   private readonly sessionsFile: string
 
   constructor() {
