@@ -22,6 +22,7 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
 import { getContextPercent } from './daemon/util.js'
+import { isSessionDead } from './daemon/commands/thread.js'
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
@@ -125,12 +126,22 @@ void startGateway()
 // Context usage alerts — check all sessions every 5 min
 // ---------------------------------------------------------------------------
 
+const SESSION_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const CONTEXT_ALERT_THRESHOLD = 70
-const CONTEXT_CHECK_INTERVAL_MS = 5 * 60 * 1000
-const contextAlerted = new Set<string>()  // sessionIds already alerted
+const contextAlerted = new Set<string>()
+const crashAlerted = new Set<string>()
 
 setInterval(() => {
   for (const info of registry.values()) {
+    // Crash detection
+    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && isSessionDead(info)) {
+      crashAlerted.add(info.sessionId)
+      process.stderr.write(`daemon: crash detected: ${info.tmuxName}\n`)
+      void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to restore context or \`respawn\` for a fresh start.`).catch(() => {})
+      continue
+    }
+
+    // Context alert
     const pct = getContextPercent(info.tmuxName)
     if (pct === '?') continue
     const num = parseInt(pct)
@@ -140,7 +151,7 @@ setInterval(() => {
       void gateway.send(info.threadId, `**${info.tmuxName}** is at **${pct}** context. Consider \`handoff\` to a fresh session before it fills up.`).catch(() => {})
     }
   }
-}, CONTEXT_CHECK_INTERVAL_MS)
+}, SESSION_CHECK_INTERVAL_MS)
 
 let shuttingDown = false
 

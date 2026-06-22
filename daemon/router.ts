@@ -7,7 +7,7 @@ import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRecoverIntercept } from './commands/thread.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleRecoverIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -208,6 +208,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
     if (threadKillMatch) {
       void handleThreadKillIntercept(msg)
+      return
+    }
+
+    const respawnMatch = msg.content.match(/^(?:respawn|\/respawn)\s*$/i)
+    if (respawnMatch) {
+      void handleRespawnIntercept(msg)
       return
     }
 
