@@ -55,27 +55,6 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
   const threadAnchor = gateway.getThreadAnchor(msg.channelId)
   const baseChatId = threadAnchor?.channelId ?? msg.channelId
 
-  // Stale session guard: Claude can't fork from sessions older than ~24h
-  const sessionAge = Date.now() - info.createdAt
-  const MAX_FORK_AGE_MS = 24 * 60 * 60 * 1000
-  if (sessionAge > MAX_FORK_AGE_MS) {
-    const hours = Math.round(sessionAge / (60 * 60 * 1000))
-    try {
-      await gateway.send(msg.channelId, `⚠️ **${info.tmuxName}** is ${hours}h old — too stale to fork. Spawning a fresh session instead.`, { replyTo: msg.id })
-    } catch {}
-    // Fall back to regular spawn with the fork topic
-    try {
-      const result = await doSpawnSession(forkTopic, baseChatId, undefined)
-      const e = sessionEmoji(result.name)
-      await gateway.send(msg.channelId, `${e} \`${result.name}\` spawned (fresh — fork unavailable for stale sessions)${result.url ? ` — ${result.url}` : ''}`, { replyTo: msg.id })
-      debouncedRefreshListDisplay()
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      try { await gateway.send(msg.channelId, `Spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
-    }
-    return
-  }
-
   try {
     const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
       forkFrom: { claudeSessionId: info.claudeSessionId, parentName },
@@ -100,8 +79,17 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`daemon: fork intercept failed: ${errMsg}\n`)
-    try { await gateway.send(msg.channelId, `Fork failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
+    process.stderr.write(`daemon: fork failed, falling back to spawn: ${errMsg}\n`)
+    try {
+      await gateway.send(msg.channelId, `⚠️ Fork failed (session may be too old) — spawning fresh instead.`, { replyTo: msg.id })
+      const result = await doSpawnSession(forkTopic, baseChatId, undefined)
+      const e = sessionEmoji(result.name)
+      await gateway.send(msg.channelId, `${e} \`${result.name}\` spawned${result.url ? ` — ${result.url}` : ''}`, { replyTo: msg.id })
+      debouncedRefreshListDisplay()
+    } catch (spawnErr) {
+      const spawnErrMsg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr)
+      try { await gateway.send(msg.channelId, `Fork and fallback spawn both failed: ${spawnErrMsg}`, { replyTo: msg.id }) } catch {}
+    }
   }
 }
 
