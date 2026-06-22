@@ -38,6 +38,7 @@ export type BuildState = {
   phase: 'building' | 'complete' | 'cancelled'
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
+  _heartbeat?: ReturnType<typeof setInterval>
   _disconnectTimer?: ReturnType<typeof setTimeout>
   worktreeRepo?: string
   worktreePath?: string
@@ -53,7 +54,7 @@ const sessionToBuild = new Map<string, string>()  // critic -> buildId
 const ownerToBuild = new Map<string, string>()     // owner -> buildId
 const threadToBuild = new Map<string, string>()    // thread -> buildId
 
-const CRITIC_TIMEOUT_MS = 10 * 60 * 1000
+const CRITIC_TIMEOUT_MS = 20 * 60 * 1000
 const OWNER_TIMEOUT_MS = 15 * 60 * 1000  // shorter than review (30m) — builder is an LLM, not a human
 
 // ---------------------------------------------------------------------------
@@ -182,6 +183,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
 
   state.phase = 'cancelled'
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._heartbeat) clearInterval(state._heartbeat)
   if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
 
   if (state.criticSessionId) {
@@ -441,12 +443,30 @@ async function spawnCritic(state: BuildState): Promise<void> {
 
 function resetTimeout(state: BuildState): void {
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._heartbeat) clearInterval(state._heartbeat)
+  state._heartbeat = undefined
 
   const whose = state.currentTurn
   const timeoutMs = whose === 'critic' ? CRITIC_TIMEOUT_MS : OWNER_TIMEOUT_MS
+
+  // Heartbeat: post a status message every 5 min while waiting for critic
+  if (whose === 'critic') {
+    let elapsed = 0
+    state._heartbeat = setInterval(() => {
+      elapsed += 5
+      void gateway.send(state.ownerThreadId, `_Critic still reviewing (${elapsed}m elapsed)..._`).catch(() => {})
+    }, 5 * 60 * 1000)
+  }
+
+  // Find critic's tmux name for the timeout message
+  const criticInfo = state.criticSessionId ? registry.get(state.criticSessionId) : undefined
+  const criticName = criticInfo?.tmuxName
+
   state.timeout = setTimeout(async () => {
+    if (state._heartbeat) clearInterval(state._heartbeat)
     process.stderr.write(`daemon: build turn timed out (${whose})\n`)
-    await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}. Cancelling.`)
+    const debugHint = criticName ? ` Check \`tmux attach -t ${criticName}\` to see what happened.` : ''
+    await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
     await cancelBuild(state.buildId)
   }, timeoutMs)
 }

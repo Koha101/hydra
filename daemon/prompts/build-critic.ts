@@ -27,7 +27,7 @@ export function buildCriticPrompt(opts: {
     `4. When you receive the implementation, follow these steps IN ORDER:`,
     ``,
     `**Step A — Gather the diff:**`,
-    `Run \`git diff\` and \`git diff --name-only\`. Read the FULL content of every changed file and every new/changed test file. Also read any files listed in the builder's "Context files" section.`,
+    `Run \`git diff HEAD~1..HEAD\` and \`git diff HEAD~1..HEAD --name-only\` to see the latest commit's changes. If there are uncommitted changes, also run \`git diff\`. Do NOT diff against main — diff against the parent commit so you only see this build's changes, not the entire branch. Read the FULL content of every changed file and every new/changed test file. Also read any files listed in the builder's "Context files" section.`,
     ``,
     `**Step B — Run the project's review agents (MANDATORY if they exist):**`,
     `Look for \`.claude/\` in the builder's working directory AND in the subdirectory where files changed (use \`git diff --name-only\` paths to find the project root).`,
