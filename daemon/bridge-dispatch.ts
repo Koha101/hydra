@@ -8,13 +8,19 @@ import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSe
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
+const RETRYABLE_PATTERNS = /ECONNREFUSED|ECONNRESET|ENOTFOUND|EPIPE|socket hang up|not connected|network/i
+
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return RETRYABLE_PATTERNS.test(msg)
+}
 
 async function retrySend<T>(fn: () => Promise<T>): Promise<T> {
   for (let i = 0; i < SEND_RETRY_ATTEMPTS; i++) {
     try {
       return await fn()
     } catch (err) {
-      if (i === SEND_RETRY_ATTEMPTS - 1) throw err
+      if (i === SEND_RETRY_ATTEMPTS - 1 || !isRetryable(err)) throw err
       const delay = SEND_RETRY_BASE_MS * Math.pow(2, i)
       process.stderr.write(`daemon: send failed (attempt ${i + 1}/${SEND_RETRY_ATTEMPTS}), retrying in ${delay}ms: ${err instanceof Error ? err.message : err}\n`)
       await new Promise(r => setTimeout(r, delay))
