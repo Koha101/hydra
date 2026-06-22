@@ -207,17 +207,24 @@ export async function cancelBuild(buildId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function onBuildReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
+  const log = (msg: string) => process.stderr.write(`daemon: build: ${msg}\n`)
+
   // Check if this is the critic posting
   const memberBuildId = sessionToBuild.get(sessionId)
   if (memberBuildId) {
     const state = builds.get(memberBuildId)
-    if (!state || chatId !== state.ownerThreadId) return
+    if (!state || chatId !== state.ownerThreadId) {
+      log(`critic reply ignored (no state or wrong thread)`)
+      return
+    }
 
     if (state.phase === 'building' && state.currentTurn === 'critic' && state.criticSessionId === sessionId) {
+      log(`critic posted (round ${state.currentRound}/${state.rounds}), processing`)
       state.messageIds.push(...sentMessageIds)
       onCriticPosted(state, text)
       return
     }
+    log(`critic reply ignored (phase=${state.phase}, turn=${state.currentTurn})`)
     return
   }
 
@@ -225,19 +232,30 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
   const ownerBuildId = ownerToBuild.get(sessionId)
   if (ownerBuildId) {
     const state = builds.get(ownerBuildId)
-    if (!state || chatId !== state.ownerThreadId) return
+    if (!state || chatId !== state.ownerThreadId) {
+      log(`owner reply ignored (no state or wrong thread)`)
+      return
+    }
 
-    if (state.phase !== 'building') return
+    if (state.phase !== 'building') {
+      log(`owner reply ignored (phase=${state.phase})`)
+      return
+    }
 
     // Planning phase — first post is the plan, not relayed to critic
     if (state.currentTurn === 'owner-planning') {
+      log(`owner posted plan, advancing to owner-implementing`)
       state.messageIds.push(...sentMessageIds)
       state.currentTurn = 'owner'
       resetTimeout(state)
       return
     }
 
-    if (state.currentTurn !== 'owner') return
+    if (state.currentTurn !== 'owner') {
+      log(`owner reply ignored (turn=${state.currentTurn})`)
+      return
+    }
+    log(`owner posted implementation (round ${state.currentRound}/${state.rounds}), relaying to critic`)
     state.messageIds.push(...sentMessageIds)
     onOwnerPosted(state, text)
   }
@@ -288,6 +306,7 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
+  process.stderr.write(`daemon: build: turn → critic (round ${state.currentRound}/${state.rounds})\n`)
 
   // Post visible status so the human knows the critic is working
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
@@ -312,6 +331,7 @@ function onCriticPosted(state: BuildState, text: string): void {
   // Check for LGTM — strict first-line check
   const firstLine = text.split('\n')[0].trim()
   const isApproval = firstLine === '**LGTM**' || firstLine === 'LGTM'
+  process.stderr.write(`daemon: build: critic responded (round ${state.currentRound}/${state.rounds}, lgtm=${isApproval}, firstLine="${firstLine.slice(0, 50)}")\n`)
 
   if (isApproval) {
     void finishBuild(state, text).catch(err => {
@@ -333,6 +353,7 @@ function onCriticPosted(state: BuildState, text: string): void {
 
   // Push feedback to owner and advance round
   state.currentRound++
+  process.stderr.write(`daemon: build: turn → owner (round ${state.currentRound}/${state.rounds})\n`)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
   // Post visible status so the human knows it's the builder's turn
@@ -370,6 +391,7 @@ async function finishBuild(state: BuildState, lastCriticText: string): Promise<v
 }
 
 function completeBuild(state: BuildState, approved: boolean, lastCriticText: string): void {
+  process.stderr.write(`daemon: build: complete (approved=${approved}, rounds=${state.currentRound}/${state.rounds})\n`)
   const status = approved
     ? `Critic approved (**LGTM**) after ${state.currentRound} round${state.currentRound > 1 ? 's' : ''}.`
     : `Max rounds reached (${state.rounds}). Critic had remaining concerns.`
