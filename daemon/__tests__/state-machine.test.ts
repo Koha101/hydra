@@ -138,6 +138,45 @@ describe('build transition table', () => {
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.to).toBe('complete')
   })
+
+  test('transition result includes from phase', () => {
+    const r = sm.transition('implementing', 'owner_impl')
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.from).toBe('implementing')
+      expect(r.to).toBe('reviewing')
+    }
+  })
+
+  test('failed transition result includes from phase and reason', () => {
+    const r = sm.transition('implementing', 'critic_lgtm')
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.from).toBe('implementing')
+      expect(r.reason).toContain('critic_lgtm')
+      expect(r.reason).toContain('implementing')
+    }
+  })
+
+  test('5-round build: feedback loop then timeout', () => {
+    let phase: BuildPhase = 'implementing'
+    for (let i = 0; i < 4; i++) {
+      let r = sm.transition(phase, 'owner_impl')
+      expect(r.ok).toBe(true)
+      if (r.ok) phase = r.to
+
+      r = sm.transition(phase, 'critic_feedback')
+      expect(r.ok).toBe(true)
+      if (r.ok) phase = r.to
+      expect(phase).toBe('implementing')
+    }
+    // 5th round: owner implements, then times out during review
+    let r = sm.transition(phase, 'owner_impl')
+    if (r.ok) phase = r.to
+    r = sm.transition(phase, 'timeout')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('cancelled')
+  })
 })
 
 // ---------------------------------------------------------------------------

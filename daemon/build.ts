@@ -8,10 +8,11 @@ import { transport } from './bridge-transport.js'
 import { getReviewByThread } from './adversarial.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
+import { createStateMachine } from './state-machine.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
-function taskToBranchName(task: string): string {
+export function taskToBranchName(task: string): string {
   const slug = task
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, '')
@@ -26,6 +27,12 @@ function taskToBranchName(task: string): string {
 // Types
 // ---------------------------------------------------------------------------
 
+export type BuildPhase =
+  | 'implementing'   // waiting for owner implementation summary
+  | 'reviewing'      // waiting for critic review
+  | 'complete'
+  | 'cancelled'
+
 export type BuildState = {
   buildId: string
   ownerThreadId: string
@@ -34,8 +41,7 @@ export type BuildState = {
   task: string
   rounds: number
   currentRound: number
-  currentTurn: 'owner-planning' | 'owner' | 'critic'
-  phase: 'building' | 'complete' | 'cancelled'
+  phase: BuildPhase
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
   _heartbeat?: ReturnType<typeof setInterval>
@@ -56,6 +62,19 @@ const threadToBuild = new Map<string, string>()    // thread -> buildId
 
 const CRITIC_TIMEOUT_MS = 20 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
+
+// ---------------------------------------------------------------------------
+// State machine
+// ---------------------------------------------------------------------------
+
+type BuildEvent = 'owner_impl' | 'critic_lgtm' | 'critic_feedback' | 'timeout' | 'cancel'
+
+const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
+  implementing: { owner_impl: 'reviewing',    timeout: 'cancelled', cancel: 'cancelled' },
+  reviewing:    { critic_lgtm: 'complete', critic_feedback: 'implementing', timeout: 'cancelled', cancel: 'cancelled' },
+  complete:     {},
+  cancelled:    {},
+})
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -133,8 +152,7 @@ export async function startBuild(
     task: task ?? 'implement the design discussed above',
     rounds,
     currentRound: 1,
-    currentTurn: 'owner-planning',
-    phase: 'building',
+    phase: 'implementing',
     messageIds: [],
     worktreeRepo,
     worktreePath,
@@ -162,7 +180,7 @@ export async function startBuild(
     })
 
     // Spawn critic
-    await spawnCritic(state)
+    // Critic spawns later — after owner posts implementation summary
     resetTimeout(state)
     return state
   } catch (err) {
@@ -206,25 +224,44 @@ export async function cancelBuild(buildId: string): Promise<void> {
 // Core reply handler — called from bridge-server for ALL reply tool calls
 // ---------------------------------------------------------------------------
 
+const BUILDER_SENTINEL = '[builder→critic]'
+const CRITIC_SENTINEL = '[critic→builder]'
+
 export function onBuildReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
-  const log = (msg: string) => process.stderr.write(`daemon: build: ${msg}\n`)
+  const firstLine = text.split('\n')[0].trim()
 
   // Check if this is the critic posting
   const memberBuildId = sessionToBuild.get(sessionId)
   if (memberBuildId) {
     const state = builds.get(memberBuildId)
-    if (!state || chatId !== state.ownerThreadId) {
-      log(`critic reply ignored (no state or wrong thread)`)
-      return
-    }
+    if (!state || chatId !== state.ownerThreadId || state.criticSessionId !== sessionId) return
 
-    if (state.phase === 'building' && state.currentTurn === 'critic' && state.criticSessionId === sessionId) {
-      log(`critic posted (round ${state.currentRound}/${state.rounds}), processing`)
-      state.messageIds.push(...sentMessageIds)
-      onCriticPosted(state, text)
-      return
+    // Only process messages with the critic sentinel
+    if (!firstLine.startsWith(CRITIC_SENTINEL)) return
+
+    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
+    const secondLine = bodyText.split('\n')[0].trim()
+    const isLgtm = secondLine === '**LGTM**' || secondLine === 'LGTM'
+    const event: BuildEvent = isLgtm ? 'critic_lgtm' : 'critic_feedback'
+    const result = buildMachine.transition(state.phase, event)
+    if (!result.ok) return
+
+    state.messageIds.push(...sentMessageIds)
+    if (isLgtm) {
+      void finishBuild(state, bodyText).catch(err => {
+        process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
+        void cancelBuild(state.buildId).catch(() => {})
+      })
+    } else if (state.currentRound >= state.rounds) {
+      void finishBuild(state, bodyText).catch(err => {
+        process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
+        void cancelBuild(state.buildId).catch(() => {})
+      })
+    } else {
+      state.phase = result.to
+      state.currentRound++
+      onCriticFeedback(state, bodyText)
     }
-    log(`critic reply ignored (phase=${state.phase}, turn=${state.currentTurn})`)
     return
   }
 
@@ -232,32 +269,18 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
   const ownerBuildId = ownerToBuild.get(sessionId)
   if (ownerBuildId) {
     const state = builds.get(ownerBuildId)
-    if (!state || chatId !== state.ownerThreadId) {
-      log(`owner reply ignored (no state or wrong thread)`)
-      return
-    }
+    if (!state || chatId !== state.ownerThreadId) return
 
-    if (state.phase !== 'building') {
-      log(`owner reply ignored (phase=${state.phase})`)
-      return
-    }
+    // Only process messages with the builder sentinel
+    if (!firstLine.startsWith(BUILDER_SENTINEL)) return
 
-    // Planning phase — first post is the plan, not relayed to critic
-    if (state.currentTurn === 'owner-planning') {
-      log(`owner posted plan, advancing to owner-implementing`)
-      state.messageIds.push(...sentMessageIds)
-      state.currentTurn = 'owner'
-      resetTimeout(state)
-      return
-    }
+    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
+    const result = buildMachine.transition(state.phase, 'owner_impl')
+    if (!result.ok) return
 
-    if (state.currentTurn !== 'owner') {
-      log(`owner reply ignored (turn=${state.currentTurn})`)
-      return
-    }
-    log(`owner posted implementation (round ${state.currentRound}/${state.rounds}), relaying to critic`)
     state.messageIds.push(...sentMessageIds)
-    onOwnerPosted(state, text)
+    state.phase = result.to
+    onOwnerPosted(state, bodyText)
   }
 }
 
@@ -268,7 +291,7 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
   const state = builds.get(buildId)
   if (!state) return
 
-  if (state.phase === 'building' && state.criticSessionId === sessionId) {
+  if (state.phase === 'reviewing' && state.criticSessionId === sessionId) {
     if (transport.has(sessionId)) return
 
     process.stderr.write(`daemon: build critic disconnected — 30s grace period\n`)
@@ -306,54 +329,33 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
-  process.stderr.write(`daemon: build: turn → critic (round ${state.currentRound}/${state.rounds})\n`)
-
-  // Post visible status so the human knows the critic is working
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+
+  // Post visible status
   void gateway.send(state.ownerThreadId, `_Critic reviewing (${roundLabel})..._`).then(msg => {
     state.messageIds.push(msg.id)
   }).catch(() => {})
 
-  // Push implementation to critic for review
-  transport.sendOrQueue(state.criticSessionId!, {
-    type: 'notification',
-    content: `[Build — Owner Implementation ${roundLabel}]\n\n${text}\n\n---\nReview this implementation. Follow your initial instructions.`,
-    meta: { chat_id: state.ownerThreadId, message_id: '', user: 'build-owner', user_id: 'system', ts: new Date().toISOString() },
-  })
-
-  state.currentTurn = 'critic'
-  resetTimeout(state)
+  // Phase already set to 'reviewing' by the dispatcher
+  if (!state.criticSessionId) {
+    // First round — spawn critic with the implementation text as context
+    void spawnCritic(state, text).catch(err => {
+      process.stderr.write(`daemon: build: critic spawn failed in onOwnerPosted: ${err}\n`)
+      void cancelBuild(state.buildId).catch(() => {})
+    })
+  } else {
+    // Subsequent rounds — relay to existing critic
+    transport.sendOrQueue(state.criticSessionId, {
+      type: 'notification',
+      content: `[Build — Owner Implementation ${roundLabel}]\n\n${text}\n\n---\nReview this implementation. Follow your initial instructions.`,
+      meta: { chat_id: state.ownerThreadId, message_id: '', user: 'build-owner', user_id: 'system', ts: new Date().toISOString() },
+    })
+    resetTimeout(state)
+  }
 }
 
-function onCriticPosted(state: BuildState, text: string): void {
+function onCriticFeedback(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
-
-  // Check for LGTM — strict first-line check
-  const firstLine = text.split('\n')[0].trim()
-  const isApproval = firstLine === '**LGTM**' || firstLine === 'LGTM'
-  process.stderr.write(`daemon: build: critic responded (round ${state.currentRound}/${state.rounds}, lgtm=${isApproval}, firstLine="${firstLine.slice(0, 50)}")\n`)
-
-  if (isApproval) {
-    void finishBuild(state, text).catch(err => {
-      process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
-      void cancelBuild(state.buildId).catch(() => {})
-      void gateway.send(state.ownerThreadId, `Build failed during cleanup: ${err}`).catch(() => {})
-    })
-    return
-  }
-
-  if (state.currentRound >= state.rounds) {
-    // Max rounds reached without approval
-    void finishBuild(state, text).catch(err => {
-      process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
-      void cancelBuild(state.buildId).catch(() => {})
-    })
-    return
-  }
-
-  // Push feedback to owner and advance round
-  state.currentRound++
-  process.stderr.write(`daemon: build: turn → owner (round ${state.currentRound}/${state.rounds})\n`)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
   // Post visible status so the human knows it's the builder's turn
@@ -365,7 +367,6 @@ function onCriticPosted(state: BuildState, text: string): void {
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'build-critic', user_id: 'system', ts: new Date().toISOString() },
   })
 
-  state.currentTurn = 'owner'
   resetTimeout(state)
 }
 
@@ -437,9 +438,9 @@ function cleanupWorktree(state: BuildState): void {
 // Spawning
 // ---------------------------------------------------------------------------
 
-async function spawnCritic(state: BuildState): Promise<void> {
-  const msg = await gateway.send(state.ownerThreadId, `Spawning build critic...`)
-  state.messageIds.push(msg.id)
+async function spawnCritic(state: BuildState, implementationText: string): Promise<void> {
+  const statusMsg = await gateway.send(state.ownerThreadId, `Spawning build critic...`)
+  state.messageIds.push(statusMsg.id)
 
   // Get owner's cwd so critic knows where to find .claude/ directory
   const ownerInfo = registry.get(state.ownerSessionId)
@@ -449,11 +450,12 @@ async function spawnCritic(state: BuildState): Promise<void> {
     const result = await doSpawnSession(`Build CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
       promptBuilder: (sessionId, tmuxName) =>
-        buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd }),
+        buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd, implementationText }),
     })
 
     state.criticSessionId = result.sessionId
     sessionToBuild.set(result.sessionId, state.buildId)
+    void gateway.edit(state.ownerThreadId, statusMsg.id, `_Critic (**${result.name}**) reviewing..._`).catch(() => {})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: build critic spawn failed: ${msg}\n`)
@@ -471,7 +473,7 @@ function resetTimeout(state: BuildState): void {
   if (state._heartbeat) clearInterval(state._heartbeat)
   state._heartbeat = undefined
 
-  const whose = state.currentTurn
+  const whose = state.phase === 'reviewing' ? 'critic' : 'owner'
   const timeoutMs = whose === 'critic' ? CRITIC_TIMEOUT_MS : OWNER_TIMEOUT_MS
 
   // Heartbeat: check critic is alive + post status every 5 min

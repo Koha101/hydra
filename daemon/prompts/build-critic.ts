@@ -5,8 +5,9 @@ export function buildCriticPrompt(opts: {
   threadId: string
   task: string
   ownerCwd?: string
+  implementationText?: string
 }): string {
-  const { sessionId, tmuxName, rounds, threadId, task, ownerCwd } = opts
+  const { sessionId, tmuxName, rounds, threadId, task, ownerCwd, implementationText } = opts
 
   const cwdLine = ownerCwd
     ? `\n**Builder's working directory:** \`${ownerCwd}\` — look for \`.claude/\` relative to this path and any project subdirectories within it.\n`
@@ -23,8 +24,7 @@ export function buildCriticPrompt(opts: {
     `**Instructions:**`,
     `1. Call fetch_messages(channel="${threadId}", limit=100) to read the design conversation and understand what's being built`,
     `2. Note any files, wiki articles, configs, or documents referenced in the thread. Read them so you have the same context the builder had.`,
-    `3. **WAIT** for the owner's implementation. It will arrive as a notification.`,
-    `4. When you receive the implementation, follow these steps IN ORDER:`,
+    `3. The builder has already posted their implementation. Review it now — follow these steps IN ORDER:`,
     ``,
     `**Step A — Gather the diff:**`,
     `Run \`git diff HEAD~1..HEAD\` and \`git diff HEAD~1..HEAD --name-only\` to see the latest commit's changes. If there are uncommitted changes, also run \`git diff\`. Do NOT diff against main — diff against the parent commit so you only see this build's changes, not the entire branch. Read the FULL content of every changed file and every new/changed test file. Also read any files listed in the builder's "Context files" section.`,
@@ -44,13 +44,18 @@ export function buildCriticPrompt(opts: {
     `- Test quality: tests asserting behavior, or just mirroring implementation?`,
     `DO NOT run tests — the builder already ran them.`,
     `5. Post your review using reply(chat_id="${threadId}")`,
-    `6. **LGTM means ZERO findings.** Only put \`**LGTM**\` as your first line if you have NO Blockers AND NO Should-fix items. If you have ANY actionable finding — even if the code is correct for the current ticket — do NOT say LGTM. Post the findings instead. The builder can choose to fix them or defer them.`,
-    `7. If there are issues, post specific feedback with file:line citations and suggested fixes`,
-    `8. After posting, **WAIT** for the owner's revision (arrives as notification). Repeat for up to ${rounds} rounds.`,
+    ``,
+    `**Message routing — READ CAREFULLY:**`,
+    `- Your first line MUST be exactly: \`[critic→builder]\``,
+    `- Your second line indicates your verdict: \`**LGTM**\` (zero findings) or your findings`,
+    `- **LGTM means ZERO findings.** If you have ANY actionable finding — even if the code is correct for the current ticket — do NOT say LGTM. Post the findings instead. The builder can choose to fix them or defer them.`,
+    `- Messages WITHOUT the \`[critic→builder]\` tag are conversational and won't advance the build.`,
+    ``,
+    `6. After posting, **WAIT** for the owner's revision (arrives as notification). Repeat for up to ${rounds} rounds.`,
     ``,
     `**DO NOT** run tests or the test suite. **DO NOT** nitpick style, naming, or organization. Focus exclusively on correctness and test coverage.`,
-    `**DO NOT** post until the owner's implementation arrives as a notification.`,
     ``,
     `One message per round. Be rigorous but fair.`,
-  ].join('\n')
+    implementationText ? `\n---\n**Builder's implementation summary (Round 1):**\n${implementationText}` : '',
+  ].filter(Boolean).join('\n')
 }
