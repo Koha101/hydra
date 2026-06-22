@@ -115,7 +115,7 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
 // Resume / Recover
 // ---------------------------------------------------------------------------
 
-function isSessionDead(info: { tmuxName: string; sessionId: string }): boolean {
+export function isSessionDead(info: { tmuxName: string; sessionId: string }): boolean {
   try {
     execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
     return !transport.has(info.sessionId)  // tmux alive but bridge gone = Claude crashed inside
@@ -175,6 +175,40 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await gateway.send(threadId, `Resume failed: ${errMsg}`, { replyTo: msg.id })
+  }
+}
+
+export async function handleRespawnIntercept(msg: InboundMessage): Promise<void> {
+  const threadId = msg.channelId
+  const sessionId = registry.getByThread(threadId)
+    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+
+  if (!sessionId) {
+    await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })
+    return
+  }
+
+  const info = registry.get(sessionId)
+  if (!info) {
+    await gateway.send(threadId, `Session not found.`, { replyTo: msg.id })
+    return
+  }
+
+  if (!isSessionDead(info)) {
+    await gateway.send(threadId, `**${info.tmuxName}** is still running. \`kill\` it first.`, { replyTo: msg.id })
+    return
+  }
+
+  void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
+  try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+
+  try {
+    const result = await doSpawnSession(info.topic, threadId, undefined)
+    await gateway.send(threadId, `🔁 Respawned as **${result.name}** — reading thread history.${result.url ? ` ${result.url}` : ''}`, { replyTo: msg.id })
+    debouncedRefreshListDisplay()
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    await gateway.send(threadId, `Respawn failed: ${errMsg}`, { replyTo: msg.id })
   }
 }
 
