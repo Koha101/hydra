@@ -205,12 +205,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*$/i)
-    if (recoverMatch) {
-      void handleRecoverIntercept(msg)
-      return
-    }
-
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
     if (threadKillMatch) {
       void handleThreadKillIntercept(msg)

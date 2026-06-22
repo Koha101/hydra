@@ -295,6 +295,32 @@ export class ThreadRegistry {
         thread.currentSessionId = null
       }
     }
+
+    // Create ThreadInfo for sessions missing from threads (spawned between persist and crash)
+    let orphans = 0
+    for (const session of sessions.values()) {
+      if (session.isJoinMember) continue
+      if (this.threads.has(session.threadId)) continue
+      this.threads.set(session.threadId, {
+        threadId: session.threadId,
+        anchorState: 'live',
+        topic: session.topic,
+        respawnCount: session.respawnCount ?? 0,
+        currentSessionId: session.sessionId,
+        sessionHistory: [{
+          tmuxName: session.tmuxName,
+          sessionId: session.sessionId,
+          claudeSessionId: session.claudeSessionId,
+          createdAt: session.createdAt,
+        }],
+        threadUrl: session.threadUrl,
+      })
+      orphans++
+    }
+    if (orphans > 0) {
+      process.stderr.write(`daemon: reconciled ${orphans} orphaned session(s) into threads\n`)
+    }
+
     this.persist()
   }
 
@@ -312,7 +338,7 @@ export class ThreadRegistry {
   persist(): void {
     try {
       const data = [...this.threads.values()]
-      writeFileSync(this.threadsFile, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+      atomicWriteFileSync(this.threadsFile, JSON.stringify(data, null, 2) + '\n')
     } catch (err) {
       process.stderr.write(`daemon: failed to persist threads: ${err}\n`)
     }
