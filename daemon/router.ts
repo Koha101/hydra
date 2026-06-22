@@ -7,7 +7,7 @@ import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept } from './commands/thread.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRecoverIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -193,6 +193,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
+    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*$/i)
+    if (recoverMatch) {
+      void handleRecoverIntercept(msg)
+      return
+    }
+
     const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands|\/help|help)\s*$/i)
     if (commandsMatch) {
       void handleCommandsIntercept(msg)
@@ -202,6 +208,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
     if (threadKillMatch) {
       void handleThreadKillIntercept(msg)
+      return
+    }
+
+    const resumeMatch = msg.content.match(/^(?:resume|\/resume)\s*$/i)
+    if (resumeMatch) {
+      void handleResumeIntercept(msg)
       return
     }
 
