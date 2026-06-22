@@ -306,11 +306,46 @@ export class ThreadRegistry {
     }
   }
 
-  /** Boot: load persisted threads, migrate from sessions if first run */
+  /** Boot: load persisted threads, migrate from sessions if first run, reconcile orphans */
   boot(sessionRegistry: SessionRegistry): void {
     this.loadPersisted()
     if (this.threads.size === 0 && sessionRegistry.size > 0) {
       this.migrateFromSessions(sessionRegistry)
+    }
+
+    // Reconcile: create ThreadInfo for sessions that aren't in any thread
+    // (e.g. spawned between a persist and a crash)
+    let orphans = 0
+    for (const session of sessionRegistry.values()) {
+      if (session.isJoinMember) continue
+      if (this.threads.has(session.threadId)) continue
+      this.threads.set(session.threadId, {
+        threadId: session.threadId,
+        anchorMessageId: session.anchorMessageId,
+        threadUrl: session.threadUrl,
+        topic: session.topic,
+        description: session.description,
+        anchorState: 'live',
+        respawnCount: session.respawnCount ?? 0,
+        currentSessionId: session.sessionId,
+        createdAt: session.createdAt,
+        lastActive: session.lastActive,
+        totalMessages: session.messageCount ?? 0,
+        sessionHistory: [{
+          sessionId: session.sessionId,
+          tmuxName: session.tmuxName,
+          originType: session.originType ?? 'spawn',
+          originFrom: session.originFrom,
+          startedAt: session.createdAt,
+          messageCount: session.messageCount ?? 0,
+          claudeSessionId: session.claudeSessionId,
+        }],
+      })
+      orphans++
+    }
+    if (orphans > 0) {
+      process.stderr.write(`daemon: reconciled ${orphans} orphaned session(s) into threads\n`)
+      this.persist()
     }
   }
 
