@@ -235,6 +235,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
         void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), buildWtMatch[3]?.trim(), buildWtMatch[1].trim())
         return
       }
+      // Catch malformed build-wt (missing repo)
+      if (msg.content.match(/^(?:\/build-wt|build-wt)[:\s]/i)) {
+        void gateway.send(msg.channelId, `Usage: \`build-wt: <repo> [rounds] [task]\`\nExample: \`build-wt: options_bot 3 implement ticket 1\``, { replyTo: msg.id }).catch(() => {})
+        return
+      }
 
       const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
       if (buildMatch) {

@@ -6,6 +6,9 @@ import type { InboundMessage } from '../../gateway.js'
 export async function handleBuildIntercept(msg: InboundMessage, rounds: number, task?: string, worktree?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔨').catch(() => {})
 
+  // Validate rounds
+  if (isNaN(rounds)) rounds = 3
+
   // Must be in a session thread
   const sessionId = registry.getByThread(msg.channelId)
     ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
