@@ -50,6 +50,15 @@ export function isReviewParticipant(sessionId: string): boolean {
   return activeParticipants.has(sessionId)
 }
 
+/** Find the review state for a given session (owner or critic). */
+function findReviewBySession(sessionId: string): { state: ReviewState; role: 'critic' | 'owner' } | null {
+  for (const state of reviews.values()) {
+    if (state.criticSessionId === sessionId) return { state, role: 'critic' }
+    if (state.ownerSessionId === sessionId) return { state, role: 'owner' }
+  }
+  return null
+}
+
 // ---------------------------------------------------------------------------
 // Death emitter — safety net for unexpected critic kills
 // ---------------------------------------------------------------------------
@@ -161,80 +170,79 @@ export async function cancelReview(threadId: string): Promise<void> {
 export function onReviewReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
   if (!activeParticipants.has(sessionId)) return
 
-  // Find the review this participant belongs to — scan is bounded by active review count (tiny)
-  for (const state of reviews.values()) {
-    if (chatId !== state.ownerThreadId) continue
+  const match = findReviewBySession(sessionId)
+  if (!match) return
 
-    // Critic posting
-    if (state.criticSessionId === sessionId) {
-      if (state.phase === 'debate' && state.currentTurn === 'critic') {
-        state.messageIds.push(...sentMessageIds)
-        onCriticPosted(state, text)
-      }
-      return
-    }
+  const { state, role } = match
+  if (chatId !== state.ownerThreadId) return
 
-    // Owner posting
-    if (state.ownerSessionId === sessionId) {
-      if (state.phase === 'cleanup') {
-        // Don't push sentMessageIds — summary should survive deletion
-        if (text.toLowerCase().includes('review summary')) {
-          finalizeReview(state)
-        }
-        return
-      }
-
-      if (state.phase !== 'debate' || state.currentTurn !== 'owner') return
+  if (role === 'critic') {
+    if (state.phase === 'debate' && state.currentTurn === 'critic') {
       state.messageIds.push(...sentMessageIds)
-      onOwnerPosted(state, text)
-      return
+      onCriticPosted(state, text)
     }
+    return
   }
+
+  // Owner posting
+  if (state.phase === 'cleanup') {
+    // Don't push sentMessageIds — summary should survive deletion
+    if (text.toLowerCase().includes('review summary')) {
+      finalizeReview(state)
+    }
+    return
+  }
+
+  if (state.phase !== 'debate' || state.currentTurn !== 'owner') return
+  state.messageIds.push(...sentMessageIds)
+  onOwnerPosted(state, text)
 }
 
 /** Called when a critic bridge disconnects. Grace period before cancel. */
 export function onParticipantDisconnect(sessionId: string): void {
   if (!activeParticipants.has(sessionId)) return
 
-  for (const state of reviews.values()) {
-    if (state.phase !== 'debate' || state.criticSessionId !== sessionId) continue
+  const match = findReviewBySession(sessionId)
+  if (!match || match.role !== 'critic') return
+  const { state } = match
 
-    // If a new bridge already registered, this is a stale disconnect — ignore
-    if (transport.has(sessionId)) return
+  if (state.phase !== 'debate' || state.criticSessionId !== sessionId) return
 
-    process.stderr.write(`daemon: review critic disconnected — 30s grace period\n`)
-    // Pause turn timeout during grace period to prevent double-cancel
-    if (state.timeout) {
-      clearTimeout(state.timeout)
-      state.timeout = undefined
-    }
-    // Grace period: bridge reconnections fire disconnect before re-register
-    state._disconnectTimer = setTimeout(async () => {
-      if (transport.has(sessionId)) {
-        process.stderr.write(`daemon: review critic reconnected, grace period cleared\n`)
-        resetTimeout(state)
-        return
-      }
-      process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
-      await cancelReview(state.ownerThreadId)
-    }, 30_000)
-    return
+  // If a new bridge already registered, this is a stale disconnect — ignore
+  if (transport.has(sessionId)) return
+
+  process.stderr.write(`daemon: review critic disconnected — 30s grace period\n`)
+  // Pause turn timeout during grace period to prevent double-cancel
+  if (state.timeout) {
+    clearTimeout(state.timeout)
+    state.timeout = undefined
   }
+  // Grace period: bridge reconnections fire disconnect before re-register
+  state._disconnectTimer = setTimeout(async () => {
+    if (transport.has(sessionId)) {
+      process.stderr.write(`daemon: review critic reconnected, grace period cleared\n`)
+      resetTimeout(state)
+      return
+    }
+    process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
+    await cancelReview(state.ownerThreadId)
+  }, 30_000)
 }
 
 /** Called when a bridge registers — clears disconnect grace period if applicable. */
 export function onParticipantReconnect(sessionId: string): void {
   if (!activeParticipants.has(sessionId)) return
 
-  for (const state of reviews.values()) {
-    if (state.criticSessionId !== sessionId || !state._disconnectTimer) continue
-    clearTimeout(state._disconnectTimer)
-    state._disconnectTimer = undefined
-    // Restore turn timeout that was paused during disconnect
-    resetTimeout(state)
-    process.stderr.write(`daemon: review participant ${sessionId} reconnected, grace period cleared\n`)
-    return
-  }
+  const match = findReviewBySession(sessionId)
+  if (!match) return
+  const { state } = match
+
+  if (!state._disconnectTimer) return
+  clearTimeout(state._disconnectTimer)
+  state._disconnectTimer = undefined
+  // Restore turn timeout that was paused during disconnect
+  resetTimeout(state)
+  process.stderr.write(`daemon: review participant ${sessionId} reconnected, grace period cleared\n`)
 }
 
 // ---------------------------------------------------------------------------
