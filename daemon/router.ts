@@ -114,6 +114,24 @@ gateway.onMessageDelete((messageId, threadId) => {
 })
 
 // ---------------------------------------------------------------------------
+// Reaction-based message deletion (:hocho: on bot messages)
+// ---------------------------------------------------------------------------
+
+if (gateway.onReaction) {
+  gateway.onReaction(async (event) => {
+    if (event.emoji !== 'hocho' && event.emoji !== '🔪') return
+    const access = loadAccess()
+    if (!access.allowFrom.includes(event.userId)) return
+    try {
+      await gateway.delete(event.channelId, event.messageId)
+      process.stderr.write(`daemon: deleted message ${event.messageId} via reaction from ${event.userId}\n`)
+    } catch (err) {
+      process.stderr.write(`daemon: failed to delete message ${event.messageId}: ${err}\n`)
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Inbound message routing
 // ---------------------------------------------------------------------------
 
