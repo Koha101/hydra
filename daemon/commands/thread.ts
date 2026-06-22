@@ -63,9 +63,10 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     const pe = sessionEmoji(parentName)
     const ce = sessionEmoji(result.name)
     await gateway.send(msg.channelId, [
-      `🍴 ${pe} \`${parentName}\` forked → ${ce} \`${result.name}\` — ${result.url}`,
-      `    ◦ ${parentContext} (${parentMessages} msgs)`,
-    ].join('\n'), { replyTo: msg.id })
+      `${ce} \`${result.name}\` — forked from ${pe} \`${parentName}\``,
+      forkTopic.startsWith('continuing:') ? '' : forkTopic,
+      `${result.url ? result.url : ''}`,
+    ].filter(Boolean).join('\n'), { replyTo: msg.id })
 
     const mainBridge = transport.get('main')
     if (mainBridge) {
@@ -81,10 +82,12 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     const errMsg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: fork failed, falling back to spawn: ${errMsg}\n`)
     try {
-      await gateway.send(msg.channelId, `⚠️ Fork failed (session may be too old) — spawning fresh instead.`, { replyTo: msg.id })
-      const result = await doSpawnSession(forkTopic, baseChatId, undefined)
+      await gateway.send(msg.channelId, `⚠️ Fork failed — spawning fresh session that will read the thread for context.`, { replyTo: msg.id })
+      const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
+        resurrectFrom: parentName,
+      })
       const e = sessionEmoji(result.name)
-      await gateway.send(msg.channelId, `${e} \`${result.name}\` spawned${result.url ? ` — ${result.url}` : ''}`, { replyTo: msg.id })
+      await gateway.send(msg.channelId, `${e} \`${result.name}\` spawned (reading thread from **${parentName}**)${result.url ? ` — ${result.url}` : ''}`, { replyTo: msg.id })
       debouncedRefreshListDisplay()
     } catch (spawnErr) {
       const spawnErrMsg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr)
