@@ -3,12 +3,26 @@ import { execSync, execFileSync } from 'child_process'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
+import { EventEmitter } from 'events'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
 import { registry, sessionEmoji } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+
+// ---------------------------------------------------------------------------
+// Session death events
+// ---------------------------------------------------------------------------
+
+export type SessionDeathEvent = {
+  sessionId: string
+  threadId: string
+  wasOwner: boolean
+  tmuxName: string
+}
+
+export const sessionDeathEmitter = new EventEmitter()
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -69,6 +83,17 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     }
     registry.delete(info.sessionId)
     registry.persist()
+
+    if (info.isJoinMember) {
+      registry.removeMember(info.threadId, info.sessionId)
+    }
+
+    sessionDeathEmitter.emit('death', {
+      sessionId: info.sessionId,
+      threadId: info.threadId,
+      wasOwner: !info.isJoinMember,
+      tmuxName: info.tmuxName,
+    } satisfies SessionDeathEvent)
 
     setTimeout(() => {
       try {
@@ -360,6 +385,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   // Don't register in threadToSession for join members — owner keeps that mapping
   if (!isJoin) {
     registry.setThread(threadId!, sessionId)
+  } else {
+    registry.addMember(threadId!, sessionId, opts?.memberLabel)
   }
   registry.persist()
 
