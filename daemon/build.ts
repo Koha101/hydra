@@ -287,8 +287,13 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
 
-  // Push implementation to critic for review
+  // Post visible status so the human knows the critic is working
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+  void gateway.send(state.ownerThreadId, `_Critic reviewing (${roundLabel})..._`).then(msg => {
+    state.messageIds.push(msg.id)
+  }).catch(() => {})
+
+  // Push implementation to critic for review
   transport.sendOrQueue(state.criticSessionId!, {
     type: 'notification',
     content: `[Build — Owner Implementation ${roundLabel}]\n\n${text}\n\n---\nReview this implementation. Follow your initial instructions.`,
