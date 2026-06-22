@@ -163,7 +163,7 @@ export class SlackGateway implements ChatGateway {
         isBot: false,
         parentChannelId: event.thread_ts ? event.channel : null,
         hasExistingThread: false,
-        existingThreadId: null,
+        existingThreadId: (!!event.thread_ts && event.thread_ts !== event.ts) ? `${event.channel}:${event.thread_ts}` : null,
         referenceMessageId: event.thread_ts ?? null,
         attachments: [],
         createdAt: new Date(parseFloat(event.ts) * 1000),
