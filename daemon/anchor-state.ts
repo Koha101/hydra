@@ -1,8 +1,12 @@
+// Anchor emoji state machine — the thread's parent message tracks session lifecycle.
+// States: live 🚀 | killed ☠️ | crashed 💥 | zombie 🚀🧟+count (resurrected)
+// Clears all state emoji before applying the new state to avoid races between callers.
 import { gateway } from './config.js'
+import { threadRegistry } from './sessions.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
 
 export async function setAnchorState(
   threadId: string,
@@ -41,5 +45,13 @@ export async function setAnchorState(
         }
       }
       break
+  }
+
+  // Co-update ThreadInfo
+  const thread = threadRegistry.get(threadId)
+  if (thread) {
+    thread.anchorState = state
+    thread.respawnCount = respawnCount ?? thread.respawnCount
+    threadRegistry.persist()
   }
 }

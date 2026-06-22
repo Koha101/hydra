@@ -12,7 +12,7 @@ import { join } from 'path'
 import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
-import { registry } from './daemon/sessions.js'
+import { registry, threadRegistry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
@@ -23,6 +23,12 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 import './daemon/router.js'
 import { getContextPercent } from './daemon/util.js'
 import { isSessionDead } from './daemon/commands/thread.js'
+
+// ---------------------------------------------------------------------------
+// Boot thread registry (loads threads.json or migrates, then reconciles)
+// ---------------------------------------------------------------------------
+
+threadRegistry.boot(registry)
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect

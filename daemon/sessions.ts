@@ -203,3 +203,105 @@ export class SessionRegistry {
 }
 
 export const registry = new SessionRegistry()
+
+// ---------------------------------------------------------------------------
+// ThreadInfo + ThreadRegistry — session-centric thread lifecycle tracking
+// ---------------------------------------------------------------------------
+
+export type ThreadSessionEntry = {
+  tmuxName: string
+  sessionId: string
+  claudeSessionId?: string
+  createdAt: number
+}
+
+export type ThreadInfo = {
+  threadId: string
+  anchorState: 'live' | 'crashed' | 'killed'
+  topic: string
+  respawnCount: number
+  currentSessionId: string | null
+  sessionHistory: ThreadSessionEntry[]
+  threadUrl?: string
+}
+
+export class ThreadRegistry {
+  private readonly threads = new Map<string, ThreadInfo>()
+  private readonly threadsFile: string
+
+  constructor() {
+    this.threadsFile = join(STATE_DIR, 'threads.json')
+  }
+
+  boot(sessions: SessionRegistry): void {
+    // Try loading threads.json first
+    try {
+      const raw = readFileSync(this.threadsFile, 'utf8')
+      const data = JSON.parse(raw) as ThreadInfo[]
+      for (const t of data) this.threads.set(t.threadId, t)
+      process.stderr.write(`daemon: loaded ${data.length} thread(s) from threads.json\n`)
+      return
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(`daemon: failed to load threads.json: ${err}\n`)
+      }
+    }
+
+    // Migration: create ThreadInfo from existing sessions
+    const sorted = [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt)
+    for (const s of sorted) {
+      if (s.isJoinMember) continue
+      const existing = this.threads.get(s.threadId)
+      if (existing) {
+        existing.currentSessionId = s.sessionId
+        existing.sessionHistory.push({
+          tmuxName: s.tmuxName,
+          sessionId: s.sessionId,
+          claudeSessionId: s.claudeSessionId,
+          createdAt: s.createdAt,
+        })
+      } else {
+        this.threads.set(s.threadId, {
+          threadId: s.threadId,
+          anchorState: 'live',
+          topic: s.topic,
+          respawnCount: s.respawnCount ?? 0,
+          currentSessionId: s.sessionId,
+          sessionHistory: [{
+            tmuxName: s.tmuxName,
+            sessionId: s.sessionId,
+            claudeSessionId: s.claudeSessionId,
+            createdAt: s.createdAt,
+          }],
+          threadUrl: s.threadUrl,
+        })
+      }
+    }
+    if (this.threads.size > 0) {
+      process.stderr.write(`daemon: migrated ${this.threads.size} thread(s) from sessions\n`)
+      this.persist()
+    }
+  }
+
+  get(threadId: string): ThreadInfo | undefined { return this.threads.get(threadId) }
+  has(threadId: string): boolean { return this.threads.has(threadId) }
+  values(): IterableIterator<ThreadInfo> { return this.threads.values() }
+  get size(): number { return this.threads.size }
+
+  set(threadId: string, info: ThreadInfo): void { this.threads.set(threadId, info) }
+
+  detachedThreads(): ThreadInfo[] {
+    return [...this.threads.values()].filter(t => !t.currentSessionId && t.anchorState === 'crashed')
+  }
+
+  persist(): void {
+    try {
+      const data = [...this.threads.values()]
+      writeFileSync(this.threadsFile, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    } catch (err) {
+      process.stderr.write(`daemon: failed to persist threads: ${err}\n`)
+    }
+  }
+}
+
+export const threadRegistry = new ThreadRegistry()

@@ -1,11 +1,13 @@
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { createServer, type Socket } from 'net'
+import { execSync } from 'child_process'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
 import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId } from './session-lifecycle.js'
+import { setAnchorState } from './anchor-state.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
@@ -182,6 +184,28 @@ export const socketServer = createServer((socket: Socket) => {
       if (isBuildParticipant(conn.sessionId)) {
         onBuildParticipantDisconnect(conn.sessionId)
       }
+
+      // Death detection: if session dies (tmux gone), mark thread as crashed
+      const deadCheckSessionId = conn.sessionId
+      setTimeout(() => {
+        if (transport.has(deadCheckSessionId)) return // reconnected
+        const info = registry.get(deadCheckSessionId)
+        if (!info || info.isJoinMember) return
+        try {
+          execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+          return // tmux still alive, just bridge disconnect
+        } catch {}
+        // Session is dead
+        process.stderr.write(`daemon: session ${info.tmuxName} died (bridge + tmux gone)\n`)
+        const thread = threadRegistry.get(info.threadId)
+        if (thread) {
+          thread.currentSessionId = null
+          thread.anchorState = 'crashed'
+          threadRegistry.persist()
+        }
+        void setAnchorState(info.threadId, 'crashed').catch(() => {})
+        void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
+      }, 3000)
     }
   })
 

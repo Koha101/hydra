@@ -5,10 +5,11 @@ import { join, resolve } from 'path'
 import { homedir } from 'os'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
-import { registry, sessionEmoji } from './sessions.js'
+import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+import { setAnchorState } from './anchor-state.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -66,6 +67,14 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     // Don't delete thread mapping for join members — owner keeps it
     if (!info.isJoinMember) {
       registry.deleteThread(info.threadId)
+
+      const thread = threadRegistry.get(info.threadId)
+      if (thread) {
+        thread.currentSessionId = null
+        thread.anchorState = 'killed'
+        threadRegistry.persist()
+      }
+      void setAnchorState(info.threadId, 'killed').catch(() => {})
     }
     registry.delete(info.sessionId)
     registry.persist()
@@ -362,6 +371,30 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     registry.setThread(threadId!, sessionId)
   }
   registry.persist()
+
+  // Co-update ThreadRegistry
+  if (!isJoin) {
+    const existingThread = threadRegistry.get(threadId!)
+    if (existingThread) {
+      existingThread.currentSessionId = sessionId
+      existingThread.sessionHistory.push({
+        tmuxName, sessionId, claudeSessionId: undefined, createdAt: now,
+      })
+      threadRegistry.persist()
+    } else {
+      threadRegistry.set(threadId!, {
+        threadId: threadId!,
+        anchorState: 'live',
+        topic,
+        respawnCount,
+        currentSessionId: sessionId,
+        sessionHistory: [{ tmuxName, sessionId, claudeSessionId: undefined, createdAt: now }],
+        threadUrl: url || undefined,
+      })
+      threadRegistry.persist()
+    }
+    void setAnchorState(threadId!, respawnCount > 0 ? 'zombie' : 'live', respawnCount).catch(() => {})
+  }
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
