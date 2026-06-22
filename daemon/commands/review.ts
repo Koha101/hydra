@@ -52,5 +52,5 @@ export async function handleCancelReviewIntercept(msg: InboundMessage): Promise<
     return
   }
 
-  await cancelReview(existing.reviewId)
+  await cancelReview(threadId)
 }
