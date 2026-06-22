@@ -315,7 +315,9 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 // ---------------------------------------------------------------------------
 
 async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<void> {
+  // Kill critic — delete from map BEFORE nulling the field
   if (state.criticSessionId) {
+    sessionToReview.delete(state.criticSessionId)
     const info = registry.get(state.criticSessionId)
     if (info && !killsInProgress.has(state.criticSessionId)) {
       await killSession(info, 'debate complete')

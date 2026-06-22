@@ -386,8 +386,9 @@ function onCriticFeedback(state: BuildState, text: string): void {
 // ---------------------------------------------------------------------------
 
 async function finishBuild(state: BuildState, lastCriticText: string): Promise<void> {
-  // Kill critic
+  // Kill critic — delete from map BEFORE nulling the field
   if (state.criticSessionId) {
+    sessionToBuild.delete(state.criticSessionId)
     try {
       const info = registry.get(state.criticSessionId)
       if (info && !killsInProgress.has(state.criticSessionId)) {
