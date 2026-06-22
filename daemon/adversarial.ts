@@ -70,6 +70,10 @@ function cleanupReviewMaps(state: ReviewState): void {
 // Lookups
 // ---------------------------------------------------------------------------
 
+export function getActiveReviews(): ReviewState[] {
+  return [...reviews.values()].filter(r => r.phase !== 'complete' && r.phase !== 'cancelled')
+}
+
 export function getReviewByThread(threadId: string): ReviewState | undefined {
   const reviewId = threadToReview.get(threadId)
   return reviewId ? reviews.get(reviewId) : undefined

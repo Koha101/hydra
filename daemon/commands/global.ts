@@ -7,6 +7,8 @@ import { registry, sessionEmoji } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
+import { getActiveBuilds, cancelBuild } from '../build.js'
+import { getActiveReviews, cancelReview } from '../adversarial.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
@@ -83,9 +85,29 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
 export async function handleRestartIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔄').catch(() => {})
 
+  // Cancel active builds/reviews before restart — critics are join members
+  // that get killed on restart, so cancel cleanly first
+  const activeBuilds = getActiveBuilds()
+  const activeReviews = getActiveReviews()
+  for (const build of activeBuilds) {
+    process.stderr.write(`daemon: restart: cancelling active build ${build.buildId.slice(0, 8)}\n`)
+    await cancelBuild(build.buildId).catch(err => {
+      process.stderr.write(`daemon: restart: cancelBuild failed: ${err}\n`)
+    })
+  }
+  for (const review of activeReviews) {
+    process.stderr.write(`daemon: restart: cancelling active review ${review.reviewId.slice(0, 8)}\n`)
+    await cancelReview(review.reviewId).catch(err => {
+      process.stderr.write(`daemon: restart: cancelReview failed: ${err}\n`)
+    })
+  }
+
+  const cancelled = activeBuilds.length + activeReviews.length
+  const cancelNote = cancelled > 0 ? ` (cancelled ${cancelled} active build/review${cancelled > 1 ? 's' : ''})` : ''
+
   const restartScript = join(import.meta.dir, '..', '..', 'restart-daemon.sh')
   try {
-    await gateway.send(msg.channelId, `🔄 Restarting daemon — back in a moment...`, { replyTo: msg.id })
+    await gateway.send(msg.channelId, `🔄 Restarting daemon${cancelNote} — back in a moment...`, { replyTo: msg.id })
   } catch {}
 
   try {

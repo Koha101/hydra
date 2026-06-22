@@ -91,6 +91,10 @@ const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
 // Lookups
 // ---------------------------------------------------------------------------
 
+export function getActiveBuilds(): BuildState[] {
+  return [...builds.values()].filter(b => b.phase !== 'complete' && b.phase !== 'cancelled')
+}
+
 export function getBuildByThread(threadId: string): BuildState | undefined {
   const buildId = threadToBuild.get(threadId)
   return buildId ? builds.get(buildId) : undefined
