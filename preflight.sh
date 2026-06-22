@@ -6,6 +6,7 @@
 #   CHAT_PLATFORM=slack HYDRA_STATE_DIR=~/.claude/channels/slack \
 #     CLAUDE_CONFIG_DIR=~/.claude ./preflight.sh
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLATFORM="${CHAT_PLATFORM:-discord}"
 STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/$PLATFORM}}"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -23,6 +24,18 @@ echo
 for c in bun tmux claude; do
   command -v "$c" >/dev/null 2>&1 && ok "$c on PATH" || bad "$c not found on PATH"
 done
+
+# --- code compiles ---
+if command -v bun >/dev/null 2>&1; then
+  source "$SCRIPT_DIR/compile-check.sh"
+  COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
+  if [ $? -eq 0 ]; then
+    ok "daemon + bridge compile"
+  else
+    bad "compile FAILED — daemon would crash-loop on boot:"
+    printf '%s' "$COMPILE_OUT" | sed 's/^/      /'
+  fi
+fi
 
 # --- tokens (.env) ---
 ENV="$STATE_DIR/.env"

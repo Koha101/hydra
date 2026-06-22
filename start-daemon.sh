@@ -27,6 +27,24 @@ if [ -z "$SPAWN_CWD" ]; then
   exit 1
 fi
 
+# Compile gate — never cold-start onto a tree that doesn't load.
+# `bun run` is lazy: parse/export errors surface only when a module is imported,
+# so a broken merge to the running branch sits undetected until a restart, then
+# crash-loops forever (watchdog kills + relaunches a process that dies on boot).
+# Build the entries first; if it fails, refuse to start and leave any running
+# daemon UNTOUCHED — a broken tree must never replace a working process.
+source "$SCRIPT_DIR/compile-check.sh"
+COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
+COMPILE_RC=$?
+if [ "$COMPILE_RC" -ne 0 ]; then
+  {
+    echo "$(date): COMPILE FAILED — refusing to start daemon; leaving any running session untouched."
+    echo "----- build error -----"
+    printf '%s' "$COMPILE_OUT"
+  } | tee -a "$LOG"
+  exit 1
+fi
+
 # Kill existing daemon session
 tmux kill-session -t "$SESSION" 2>/dev/null
 sleep 1
