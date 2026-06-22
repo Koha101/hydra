@@ -9,6 +9,8 @@ import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } fro
 import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, detachSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
+import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
+import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -71,6 +73,8 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         },
       })
       transport.flushQueue(sessionId)
+      if (isReviewParticipant(sessionId)) onParticipantReconnect(sessionId)
+      if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
     }
@@ -100,6 +104,15 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           content: result.content,
           ...(result.isError ? { isError: true } : {}),
         })
+
+        // Adversarial review: detect reply from any review participant
+        if (name === 'reply' && !result.isError && conn.sessionId && isReviewParticipant(conn.sessionId)) {
+          onReviewReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
+        }
+        // Build: detect reply from any build participant
+        if (name === 'reply' && !result.isError && conn.sessionId && isBuildParticipant(conn.sessionId)) {
+          onBuildReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
+        }
       }).catch(err => {
         transport.sendToBridge(conn, {
           type: 'tool_result',
@@ -201,6 +214,14 @@ export const socketServer = createServer((socket: Socket) => {
       if (conn.sessionId !== 'main') {
         const sid = conn.sessionId
         setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
+      }
+      // Adversarial review: handle participant disconnect
+      if (isReviewParticipant(conn.sessionId)) {
+        onParticipantDisconnect(conn.sessionId)
+      }
+      // Build: handle participant disconnect
+      if (isBuildParticipant(conn.sessionId)) {
+        onBuildParticipantDisconnect(conn.sessionId)
       }
     }
   })

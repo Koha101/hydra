@@ -154,6 +154,7 @@ Spawn isolated Claude sessions from chat:
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
+| `help` / `commands` | Show all available commands |
 
 Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts. Kill them manually with `kill: <name>`.
 

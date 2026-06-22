@@ -9,6 +9,8 @@ import type { InboundMessage } from '../gateway.js'
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
+import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
+import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -120,16 +122,14 @@ gateway.onMessageDelete((messageId, threadId) => {
 // Reaction-based message deletion (:hocho: on bot messages)
 // ---------------------------------------------------------------------------
 
-const DELETE_EMOJI = 'hocho'
-
 if (gateway.onReaction) {
   gateway.onReaction(async (event) => {
-    if (event.emoji !== DELETE_EMOJI) return
+    if (event.emoji !== 'hocho' && event.emoji !== '🔪') return
     const access = loadAccess()
     if (!access.allowFrom.includes(event.userId)) return
     try {
       await gateway.delete(event.channelId, event.messageId)
-      process.stderr.write(`daemon: deleted message ${event.messageId} in ${event.channelId} (${DELETE_EMOJI} reaction from ${event.userId})\n`)
+      process.stderr.write(`daemon: deleted message ${event.messageId} via reaction from ${event.userId}\n`)
     } catch (err) {
       process.stderr.write(`daemon: failed to delete message ${event.messageId}: ${err}\n`)
     }
@@ -198,7 +198,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands)\s*$/i)
+    const commandsMatch = msg.content.match(/^(?:\/commands|commands|list commands|show commands|\/help|help)\s*$/i)
     if (commandsMatch) {
       void handleCommandsIntercept(msg)
       return
@@ -256,6 +256,41 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const goMatch = msg.content.match(/^(?:\/go|go!)\s*$/i)
       if (goMatch) {
         void handleGoIntercept(msg)
+        return
+      }
+
+      const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      if (reviewMatch) {
+        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewMatch[2]?.trim())
+        return
+      }
+
+      const cancelReviewMatch = msg.content.match(/^(?:kill review)\s*$/i)
+      if (cancelReviewMatch) {
+        void handleCancelReviewIntercept(msg)
+        return
+      }
+
+      const buildWtMatch = msg.content.match(/^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i)
+      if (buildWtMatch) {
+        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), buildWtMatch[3]?.trim(), buildWtMatch[1].trim())
+        return
+      }
+      // Catch malformed build-wt (missing repo)
+      if (msg.content.match(/^(?:\/build-wt|build-wt)[:\s]/i)) {
+        void gateway.send(msg.channelId, `Usage: \`build-wt: <repo> [rounds] [task]\`\nExample: \`build-wt: options_bot 3 implement ticket 1\``, { replyTo: msg.id }).catch(() => {})
+        return
+      }
+
+      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      if (buildMatch) {
+        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildMatch[2]?.trim())
+        return
+      }
+
+      const cancelBuildMatch = msg.content.match(/^(?:kill build)\s*$/i)
+      if (cancelBuildMatch) {
+        void handleCancelBuildIntercept(msg)
         return
       }
     }

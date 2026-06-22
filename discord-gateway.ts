@@ -27,6 +27,7 @@ import type {
   ButtonDef,
   ButtonClick,
   AttachmentInfo,
+  ReactionEvent,
 } from './gateway.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -42,6 +43,7 @@ export class DiscordGateway implements ChatGateway {
   private threadDeleteHandler: ((threadId: string) => void) | null = null
   private messageDeleteHandler: ((messageId: string, threadId: string | null) => void) | null = null
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
+  private reactionHandler: ((event: ReactionEvent) => Promise<void>) | null = null
   private recentSentIds = new Set<string>()
 
   constructor() {
@@ -51,8 +53,9 @@ export class DiscordGateway implements ChatGateway {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions,
       ],
-      partials: [Partials.Channel],
+      partials: [Partials.Channel, Partials.Reaction, Partials.Message],
     })
   }
 
@@ -114,6 +117,18 @@ export class DiscordGateway implements ChatGateway {
       })
     })
 
+    this.client.on('messageReactionAdd', async (reaction, user) => {
+      if (!this.reactionHandler) return
+      if (user.bot) return
+      const msg = reaction.message
+      this.reactionHandler({
+        channelId: msg.channelId,
+        messageId: msg.id,
+        userId: user.id,
+        emoji: reaction.emoji.name ?? '',
+      }).catch(e => process.stderr.write(`discord gateway: reaction handler error: ${e}\n`))
+    })
+
     this.client.on('error', err => {
       process.stderr.write(`discord gateway: client error: ${err}\n`)
     })
@@ -148,6 +163,10 @@ export class DiscordGateway implements ChatGateway {
 
   onButtonClick(handler: (click: ButtonClick) => void): void {
     this.buttonClickHandler = handler
+  }
+
+  onReaction(handler: (event: ReactionEvent) => Promise<void>): void {
+    this.reactionHandler = handler
   }
 
   async send(channelId: string, text: string, opts?: {

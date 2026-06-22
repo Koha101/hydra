@@ -33,6 +33,7 @@ export type SessionInfo = {
   capabilities?: SessionCapabilities
   worktreeRepo?: string
   worktreePath?: string
+  isJoinMember?: boolean
   // Legacy fields — present on persisted data from pre-B3, ignored after migration.
   topic?: string
   anchorMessageId?: string
@@ -50,6 +51,8 @@ export type SpawnOpts = {
   existingThreadId?: string
   resurrectFrom?: string
   resumeFrom?: string
+  joinThread?: string                                          // join existing thread as member (skip thread creation)
+  promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
 }
 
 // RecoveryManifest dissolved in B3 — threadRegistry.detachedThreads() IS the recovery manifest.
@@ -200,6 +203,13 @@ export class SessionRegistry {
       let live = 0, skipped = 0
       for (const info of data) {
         if (info.status === 'killed' || info.status === 'dead') {
+          skipped++
+          continue
+        }
+        // Orphaned join members (review critics/judges) can't be re-associated
+        // with their review state after restart — kill them immediately
+        if (info.isJoinMember) {
+          try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
           skipped++
           continue
         }

@@ -46,13 +46,16 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
   killsInProgress.add(info.sessionId)
 
   try {
-    try {
-      await gateway.send(info.threadId, `_${reason}_`)
-    } catch (err) {
-      process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
-    }
+    // Join members don't own the thread — skip death message and anchor reactions
+    if (!info.isJoinMember) {
+      try {
+        await gateway.send(info.threadId, `_${reason}_`)
+      } catch (err) {
+        process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
+      }
 
-    await setAnchorState(info.threadId, 'killed')
+      await setAnchorState(info.threadId, 'killed')
+    }
 
     const tmuxName = info.tmuxName
     try {
@@ -82,9 +85,13 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
       if (current) { killsInProgress.delete(info.sessionId); return }
       try {
-        execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
-        execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
-        process.stderr.write(`daemon: deferred kill caught lingering tmux session "${tmuxName}"\n`)
+        // Only kill if the tmux session isn't owned by a new session (name recycling)
+        const currentOwner = [...registry.values()].find(s => s.tmuxName === tmuxName)
+        if (!currentOwner) {
+          execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
+          execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
+          process.stderr.write(`daemon: deferred kill caught lingering tmux session "${tmuxName}"\n`)
+        }
       } catch {}
       killsInProgress.delete(info.sessionId)
     }, 3000)
@@ -125,8 +132,14 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     threadId = opts.existingThreadId
   }
 
-  // Determine where to create the thread
+  // Join an existing thread as a member (skip thread creation entirely)
+  const isJoin = !!opts?.joinThread
   let respawnCount = 0
+  if (isJoin) {
+    threadId = opts!.joinThread!
+  }
+
+  // Determine where to create the thread
   let targetChannelId = chatId
   if (!threadId) {
     if (targetChannelId) {
@@ -274,7 +287,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   }
 
   let prompt: string
-  if (isHandoff) {
+  if (opts?.promptBuilder) {
+    prompt = opts.promptBuilder(sessionId, tmuxName)
+  } else if (isHandoff) {
     const contextLine = opts!.artifact
       ? `Read your handoff context from \`${opts!.artifact}\`, then read your memory files.`
       : `Read your memory files and workstream canon for context.`
@@ -310,7 +325,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
     ].join('\n')
   } else {
-    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context, then send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
+    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context. To read prior conversation in your thread, use fetch_messages(channel="${threadId}") — this is your thread's history. Do NOT fetch from the parent channel ID alone, only from your full thread chat_id. Send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
   }
 
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
@@ -378,10 +393,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     sessionId, threadId: threadId!, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom, capabilities,
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
+    ...(isJoin ? { isJoinMember: true } : {}),
   })
   registry.persist()
 
-  // Co-update ThreadInfo
+  // Co-update ThreadInfo — join members don't claim the thread's currentSessionId
   let thread = threadRegistry.get(threadId!)
   if (!thread) {
     thread = {
@@ -392,7 +408,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       description: undefined,
       anchorState: 'live',
       respawnCount,
-      currentSessionId: sessionId,
+      currentSessionId: isJoin ? null : sessionId,
       createdAt: now,
       lastActive: now,
       totalMessages: 0,
@@ -400,7 +416,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
     threadRegistry.set(threadId!, thread)
   } else {
-    thread.currentSessionId = sessionId
+    if (!isJoin) thread.currentSessionId = sessionId
     thread.lastActive = now
     thread.threadUrl = url || thread.threadUrl
     thread.anchorState = respawnCount > 0 ? 'zombie' : 'live'

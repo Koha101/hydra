@@ -8,6 +8,8 @@ import type { ThreadInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
+import { getActiveBuilds, cancelBuild } from '../build.js'
+import { getActiveReviews, cancelReview } from '../adversarial.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
@@ -85,13 +87,33 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
 export async function handleRestartIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔄').catch(() => {})
 
+  // Cancel active builds/reviews before restart — critics are join members
+  // that get killed on restart, so cancel cleanly first
+  const activeBuilds = getActiveBuilds()
+  const activeReviews = getActiveReviews()
+  for (const build of activeBuilds) {
+    process.stderr.write(`daemon: restart: cancelling active build ${build.buildId.slice(0, 8)}\n`)
+    await cancelBuild(build.buildId).catch(err => {
+      process.stderr.write(`daemon: restart: cancelBuild failed: ${err}\n`)
+    })
+  }
+  for (const review of activeReviews) {
+    process.stderr.write(`daemon: restart: cancelling active review ${review.reviewId.slice(0, 8)}\n`)
+    await cancelReview(review.reviewId).catch(err => {
+      process.stderr.write(`daemon: restart: cancelReview failed: ${err}\n`)
+    })
+  }
+
+  const cancelled = activeBuilds.length + activeReviews.length
+  const cancelNote = cancelled > 0 ? ` (cancelled ${cancelled} active build/review${cancelled > 1 ? 's' : ''})` : ''
+
   // HYDRA_SOURCE_DIR points to the dev repo; the daemon may be running from an
   // isolated runtime copy, so import.meta.dir would resolve to the copy — but
   // restart-daemon.sh must run from the real repo to pick up new code.
   const sourceDir = process.env.HYDRA_SOURCE_DIR ?? join(import.meta.dir, '..', '..')
   const restartScript = join(sourceDir, 'restart-daemon.sh')
   try {
-    await gateway.send(msg.channelId, `🔄 Restarting daemon — back in a moment...`, { replyTo: msg.id })
+    await gateway.send(msg.channelId, `🔄 Restarting daemon${cancelNote} — back in a moment...`, { replyTo: msg.id })
   } catch {}
 
   try {
@@ -144,30 +166,42 @@ export async function handleReconnectIntercept(msg: InboundMessage): Promise<voi
 export async function handleCommandsIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '📋').catch(() => {})
   const text = [
-    '**Bridge Commands**',
+    '**Commands**',
     '',
-    '**Global (work from anywhere):**',
-    '• 🚀 `spawn: <topic>` — spawn an isolated Claude session in its own thread',
+    '**Sessions:**',
+    '• 🚀 `spawn: <topic>` — new session in its own thread',
+    '• 🚀 `spawn-wt: <repo> <topic>` — new session in a git worktree',
     '• 📊 `list sessions` — show all running sessions with lineage',
     '• ☠️ `kill session: <name>` — terminate a named session',
-    '• 💚 `health` / `status` — daemon health and diagnostics',
-    '• 🔌 `reconnect` — re-establish chat connection without restarting',
-    '• 🔄 `restart` — restart the daemon (picks up code changes, sessions reconnect)',
-    '• 🔮 `recover` — revive dead sessions from a crash',
+    '• ☠️ `kill` — kill this session (thread-scoped)',
+    '• 🍴 `fork` / `fork: <focus>` — fork into a new thread with full history',
+    '• 🍽️ `forks` — list forks from this thread',
     '',
-    '**Thread-scoped (in a session thread only, ❌ elsewhere):**',
-    '• 🍴 `fork` / `fork: <description>` — fork into a new thread with full history',
-    '• 🍽️ `forks` — list all forks from this thread',
-    '• 🤝 `handoff` / `handoff: <direction>` — distill context into an artifact',
-    '• 🤝 `/go` — launch the handoff successor',
+    '**Recovery (thread-scoped):**',
     '• ⏯️ `resume` — reconnect to a dead session with full context (via --resume)',
     '• 🔁 `respawn` — fresh session that reads thread history and continues',
-    '• 📈 `usage` — session stats: context %, messages, runtime, fork count',
-    '• ☠️ `kill` — kill this session',
-    '• 👂/⏸️ `listen` / `pause` — toggle whether the session responds to all messages',
+    '• 🔮 `recover` — revive dead sessions from a crash',
     '',
-    '**Other:**',
-    '• 📋 `commands` — this list',
+    '**Multi-agent:**',
+    '• `build [N] [task]` — owner implements, critic reviews (default 3 rounds)',
+    '• `build-wt: <repo> [N] [task]` — build in an isolated worktree',
+    '• `kill build` — cancel an in-progress build',
+    '• `/review [N] [topic]` — adversarial review: critic challenges, owner defends',
+    '• `kill review` — cancel an in-progress review',
+    '',
+    '**Handoff:**',
+    '• 🤝 `handoff` / `handoff: <direction>` — distill context into an artifact',
+    '• 🤝 `/go` — launch the successor session',
+    '',
+    '**Session control:**',
+    '• 👂/⏸️ `listen` / `pause` — toggle message routing to session',
+    '• 📈 `usage` — context %, messages, runtime, fork count',
+    '',
+    '**Daemon:**',
+    '• 💚 `health` / `status` — daemon diagnostics',
+    '• 🔌 `reconnect` — re-establish chat connection',
+    '• 🔄 `restart` — restart daemon (sessions reconnect)',
+    '• 📋 `help` / `commands` — this list',
   ].join('\n')
   try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
 }
