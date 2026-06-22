@@ -55,7 +55,7 @@ const ownerToBuild = new Map<string, string>()     // owner -> buildId
 const threadToBuild = new Map<string, string>()    // thread -> buildId
 
 const CRITIC_TIMEOUT_MS = 20 * 60 * 1000
-const OWNER_TIMEOUT_MS = 15 * 60 * 1000  // shorter than review (30m) — builder is an LLM, not a human
+const OWNER_TIMEOUT_MS = 30 * 60 * 1000
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -335,9 +335,12 @@ function onCriticPosted(state: BuildState, text: string): void {
   state.currentRound++
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
+  // Post visible status so the human knows it's the builder's turn
+  void gateway.send(state.ownerThreadId, `_Critic found issues. Builder's turn to fix (${roundLabel})._`).catch(() => {})
+
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
-    content: `[Build — Critic Feedback]\n\n${text}\n\n---\nAddress the critic's feedback for ${roundLabel}. Fix the issues, commit, and post your updated summary.`,
+    content: `⚠️ **CRITIC FEEDBACK — action required**\n\n${text}\n\n---\nFix these issues, commit, and post your updated summary for ${roundLabel}.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'build-critic', user_id: 'system', ts: new Date().toISOString() },
   })
 
