@@ -90,14 +90,14 @@ export async function handleRestartIntercept(msg: InboundMessage): Promise<void>
   const activeBuilds = getActiveBuilds()
   const activeReviews = getActiveReviews()
   for (const build of activeBuilds) {
-    process.stderr.write(`daemon: restart: cancelling active build ${build.buildId.slice(0, 8)}\n`)
-    await cancelBuild(build.buildId).catch(err => {
+    process.stderr.write(`daemon: restart: cancelling active build in thread ${build.ownerThreadId.slice(0, 8)}\n`)
+    await cancelBuild(build.ownerThreadId).catch(err => {
       process.stderr.write(`daemon: restart: cancelBuild failed: ${err}\n`)
     })
   }
   for (const review of activeReviews) {
-    process.stderr.write(`daemon: restart: cancelling active review ${review.reviewId.slice(0, 8)}\n`)
-    await cancelReview(review.reviewId).catch(err => {
+    process.stderr.write(`daemon: restart: cancelling active review in thread ${review.ownerThreadId.slice(0, 8)}\n`)
+    await cancelReview(review.ownerThreadId).catch(err => {
       process.stderr.write(`daemon: restart: cancelReview failed: ${err}\n`)
     })
   }

@@ -1,7 +1,7 @@
-import { randomUUID } from 'crypto'
 import { gateway } from './config.js'
 import { registry } from './sessions.js'
-import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
+import { doSpawnSession, killSession, killsInProgress, sessionDeathEmitter } from './session-lifecycle.js'
+import type { SessionDeathEvent } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { getBuildByThread } from './build.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
@@ -14,11 +14,7 @@ import { createStateMachine } from './state-machine.js'
 export type ReviewPhase = 'critic_turn' | 'owner_turn' | 'cleanup' | 'complete' | 'cancelled'
 type ReviewEvent = 'critic_posted' | 'owner_posted' | 'final_round' | 'summary_posted' | 'timeout' | 'cancel'
 
-const OWNER_SENTINEL = '[owner→critic]'
-const CRITIC_SENTINEL = '[critic→owner]'
-
 export type ReviewState = {
-  reviewId: string
   ownerThreadId: string
   ownerSessionId: string
   criticSessionId?: string
@@ -47,23 +43,23 @@ const reviewMachine = createStateMachine<ReviewPhase, ReviewEvent>('review', {
 // State
 // ---------------------------------------------------------------------------
 
-const reviews = new Map<string, ReviewState>()
-const sessionToReview = new Map<string, string>()
-const ownerToReview = new Map<string, string>()
-const threadToReview = new Map<string, string>()
+const reviews = new Map<string, ReviewState>()        // ownerThreadId → state
+const activeParticipants = new Set<string>()           // O(1) sessionId membership check
 
 const CRITIC_TIMEOUT_MS = 10 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
 
 // ---------------------------------------------------------------------------
-// Map cleanup — single function for all exit paths
+// Helpers
 // ---------------------------------------------------------------------------
 
-function cleanupReviewMaps(state: ReviewState): void {
-  if (state.criticSessionId) sessionToReview.delete(state.criticSessionId)
-  ownerToReview.delete(state.ownerSessionId)
-  threadToReview.delete(state.ownerThreadId)
-  reviews.delete(state.reviewId)
+export function findReviewBySession(sessionId: string): { state: ReviewState; role: 'owner' | 'critic' } | null {
+  for (const state of reviews.values()) {
+    if (state.phase === 'complete' || state.phase === 'cancelled') continue
+    if (state.criticSessionId === sessionId) return { state, role: 'critic' }
+    if (state.ownerSessionId === sessionId) return { state, role: 'owner' }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -75,12 +71,11 @@ export function getActiveReviews(): ReviewState[] {
 }
 
 export function getReviewByThread(threadId: string): ReviewState | undefined {
-  const reviewId = threadToReview.get(threadId)
-  return reviewId ? reviews.get(reviewId) : undefined
+  return reviews.get(threadId)
 }
 
 export function isReviewParticipant(sessionId: string): boolean {
-  return sessionToReview.has(sessionId) || ownerToReview.has(sessionId)
+  return activeParticipants.has(sessionId)
 }
 
 // ---------------------------------------------------------------------------
@@ -93,16 +88,14 @@ export async function startReview(
   rounds: number,
   topic?: string,
 ): Promise<ReviewState> {
-  if (threadToReview.has(ownerThreadId)) {
+  if (reviews.has(ownerThreadId)) {
     throw new Error('A review is already in progress in this thread')
   }
   if (getBuildByThread(ownerThreadId)) {
     throw new Error('A build is in progress in this thread — finish or cancel it first')
   }
 
-  const reviewId = randomUUID()
   const state: ReviewState = {
-    reviewId,
     ownerThreadId,
     ownerSessionId,
     topic,
@@ -112,9 +105,8 @@ export async function startReview(
     messageIds: [],
   }
 
-  reviews.set(reviewId, state)
-  threadToReview.set(ownerThreadId, reviewId)
-  ownerToReview.set(ownerSessionId, reviewId)
+  reviews.set(ownerThreadId, state)
+  activeParticipants.add(ownerSessionId)
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
@@ -129,8 +121,6 @@ export async function startReview(
       content: [
         `[system] Adversarial review started (${rounds} rounds). A critic will challenge your design.`,
         `When their critique arrives as a notification, defend your work by replying to your thread.`,
-        ``,
-        `**Message routing:** Your first line MUST be \`${OWNER_SENTINEL}\` when posting your defense. Messages without this tag are conversational and won't advance the review.`,
       ].join('\n'),
       meta: { chat_id: ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
@@ -138,7 +128,7 @@ export async function startReview(
     await spawnCritic(state)
     return state
   } catch (err) {
-    cleanupReviewMaps(state)
+    cleanupState(state)
     throw err
   }
 }
@@ -147,8 +137,8 @@ export async function startReview(
 // Cancel a review
 // ---------------------------------------------------------------------------
 
-export async function cancelReview(reviewId: string): Promise<void> {
-  const state = reviews.get(reviewId)
+export async function cancelReview(threadId: string): Promise<void> {
+  const state = reviews.get(threadId)
   if (!state) return
 
   state.phase = 'cancelled'
@@ -165,7 +155,7 @@ export async function cancelReview(reviewId: string): Promise<void> {
   } catch (err) {
     process.stderr.write(`daemon: review cancel killSession failed: ${err}\n`)
   } finally {
-    cleanupReviewMaps(state)
+    cleanupState(state)
   }
 
   await gateway.send(state.ownerThreadId, `Review cancelled.`)
@@ -180,34 +170,29 @@ export async function cancelReview(reviewId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function onReviewReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
+  const found = findReviewBySession(sessionId)
+  if (!found) return
+
+  const { state, role } = found
+  if (chatId !== state.ownerThreadId) return
+
   const firstLine = text.split('\n')[0].trim()
 
-  // Critic posting
-  const memberReviewId = sessionToReview.get(sessionId)
-  if (memberReviewId) {
-    const state = reviews.get(memberReviewId)
-    if (!state || chatId !== state.ownerThreadId || state.criticSessionId !== sessionId) return
-
-    // Only process messages with the critic sentinel
-    if (!firstLine.startsWith(CRITIC_SENTINEL)) return
+  if (role === 'critic') {
+    if (state.criticSessionId !== sessionId) return
 
     const result = reviewMachine.transition(state.phase, 'critic_posted')
     if (!result.ok) return
 
-    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
     state.messageIds.push(...sentMessageIds)
     state.phase = result.to
-    onCriticPosted(state, bodyText)
+    onCriticPosted(state, text)
     return
   }
 
   // Owner posting
-  const ownerReviewId = ownerToReview.get(sessionId)
-  if (ownerReviewId) {
-    const state = reviews.get(ownerReviewId)
-    if (!state || chatId !== state.ownerThreadId) return
-
-    // Cleanup phase — check for summary (no sentinel needed, just keyword)
+  if (role === 'owner') {
+    // Cleanup phase — check for summary
     if (state.phase === 'cleanup') {
       const summaryLine = firstLine.startsWith('**Review Summary**')
       if (summaryLine) {
@@ -220,10 +205,6 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
       return
     }
 
-    // Only process messages with the owner sentinel
-    if (!firstLine.startsWith(OWNER_SENTINEL)) return
-
-    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
     const isFinalRound = state.currentRound >= state.rounds
     const event: ReviewEvent = isFinalRound ? 'final_round' : 'owner_posted'
     const result = reviewMachine.transition(state.phase, event)
@@ -233,22 +214,21 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
     state.phase = result.to
 
     if (isFinalRound) {
-      void finishDebate(state, bodyText).catch(err => {
+      void finishDebate(state, text).catch(err => {
         process.stderr.write(`daemon: finishDebate failed: ${err}\n`)
-        void cancelReview(state.reviewId).catch(() => {})
+        void cancelReview(state.ownerThreadId).catch(() => {})
       })
     } else {
-      onOwnerPosted(state, bodyText)
+      onOwnerPosted(state, text)
     }
   }
 }
 
 /** Called when a critic bridge disconnects. */
 export function onParticipantDisconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
-  if (!reviewId) return
-  const state = reviews.get(reviewId)
-  if (!state) return
+  const found = findReviewBySession(sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
 
   if (state.phase === 'critic_turn' && state.criticSessionId === sessionId) {
     if (transport.has(sessionId)) return
@@ -265,22 +245,40 @@ export function onParticipantDisconnect(sessionId: string): void {
         return
       }
       process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
-      await cancelReview(state.reviewId)
+      await cancelReview(state.ownerThreadId)
     }, 30_000)
   }
 }
 
 /** Called when a bridge registers. */
 export function onParticipantReconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
-  if (!reviewId) return
-  const state = reviews.get(reviewId)
-  if (!state || !state._disconnectTimer) return
+  const found = findReviewBySession(sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
+  if (!state._disconnectTimer) return
   clearTimeout(state._disconnectTimer)
   state._disconnectTimer = undefined
   resetTimeout(state)
   process.stderr.write(`daemon: review participant ${sessionId} reconnected, grace period cleared\n`)
 }
+
+// ---------------------------------------------------------------------------
+// Death emitter — handle unexpected critic kills
+// ---------------------------------------------------------------------------
+
+sessionDeathEmitter.on('death', (event: SessionDeathEvent) => {
+  if (event.wasOwner) return
+  const found = findReviewBySession(event.sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
+
+  if (state.phase === 'complete' || state.phase === 'cancelled') return
+
+  process.stderr.write(`daemon: review critic ${event.sessionId} died unexpectedly, cancelling review\n`)
+  void cancelReview(state.ownerThreadId).catch(err => {
+    process.stderr.write(`daemon: review cancel after death failed: ${err}\n`)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Turn handlers
@@ -292,7 +290,7 @@ function onCriticPosted(state: ReviewState, text: string): void {
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
-    content: `[Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread with \`${OWNER_SENTINEL}\` as the first line.`,
+    content: `[Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-critic', user_id: 'system', ts: new Date().toISOString() },
   })
 
@@ -307,7 +305,7 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 
   transport.sendOrQueue(state.criticSessionId!, {
     type: 'notification',
-    content: `[Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}. First line must be \`${CRITIC_SENTINEL}\`.`,
+    content: `[Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-owner', user_id: 'system', ts: new Date().toISOString() },
   })
 
@@ -319,9 +317,9 @@ function onOwnerPosted(state: ReviewState, text: string): void {
 // ---------------------------------------------------------------------------
 
 async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<void> {
-  // Kill critic — delete from map BEFORE nulling the field
+  // Kill critic
   if (state.criticSessionId) {
-    sessionToReview.delete(state.criticSessionId)
+    activeParticipants.delete(state.criticSessionId)
     const info = registry.get(state.criticSessionId)
     if (info && !killsInProgress.has(state.criticSessionId)) {
       await killSession(info, 'debate complete')
@@ -385,11 +383,21 @@ function finalizeReview(state: ReviewState): void {
   if (state.phase !== 'complete') return
   if (state.timeout) clearTimeout(state.timeout)
 
-  cleanupReviewMaps(state)
+  cleanupState(state)
 
   void deleteReviewMessages(state).catch(err => {
     process.stderr.write(`daemon: review message cleanup failed: ${err}\n`)
   })
+}
+
+// ---------------------------------------------------------------------------
+// State cleanup
+// ---------------------------------------------------------------------------
+
+function cleanupState(state: ReviewState): void {
+  if (state.criticSessionId) activeParticipants.delete(state.criticSessionId)
+  activeParticipants.delete(state.ownerSessionId)
+  reviews.delete(state.ownerThreadId)
 }
 
 // ---------------------------------------------------------------------------
@@ -403,19 +411,20 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
+      memberLabel: 'review-critic',
       promptBuilder: (sessionId, tmuxName) =>
         reviewCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, topic: state.topic }),
     })
 
     state.criticSessionId = result.sessionId
-    sessionToReview.set(result.sessionId, state.reviewId)
+    activeParticipants.add(result.sessionId)
     void gateway.edit(state.ownerThreadId, statusMsg.id, `_Critic (**${result.name}**) spawned._`).catch(() => {})
     resetTimeout(state)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: critic spawn failed: ${msg}\n`)
     await gateway.send(state.ownerThreadId, `Failed to spawn critic: ${msg}. Review cancelled.`)
-    void cancelReview(state.reviewId)
+    void cancelReview(state.ownerThreadId)
   }
 }
 
@@ -431,6 +440,6 @@ function resetTimeout(state: ReviewState): void {
   state.timeout = setTimeout(async () => {
     process.stderr.write(`daemon: review turn timed out (${whose})\n`)
     await gateway.send(state.ownerThreadId, `Review timed out waiting for ${whose}. Cancelling.`)
-    await cancelReview(state.reviewId)
+    await cancelReview(state.ownerThreadId)
   }, timeoutMs)
 }

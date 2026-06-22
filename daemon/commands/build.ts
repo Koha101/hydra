@@ -55,5 +55,5 @@ export async function handleCancelBuildIntercept(msg: InboundMessage): Promise<v
     return
   }
 
-  await cancelBuild(existing.buildId)
+  await cancelBuild(threadId)
 }

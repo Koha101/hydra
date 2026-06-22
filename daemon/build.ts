@@ -2,7 +2,8 @@ import { execSync, execFileSync } from 'child_process'
 import { resolve } from 'path'
 import { gateway } from './config.js'
 import { registry } from './sessions.js'
-import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
+import { doSpawnSession, killSession, killsInProgress, sessionDeathEmitter } from './session-lifecycle.js'
+import type { SessionDeathEvent } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { getReviewByThread } from './adversarial.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
@@ -53,24 +54,11 @@ export type BuildState = {
 // State
 // ---------------------------------------------------------------------------
 
-const builds = new Map<string, BuildState>()
-const sessionToBuild = new Map<string, string>()  // critic -> buildId
-const ownerToBuild = new Map<string, string>()     // owner -> buildId
-const threadToBuild = new Map<string, string>()    // thread -> buildId
+const builds = new Map<string, BuildState>()           // ownerThreadId → state
+const activeParticipants = new Set<string>()            // O(1) sessionId membership check
 
 const CRITIC_TIMEOUT_MS = 20 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
-
-// ---------------------------------------------------------------------------
-// Map cleanup — single function for all exit paths
-// ---------------------------------------------------------------------------
-
-function cleanupBuildMaps(state: BuildState): void {
-  if (state.criticSessionId) sessionToBuild.delete(state.criticSessionId)
-  ownerToBuild.delete(state.ownerSessionId)
-  threadToBuild.delete(state.ownerThreadId)
-  builds.delete(state.buildId)
-}
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -86,6 +74,19 @@ const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
 })
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+export function findBuildBySession(sessionId: string): { state: BuildState; role: 'owner' | 'critic' } | null {
+  for (const state of builds.values()) {
+    if (state.phase === 'complete' || state.phase === 'cancelled') continue
+    if (state.criticSessionId === sessionId) return { state, role: 'critic' }
+    if (state.ownerSessionId === sessionId) return { state, role: 'owner' }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Lookups
 // ---------------------------------------------------------------------------
 
@@ -94,12 +95,11 @@ export function getActiveBuilds(): BuildState[] {
 }
 
 export function getBuildByThread(threadId: string): BuildState | undefined {
-  const buildId = threadToBuild.get(threadId)
-  return buildId ? builds.get(buildId) : undefined
+  return builds.get(threadId)
 }
 
 export function isBuildParticipant(sessionId: string): boolean {
-  return sessionToBuild.has(sessionId) || ownerToBuild.has(sessionId)
+  return activeParticipants.has(sessionId)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ export async function startBuild(
   task?: string,
   worktreeTarget?: string,
 ): Promise<BuildState> {
-  if (threadToBuild.has(ownerThreadId)) {
+  if (builds.has(ownerThreadId)) {
     throw new Error('A build is already in progress in this thread')
   }
   if (getReviewByThread(ownerThreadId)) {
@@ -170,9 +170,8 @@ export async function startBuild(
     worktreeBranch,
   }
 
-  builds.set(buildId, state)
-  threadToBuild.set(ownerThreadId, buildId)
-  ownerToBuild.set(ownerSessionId, buildId)
+  builds.set(ownerThreadId, state)
+  activeParticipants.add(ownerSessionId)
 
   try {
     const taskLine = task ? `\nTask: **${task}**` : ''
@@ -190,12 +189,11 @@ export async function startBuild(
       meta: { chat_id: ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
 
-    // Spawn critic
     // Critic spawns later — after owner posts implementation summary
     resetTimeout(state)
     return state
   } catch (err) {
-    cleanupBuildMaps(state)
+    cleanupState(state)
     throw err
   }
 }
@@ -204,8 +202,8 @@ export async function startBuild(
 // Cancel a build
 // ---------------------------------------------------------------------------
 
-export async function cancelBuild(buildId: string): Promise<void> {
-  const state = builds.get(buildId)
+export async function cancelBuild(threadId: string): Promise<void> {
+  const state = builds.get(threadId)
   if (!state) return
 
   state.phase = 'cancelled'
@@ -223,7 +221,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
   } catch (err) {
     process.stderr.write(`daemon: build cancel killSession failed: ${err}\n`)
   } finally {
-    cleanupBuildMaps(state)
+    cleanupState(state)
   }
 
   await gateway.send(state.ownerThreadId, `Build cancelled.`)
@@ -235,72 +233,57 @@ export async function cancelBuild(buildId: string): Promise<void> {
 // Core reply handler — called from bridge-server for ALL reply tool calls
 // ---------------------------------------------------------------------------
 
-const BUILDER_SENTINEL = '[builder→critic]'
-const CRITIC_SENTINEL = '[critic→builder]'
-
 export function onBuildReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
-  const firstLine = text.split('\n')[0].trim()
+  const found = findBuildBySession(sessionId)
+  if (!found) return
 
-  // Check if this is the critic posting
-  const memberBuildId = sessionToBuild.get(sessionId)
-  if (memberBuildId) {
-    const state = builds.get(memberBuildId)
-    if (!state || chatId !== state.ownerThreadId || state.criticSessionId !== sessionId) return
+  const { state, role } = found
+  if (chatId !== state.ownerThreadId) return
 
-    // Only process messages with the critic sentinel
-    if (!firstLine.startsWith(CRITIC_SENTINEL)) return
+  if (role === 'critic') {
+    if (state.criticSessionId !== sessionId) return
 
-    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
-    const secondLine = bodyText.split('\n')[0].trim()
-    const isLgtm = secondLine === '**LGTM**' || secondLine === 'LGTM'
+    const firstLine = text.split('\n')[0].trim()
+    const isLgtm = firstLine === '**LGTM**' || firstLine === 'LGTM'
     const event: BuildEvent = isLgtm ? 'critic_lgtm' : 'critic_feedback'
     const result = buildMachine.transition(state.phase, event)
     if (!result.ok) return
 
     state.messageIds.push(...sentMessageIds)
     if (isLgtm) {
-      void finishBuild(state, bodyText).catch(err => {
+      void finishBuild(state, text).catch(err => {
         process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
-        void cancelBuild(state.buildId).catch(() => {})
+        void cancelBuild(state.ownerThreadId).catch(() => {})
       })
     } else if (state.currentRound >= state.rounds) {
-      void finishBuild(state, bodyText).catch(err => {
+      void finishBuild(state, text).catch(err => {
         process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
-        void cancelBuild(state.buildId).catch(() => {})
+        void cancelBuild(state.ownerThreadId).catch(() => {})
       })
     } else {
       state.phase = result.to
       state.currentRound++
-      onCriticFeedback(state, bodyText)
+      onCriticFeedback(state, text)
     }
     return
   }
 
-  // Check if this is the owner posting during a build
-  const ownerBuildId = ownerToBuild.get(sessionId)
-  if (ownerBuildId) {
-    const state = builds.get(ownerBuildId)
-    if (!state || chatId !== state.ownerThreadId) return
-
-    // Only process messages with the builder sentinel
-    if (!firstLine.startsWith(BUILDER_SENTINEL)) return
-
-    const bodyText = text.slice(text.indexOf('\n') + 1).trim()
+  // Owner posting during a build
+  if (role === 'owner') {
     const result = buildMachine.transition(state.phase, 'owner_impl')
     if (!result.ok) return
 
     state.messageIds.push(...sentMessageIds)
     state.phase = result.to
-    onOwnerPosted(state, bodyText)
+    onOwnerPosted(state, text)
   }
 }
 
 /** Called when a critic bridge disconnects. Grace period before cancel. */
 export function onBuildParticipantDisconnect(sessionId: string): void {
-  const buildId = sessionToBuild.get(sessionId)
-  if (!buildId) return
-  const state = builds.get(buildId)
-  if (!state) return
+  const found = findBuildBySession(sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
 
   if (state.phase === 'reviewing' && state.criticSessionId === sessionId) {
     if (transport.has(sessionId)) return
@@ -317,22 +300,40 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
         return
       }
       process.stderr.write(`daemon: build critic did not reconnect, cancelling build\n`)
-      await cancelBuild(state.buildId)
+      await cancelBuild(state.ownerThreadId)
     }, 30_000)
   }
 }
 
 /** Called when a bridge registers — clears disconnect grace period. */
 export function onBuildParticipantReconnect(sessionId: string): void {
-  const buildId = sessionToBuild.get(sessionId)
-  if (!buildId) return
-  const state = builds.get(buildId)
-  if (!state || !state._disconnectTimer) return
+  const found = findBuildBySession(sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
+  if (!state._disconnectTimer) return
   clearTimeout(state._disconnectTimer)
   state._disconnectTimer = undefined
   resetTimeout(state)
   process.stderr.write(`daemon: build participant ${sessionId} reconnected, grace period cleared\n`)
 }
+
+// ---------------------------------------------------------------------------
+// Death emitter — handle unexpected critic kills
+// ---------------------------------------------------------------------------
+
+sessionDeathEmitter.on('death', (event: SessionDeathEvent) => {
+  if (event.wasOwner) return
+  const found = findBuildBySession(event.sessionId)
+  if (!found || found.role !== 'critic') return
+  const state = found.state
+
+  if (state.phase === 'complete' || state.phase === 'cancelled') return
+
+  process.stderr.write(`daemon: build critic ${event.sessionId} died unexpectedly, cancelling build\n`)
+  void cancelBuild(state.ownerThreadId).catch(err => {
+    process.stderr.write(`daemon: build cancel after death failed: ${err}\n`)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Turn handlers
@@ -352,7 +353,7 @@ function onOwnerPosted(state: BuildState, text: string): void {
     // First round — spawn critic with the implementation text as context
     void spawnCritic(state, text).catch(err => {
       process.stderr.write(`daemon: build: critic spawn failed in onOwnerPosted: ${err}\n`)
-      void cancelBuild(state.buildId).catch(() => {})
+      void cancelBuild(state.ownerThreadId).catch(() => {})
     })
   } else {
     // Subsequent rounds — relay to existing critic
@@ -386,9 +387,9 @@ function onCriticFeedback(state: BuildState, text: string): void {
 // ---------------------------------------------------------------------------
 
 async function finishBuild(state: BuildState, lastCriticText: string): Promise<void> {
-  // Kill critic — delete from map BEFORE nulling the field
+  // Kill critic
   if (state.criticSessionId) {
-    sessionToBuild.delete(state.criticSessionId)
+    activeParticipants.delete(state.criticSessionId)
     try {
       const info = registry.get(state.criticSessionId)
       if (info && !killsInProgress.has(state.criticSessionId)) {
@@ -423,7 +424,17 @@ function completeBuild(state: BuildState, approved: boolean, lastCriticText: str
 
   // Finalize — keep build messages (they're the work product)
   state.phase = 'complete'
-  cleanupBuildMaps(state)
+  cleanupState(state)
+}
+
+// ---------------------------------------------------------------------------
+// State cleanup
+// ---------------------------------------------------------------------------
+
+function cleanupState(state: BuildState): void {
+  if (state.criticSessionId) activeParticipants.delete(state.criticSessionId)
+  activeParticipants.delete(state.ownerSessionId)
+  builds.delete(state.ownerThreadId)
 }
 
 // ---------------------------------------------------------------------------
@@ -462,18 +473,19 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
   try {
     const result = await doSpawnSession(`Build CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
+      memberLabel: 'build-critic',
       promptBuilder: (sessionId, tmuxName) =>
         buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd, implementationText }),
     })
 
     state.criticSessionId = result.sessionId
-    sessionToBuild.set(result.sessionId, state.buildId)
+    activeParticipants.add(result.sessionId)
     void gateway.edit(state.ownerThreadId, statusMsg.id, `_Critic (**${result.name}**) reviewing..._`).catch(() => {})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: build critic spawn failed: ${msg}\n`)
     await gateway.send(state.ownerThreadId, `Failed to spawn build critic: ${msg}. Build cancelled.`)
-    void cancelBuild(state.buildId)
+    void cancelBuild(state.ownerThreadId)
   }
 }
 
@@ -504,7 +516,7 @@ function resetTimeout(state: BuildState): void {
           process.stderr.write(`daemon: build critic tmux session died\n`)
           if (state._heartbeat) clearInterval(state._heartbeat)
           await gateway.send(state.ownerThreadId, `Build critic (${criticInfo.tmuxName}) died. Cancelling.`).catch(() => {})
-          await cancelBuild(state.buildId)
+          await cancelBuild(state.ownerThreadId)
         }
       }
     }, 5 * 60 * 1000)
@@ -519,7 +531,6 @@ function resetTimeout(state: BuildState): void {
     process.stderr.write(`daemon: build turn timed out (${whose})\n`)
     const debugHint = criticName ? ` Check \`tmux attach -t ${criticName}\` to see what happened.` : ''
     await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
-    await cancelBuild(state.buildId)
+    await cancelBuild(state.ownerThreadId)
   }, timeoutMs)
 }
-
