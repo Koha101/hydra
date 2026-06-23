@@ -11,6 +11,7 @@ import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, h
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
+import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -286,6 +287,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const cancelBuildMatch = msg.content.match(/^(?:kill build)\s*$/i)
       if (cancelBuildMatch) {
         void handleCancelBuildIntercept(msg)
+        return
+      }
+
+      const designMatch = msg.content.match(/^(?:\/design|design):\s*([\s\S]+)$/i)
+      if (designMatch) {
+        void handleDesignIntercept(msg, designMatch[1].trim())
+        return
+      }
+
+      const cancelDesignMatch = msg.content.match(/^(?:kill design)\s*$/i)
+      if (cancelDesignMatch) {
+        void handleCancelDesignIntercept(msg)
         return
       }
     }

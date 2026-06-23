@@ -177,6 +177,8 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• `kill build` — cancel an in-progress build',
     '• `/review [N] [topic]` — adversarial review: critic challenges, owner defends',
     '• `kill review` — cancel an in-progress review',
+    '• `design: <topic>` — multi-persona design session (5 specialists propose, synthesize, refine)',
+    '• `kill design` — cancel an in-progress design session',
     '',
     '**Handoff & Recovery:**',
     '• 🤝 `handoff` / `handoff: <direction>` — distill context into an artifact',
