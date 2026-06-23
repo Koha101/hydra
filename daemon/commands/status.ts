@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR, PLATFORM } from '../config.js'
-import { registry, sessionEmoji } from '../sessions.js'
+import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
@@ -235,12 +235,15 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
     heartbeatAge = `${Math.round((Date.now() - hb.mtimeMs) / 1000)}s ago`
   } catch {}
 
+  const detachedCount = threadRegistry.detachedThreads().length
+
   const lines = [
     `**Daemon Health**`,
     `• Uptime: ${uptimeMin}m`,
     `• Gateway: ${PLATFORM}`,
     `• Heartbeat: ${heartbeatAge}`,
     `• Sessions: ${registry.size} total (${connectedSessions.length} connected, ${disconnectedSessions.length} disconnected)`,
+    `• Threads: ${threadRegistry.size} total (${detachedCount} crashed)`,
     `• Queued messages: ${queuedMsgCount}`,
   ]
 

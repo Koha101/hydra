@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { EventEmitter } from 'events'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
-import { registry, sessionEmoji } from './sessions.js'
+import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -33,6 +33,26 @@ const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 // ---------------------------------------------------------------------------
 
 export const killsInProgress = new Set<string>()
+
+// ---------------------------------------------------------------------------
+// Detach session — unlink session from its thread without killing tmux
+// ---------------------------------------------------------------------------
+
+export function detachSession(sessionId: string): void {
+  const info = registry.get(sessionId)
+  if (!info) return
+  const thread = threadRegistry.get(info.threadId)
+  if (thread && thread.currentSessionId === sessionId) {
+    thread.currentSessionId = null
+    const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+    if (histEntry) {
+      histEntry.endedAt = Date.now()
+      histEntry.messageCount = info.messageCount ?? 0
+      histEntry.claudeSessionId = info.claudeSessionId
+    }
+    threadRegistry.persist()
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Kill session
@@ -74,6 +94,17 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
         execSync(`git -C ${shq(info.worktreeRepo)} branch -D ${shq(branch)}`, { stdio: 'pipe' })
         process.stderr.write(`daemon: deleted branch ${branch}\n`)
       } catch {}
+    }
+
+    // Co-update ThreadRegistry before deleting from session registry
+    // (detachSession needs registry.get to work)
+    if (!info.isJoinMember) {
+      detachSession(info.sessionId)
+      const thread = threadRegistry.get(info.threadId)
+      if (thread) {
+        thread.anchorState = 'killed'
+        threadRegistry.persist()
+      }
     }
 
     // Don't delete thread mapping for join members — owner keeps it
@@ -394,7 +425,43 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   }
   registry.persist()
 
-  void setAnchorState(threadId!, 'live').catch(() => {})
+  // Co-update ThreadRegistry — join members don't claim the thread's currentSessionId
+  let thread = threadRegistry.get(threadId!)
+  if (!thread) {
+    thread = {
+      threadId: threadId!,
+      anchorMessageId,
+      threadUrl: url || undefined,
+      topic,
+      description: undefined,
+      anchorState: respawnCount > 0 ? 'zombie' : 'live',
+      respawnCount,
+      currentSessionId: isJoin ? null : sessionId,
+      createdAt: now,
+      lastActive: now,
+      totalMessages: 0,
+      sessionHistory: [],
+    }
+    threadRegistry.set(threadId!, thread)
+  } else {
+    if (!isJoin) thread.currentSessionId = sessionId
+    thread.lastActive = now
+    thread.threadUrl = url || thread.threadUrl
+    thread.anchorState = respawnCount > 0 ? 'zombie' : 'live'
+    if (respawnCount > 0) thread.respawnCount = respawnCount
+  }
+  thread.sessionHistory.push({
+    sessionId,
+    tmuxName,
+    originType: originType!,
+    originFrom,
+    startedAt: now,
+    messageCount: 0,
+    claudeSessionId: undefined,
+  })
+  threadRegistry.persist()
+
+  void setAnchorState(threadId!, respawnCount > 0 ? 'zombie' : 'live', respawnCount).catch(() => {})
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }

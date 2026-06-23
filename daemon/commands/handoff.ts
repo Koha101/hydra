@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR } from '../config.js'
-import { registry, sessionEmoji } from '../sessions.js'
+import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
@@ -196,7 +196,8 @@ export async function handleGoIntercept(msg: InboundMessage): Promise<void> {
 
   const handoffAnchor = gateway.getThreadAnchor(msg.channelId)
   const baseChatId = handoffAnchor?.channelId ?? msg.channelId
-  const topic = info.description ?? fallbackDescription(info.topic)
+  const thread = threadRegistry.get(info.threadId)
+  const topic = info.description ?? fallbackDescription(thread?.topic ?? info.topic)
 
   try {
     const result = await doSpawnSession(topic, baseChatId, undefined, {

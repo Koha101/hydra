@@ -1,5 +1,5 @@
 import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
@@ -16,6 +16,20 @@ import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
+
+// ---------------------------------------------------------------------------
+// Thread-primary session resolution
+// ---------------------------------------------------------------------------
+
+/** Resolve a thread/channel ID to a session ID — threadRegistry primary, registry.getByThread fallback */
+function resolveSessionForThread(channelId: string, existingThreadId?: string): string | undefined {
+  const thread = threadRegistry.get(channelId)
+    ?? (existingThreadId ? threadRegistry.get(existingThreadId) : undefined)
+  if (thread?.currentSessionId) return thread.currentSessionId
+  // Fallback to legacy threadToSession map
+  return registry.getByThread(channelId)
+    ?? (existingThreadId ? registry.getByThread(existingThreadId) : undefined)
+}
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -94,7 +108,7 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
 // ---------------------------------------------------------------------------
 
 gateway.onThreadDelete(threadId => {
-  const sessionId = registry.getByThread(threadId)
+  const sessionId = resolveSessionForThread(threadId)
   if (!sessionId) return
   const info = registry.get(sessionId)
   if (!info) return
@@ -104,7 +118,7 @@ gateway.onThreadDelete(threadId => {
 
 gateway.onMessageDelete((messageId, threadId) => {
   if (!threadId) return
-  const sessionId = registry.getByThread(threadId)
+  const sessionId = resolveSessionForThread(threadId)
   if (!sessionId) return
   const info = registry.get(sessionId)
   if (!info) return
@@ -332,8 +346,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     if (msg.isThread) {
-      const mappedSession = registry.getByThread(msg.channelId)
-        ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+      const mappedSession = resolveSessionForThread(msg.channelId, msg.existingThreadId)
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
@@ -433,8 +446,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
   let effectiveChatId = chat_id
 
   if (msg.isThread) {
-    const mappedSession = registry.getByThread(msg.channelId)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const mappedSession = resolveSessionForThread(msg.channelId, msg.existingThreadId)
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
@@ -443,8 +455,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
-    const mappedSession = registry.getByThread(chat_id)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const mappedSession = resolveSessionForThread(chat_id, msg.existingThreadId)
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!

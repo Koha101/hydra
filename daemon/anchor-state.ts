@@ -2,6 +2,16 @@ import { gateway } from './config.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
+// Lazy import to avoid circular dependency — sessions.ts imports AnchorState from here
+let _threadRegistry: { get(id: string): { anchorState: AnchorState | null } | undefined; persist(): void } | null = null
+async function getThreadRegistry() {
+  if (!_threadRegistry) {
+    const mod = await import('./sessions.js')
+    _threadRegistry = mod.threadRegistry
+  }
+  return _threadRegistry!
+}
+
 const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
 
 export async function setAnchorState(
@@ -42,4 +52,14 @@ export async function setAnchorState(
       }
       break
   }
+
+  // Co-update ThreadRegistry
+  try {
+    const tr = await getThreadRegistry()
+    const thread = tr.get(threadId)
+    if (thread) {
+      thread.anchorState = state
+      tr.persist()
+    }
+  } catch {}
 }
