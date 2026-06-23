@@ -2,11 +2,11 @@ import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { execSync } from 'child_process'
 import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
 import { pendingPermissions } from './permission.js'
-import { discoverClaudeSessionId } from './session-lifecycle.js'
+import { discoverClaudeSessionId, detachSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
@@ -196,6 +196,12 @@ export const socketServer = createServer((socket: Socket) => {
           return // tmux still alive
         } catch {}
         process.stderr.write(`daemon: session ${info.tmuxName} died (bridge + tmux gone)\n`)
+        detachSession(deadCheckId)
+        const thread = threadRegistry.get(info.threadId)
+        if (thread) {
+          thread.anchorState = 'crashed'
+          threadRegistry.persist()
+        }
         void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
         void setAnchorState(info.threadId, 'crashed').catch(() => {})
       }, 3000)

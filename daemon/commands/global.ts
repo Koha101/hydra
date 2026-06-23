@@ -3,7 +3,7 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { gateway, STATE_DIR } from '../config.js'
-import { registry, sessionEmoji } from '../sessions.js'
+import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
@@ -20,7 +20,10 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   // If spawn is typed in a thread with a dead session, target that thread so it gets reused
   let chatId = msg.channelId
   if (msg.isThread && msg.existingThreadId) {
-    const staleId = registry.getByThread(msg.existingThreadId)
+    // Check threadRegistry first, then fall back to legacy map
+    const thread = threadRegistry.get(msg.existingThreadId)
+    const staleId = thread?.currentSessionId
+      ?? registry.getByThread(msg.existingThreadId)
     if (staleId && registry.has(staleId)) {
       const staleInfo = registry.get(staleId)!
       let tmuxAlive = false

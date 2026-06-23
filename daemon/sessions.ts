@@ -4,6 +4,7 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
 import { atomicWriteFileSync } from './util.js'
+import type { AnchorState } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,6 +49,36 @@ export type ThreadMember = {
 }
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
+
+// ---------------------------------------------------------------------------
+// Thread types — thread-primary foundation
+// ---------------------------------------------------------------------------
+
+export type ThreadSessionEntry = {
+  sessionId: string
+  tmuxName: string
+  originType: 'spawn' | 'fork' | 'handoff'
+  originFrom?: string
+  startedAt: number
+  endedAt?: number
+  messageCount: number
+  claudeSessionId?: string
+}
+
+export type ThreadInfo = {
+  threadId: string
+  anchorMessageId?: string
+  threadUrl?: string
+  topic: string
+  description?: string
+  anchorState: AnchorState | null
+  respawnCount: number
+  currentSessionId: string | null
+  createdAt: number
+  lastActive: number
+  totalMessages: number
+  sessionHistory: ThreadSessionEntry[]
+}
 
 export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
@@ -200,6 +231,12 @@ export class SessionRegistry {
 
   resolveThreadSession(channelId: string, existingThreadId?: string, isThread?: boolean): SessionInfo | null {
     if (isThread === false) return null
+    // ThreadRegistry primary, legacy threadToSession fallback
+    const thread = threadRegistry.get(channelId)
+      ?? (existingThreadId ? threadRegistry.get(existingThreadId) : undefined)
+    if (thread?.currentSessionId) {
+      return this.sessions.get(thread.currentSessionId) ?? null
+    }
     const mappedSession = this.threadToSession.get(channelId)
       ?? (existingThreadId ? this.threadToSession.get(existingThreadId) : undefined)
     if (!mappedSession) return null
@@ -243,3 +280,178 @@ export class SessionRegistry {
 }
 
 export const registry = new SessionRegistry()
+
+// ---------------------------------------------------------------------------
+// ThreadRegistry — thread-primary foundation
+// ---------------------------------------------------------------------------
+
+export class ThreadRegistry {
+  readonly threads = new Map<string, ThreadInfo>()
+  private readonly threadsFile: string
+
+  constructor() {
+    this.threadsFile = join(STATE_DIR, 'threads.json')
+  }
+
+  get(threadId: string): ThreadInfo | undefined {
+    return this.threads.get(threadId)
+  }
+
+  has(threadId: string): boolean {
+    return this.threads.has(threadId)
+  }
+
+  set(threadId: string, info: ThreadInfo): void {
+    this.threads.set(threadId, info)
+  }
+
+  delete(threadId: string): void {
+    this.threads.delete(threadId)
+  }
+
+  values(): IterableIterator<ThreadInfo> {
+    return this.threads.values()
+  }
+
+  get size(): number { return this.threads.size }
+
+  /** Crashed threads eligible for recovery */
+  detachedThreads(): ThreadInfo[] {
+    return [...this.threads.values()].filter(t => t.currentSessionId === null && t.anchorState === 'crashed')
+  }
+
+  persist(): void {
+    try {
+      const data = [...this.threads.values()]
+      atomicWriteFileSync(this.threadsFile, JSON.stringify(data, null, 2) + '\n')
+    } catch (err) {
+      process.stderr.write(`daemon: failed to persist threads: ${err}\n`)
+    }
+  }
+
+  private loadPersisted(): void {
+    try {
+      const raw = readFileSync(this.threadsFile, 'utf8')
+      const data = JSON.parse(raw) as ThreadInfo[]
+      for (const info of data) {
+        this.threads.set(info.threadId, info)
+      }
+      if (data.length > 0) {
+        process.stderr.write(`daemon: restored ${data.length} thread(s)\n`)
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(`daemon: failed to load threads: ${err}\n`)
+      }
+    }
+  }
+
+  private migrateFromSessions(sessionRegistry: SessionRegistry): void {
+    const sorted = [...sessionRegistry.values()].sort((a, b) => a.createdAt - b.createdAt)
+    for (const session of sorted) {
+      if (session.isJoinMember) continue
+      const existing = this.threads.get(session.threadId)
+      if (existing) {
+        existing.sessionHistory.push({
+          sessionId: session.sessionId,
+          tmuxName: session.tmuxName,
+          originType: session.originType ?? 'spawn',
+          originFrom: session.originFrom,
+          startedAt: session.createdAt,
+          messageCount: session.messageCount ?? 0,
+          claudeSessionId: session.claudeSessionId,
+        })
+        existing.currentSessionId = session.sessionId
+        existing.totalMessages += (session.messageCount ?? 0)
+        if (session.lastActive > existing.lastActive) {
+          existing.lastActive = session.lastActive
+        }
+        continue
+      }
+
+      const thread: ThreadInfo = {
+        threadId: session.threadId,
+        anchorMessageId: session.anchorMessageId,
+        threadUrl: session.threadUrl,
+        topic: session.topic ?? '',
+        description: session.description,
+        anchorState: 'live',
+        respawnCount: session.respawnCount ?? 0,
+        currentSessionId: session.sessionId,
+        createdAt: session.createdAt,
+        lastActive: session.lastActive,
+        totalMessages: session.messageCount ?? 0,
+        sessionHistory: [{
+          sessionId: session.sessionId,
+          tmuxName: session.tmuxName,
+          originType: session.originType ?? 'spawn',
+          originFrom: session.originFrom,
+          startedAt: session.createdAt,
+          messageCount: session.messageCount ?? 0,
+          claudeSessionId: session.claudeSessionId,
+        }],
+      }
+      this.threads.set(session.threadId, thread)
+    }
+
+    if (this.threads.size > 0) {
+      this.persist()
+      process.stderr.write(`daemon: migrated ${this.threads.size} thread(s) from sessions\n`)
+    }
+  }
+
+  /** Boot: load persisted threads, migrate from sessions if first run, reconcile orphans */
+  boot(sessionRegistry: SessionRegistry): void {
+    this.loadPersisted()
+    if (this.threads.size === 0 && sessionRegistry.size > 0) {
+      this.migrateFromSessions(sessionRegistry)
+    }
+
+    // Reconcile: create ThreadInfo for sessions missing from threads
+    let orphans = 0
+    for (const session of sessionRegistry.values()) {
+      if (session.isJoinMember) continue
+      if (this.threads.has(session.threadId)) continue
+      this.threads.set(session.threadId, {
+        threadId: session.threadId,
+        anchorMessageId: session.anchorMessageId,
+        threadUrl: session.threadUrl,
+        topic: session.topic ?? '',
+        description: session.description,
+        anchorState: 'live',
+        respawnCount: session.respawnCount ?? 0,
+        currentSessionId: session.sessionId,
+        createdAt: session.createdAt,
+        lastActive: session.lastActive,
+        totalMessages: session.messageCount ?? 0,
+        sessionHistory: [{
+          sessionId: session.sessionId,
+          tmuxName: session.tmuxName,
+          originType: session.originType ?? 'spawn',
+          originFrom: session.originFrom,
+          startedAt: session.createdAt,
+          messageCount: session.messageCount ?? 0,
+          claudeSessionId: session.claudeSessionId,
+        }],
+      })
+      orphans++
+    }
+
+    // Detach threads referencing sessions that no longer exist
+    let detached = 0
+    for (const thread of this.threads.values()) {
+      if (thread.currentSessionId && !sessionRegistry.has(thread.currentSessionId)) {
+        thread.currentSessionId = null
+        thread.anchorState = 'crashed'
+        detached++
+      }
+    }
+
+    if (orphans > 0 || detached > 0) {
+      process.stderr.write(`daemon: thread reconcile: ${orphans} orphan(s), ${detached} detached\n`)
+      this.persist()
+    }
+  }
+}
+
+export const threadRegistry = new ThreadRegistry()
