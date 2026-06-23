@@ -12,6 +12,7 @@ import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
+import { getDesignByThread, handleDesignUserInput } from './design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -299,6 +300,14 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const cancelDesignMatch = msg.content.match(/^(?:kill design)\s*$/i)
       if (cancelDesignMatch) {
         void handleCancelDesignIntercept(msg)
+        return
+      }
+
+      // Design user input: next, done, audit, refine N,N
+      const designInput = msg.content.match(/^(?:next|done|audit|refine\s+[\d,\s]+)\s*$/i)
+      if (designInput && getDesignByThread(msg.channelId)) {
+        void handleDesignUserInput(msg.channelId, msg.content.trim())
+        void gateway.react(msg.channelId, msg.id, '👍').catch(() => {})
         return
       }
     }

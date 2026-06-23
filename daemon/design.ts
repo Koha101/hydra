@@ -3,6 +3,7 @@ import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
+import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -198,7 +199,101 @@ export async function cancelDesign(threadId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Reply handler — track persona proposals
+// User input handler (waiting phase)
+// ---------------------------------------------------------------------------
+
+export async function handleDesignUserInput(threadId: string, input: string): Promise<void> {
+  const state = designs.get(threadId)
+  if (!state || state.phase !== 'waiting') return
+
+  const cmd = input.toLowerCase().trim()
+
+  if (cmd === 'next') {
+    const result = designMachine.transition(state.phase, 'user_next')
+    if (!result.ok) return
+    state.phase = result.to
+    await spawnSynthesizer(state)
+  } else if (cmd === 'done') {
+    const result = designMachine.transition(state.phase, 'user_done')
+    if (!result.ok) return
+    state.phase = result.to
+    await gateway.send(threadId, `Design session complete.`)
+    designs.delete(threadId)
+  } else if (cmd === 'audit') {
+    const result = designMachine.transition(state.phase, 'user_audit')
+    if (!result.ok) return
+    state.phase = result.to
+    // TODO: Ticket 6 — spawn auditor
+    await gateway.send(threadId, `Audit phase — not yet implemented. Type \`done\` to finish.`)
+  } else if (cmd.startsWith('refine')) {
+    const result = designMachine.transition(state.phase, 'user_refine')
+    if (!result.ok) return
+    state.phase = result.to
+    // TODO: Ticket 5 — parse divergence numbers and route to relevant personas
+    await gateway.send(threadId, `Refinement phase — not yet implemented. Type \`done\` to finish.`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Synthesizer
+// ---------------------------------------------------------------------------
+
+async function spawnSynthesizer(state: DesignState): Promise<void> {
+  await gateway.send(state.ownerThreadId, `_Spawning synthesizer..._`)
+
+  try {
+    const result = await doSpawnSession(`Design synthesizer`, undefined, undefined, {
+      joinThread: state.ownerThreadId,
+      memberLabel: 'synthesizer',
+      promptBuilder: (sessionId, tmuxName) => designSynthesizerPrompt({
+        sessionId,
+        tmuxName,
+        topic: state.topic,
+        threadId: state.ownerThreadId,
+        personaNames: state.personas.map(p => p.name),
+      }),
+    })
+
+    state.synthesizerSessionId = result.sessionId
+    process.stderr.write(`daemon: design: synthesizer spawned as ${result.name}\n`)
+
+    state.timeout = setTimeout(async () => {
+      process.stderr.write(`daemon: design: synthesizer timeout\n`)
+      await gateway.send(state.ownerThreadId, `Synthesizer timed out. Type \`next\` to retry or \`done\` to end.`)
+      state.phase = 'waiting'
+    }, SYNTHESIS_TIMEOUT_MS)
+  } catch (err) {
+    process.stderr.write(`daemon: design: synthesizer spawn failed: ${err}\n`)
+    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`next\` to retry or \`done\` to end.`)
+    state.phase = 'waiting'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parse divergences from synthesizer output
+// ---------------------------------------------------------------------------
+
+function parseDivergences(text: string): Array<{ description: string; personas: string[]; impact: string }> {
+  const divergences: Array<{ description: string; personas: string[]; impact: string }> = []
+  const block = text.match(/\[divergences\]\n([\s\S]*?)(?:\n\n|```|$)/i)
+  if (!block) return divergences
+
+  const lines = block[1].split('\n').filter(l => l.trim())
+  for (const line of lines) {
+    const match = line.match(/^\d+\.\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(\w+)\s*$/)
+    if (match) {
+      divergences.push({
+        description: match[1].trim(),
+        personas: match[2].split(',').map(p => p.trim()),
+        impact: match[3].trim().toLowerCase(),
+      })
+    }
+  }
+  return divergences
+}
+
+// ---------------------------------------------------------------------------
+// Reply handler — track persona proposals + synthesizer output
 // ---------------------------------------------------------------------------
 
 export function onDesignReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
@@ -233,7 +328,35 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       return
     }
 
-    // TODO: Tickets 4-6 — handle synthesizer output, refinement replies, auditor output
+    // Synthesizer posting
+    if (state.synthesizerSessionId === sessionId && state.phase === 'synthesis') {
+      const firstLine = text.split('\n')[0].trim()
+      if (!firstLine.startsWith('[synthesizer→thread]')) return
+
+      if (state.timeout) clearTimeout(state.timeout)
+
+      // Parse divergences from output
+      state.divergences = parseDivergences(text)
+      process.stderr.write(`daemon: design: synthesizer posted, ${state.divergences.length} divergences found\n`)
+
+      const result = designMachine.transition(state.phase, 'synthesized')
+      if (result.ok) {
+        state.phase = result.to
+        const divList = state.divergences.length > 0
+          ? state.divergences.map((d, i) => `  ${i + 1}. ${d.description} (${d.impact})`).join('\n')
+          : '  (none identified)'
+        void gateway.send(threadId, [
+          `_Synthesis complete. ${state.divergences.length} divergence${state.divergences.length !== 1 ? 's' : ''} found._`,
+          ``,
+          divList,
+          ``,
+          `Type \`refine 1,2\` to refine specific divergences, \`audit\` for final review, or \`done\` to end.`,
+        ].join('\n')).catch(() => {})
+      }
+      return
+    }
+
+    // TODO: Tickets 5-6 — handle refinement replies, auditor output
   }
 }
 
