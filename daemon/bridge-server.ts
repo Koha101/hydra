@@ -10,6 +10,7 @@ import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
+import { isDesignParticipant, onDesignReply } from './design.js'
 import { setAnchorState } from './anchor-state.js'
 import type { ButtonDef } from '../gateway.js'
 
@@ -102,6 +103,10 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         // Build: detect reply from any build participant
         if (name === 'reply' && !result.isError && conn.sessionId && isBuildParticipant(conn.sessionId)) {
           onBuildReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
+        }
+        // Design: detect reply from any design participant
+        if (name === 'reply' && !result.isError && conn.sessionId && isDesignParticipant(conn.sessionId)) {
+          onDesignReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
         }
       }).catch(err => {
         transport.sendToBridge(conn, {
