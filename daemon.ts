@@ -9,7 +9,7 @@
  */
 
 import { join } from 'path'
-import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
+import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry } from './daemon/sessions.js'
@@ -65,13 +65,30 @@ try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
   const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
   const daemonConfig = JSON.stringify({ socket: SOCK_PATH, platform: PLATFORM })
+  const mcpJson = JSON.stringify({
+    mcpServers: {
+      discord: {
+        command: 'bun',
+        args: ['run', '--cwd', '${CLAUDE_PLUGIN_ROOT}', '--shell=bun', '--silent', 'start'],
+      },
+    },
+  }, null, 2)
+  const pluginJson = JSON.stringify({
+    name: 'discord',
+    description: 'Discord channel for Claude Code — messaging bridge with built-in access control.',
+    version: '0.0.4',
+    keywords: ['discord', 'messaging', 'channel', 'mcp'],
+  }, null, 2)
   const versionDirs = readdirSync(discordCache, { withFileTypes: true }).filter(d => d.isDirectory())
   for (const d of versionDirs) {
     const targetDir = join(discordCache, d.name)
     copyFileSync(bridgeSrc, join(targetDir, 'server.ts'))
     writeFileSync(join(targetDir, 'daemon.json'), daemonConfig)
+    writeFileSync(join(targetDir, '.mcp.json'), mcpJson)
+    mkdirSync(join(targetDir, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(targetDir, '.claude-plugin', 'plugin.json'), pluginJson)
   }
-  process.stderr.write(`daemon: synced bridge.ts + daemon.json into ${discordCache}/*/\n`)
+  process.stderr.write(`daemon: synced bridge.ts + daemon.json + .mcp.json into ${discordCache}/*/\n`)
 } catch (err) {
   process.stderr.write(`daemon: bridge sync skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
 }

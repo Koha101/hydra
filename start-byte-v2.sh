@@ -19,8 +19,7 @@ fi
 tmux kill-session -t "$SESSION" 2>/dev/null
 sleep 2
 
-# Copy bridge.ts into the plugin cache as server.ts so --channels works.
-# (Same pattern as start-byte.sh copying custom server.ts)
+# Symlink bridge.ts into the plugin cache as server.ts so it always runs from source.
 SRC="$SCRIPT_DIR/bridge.ts"
 DEST="$CONFIG_DIR/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts"
 if [ ! -f "$SRC" ]; then
@@ -31,8 +30,8 @@ if [ ! -d "$(dirname "$DEST")" ]; then
   echo "ERROR: plugin cache dir missing at $(dirname "$DEST")" >&2
   exit 1
 fi
-cp "$SRC" "$DEST" || { echo "ERROR: failed to copy bridge.ts into plugin cache" >&2; exit 1; }
-echo "$(date): synced bridge.ts into plugin cache as server.ts" >> ~/byte-restarts.log
+ln -sf "$SRC" "$DEST"
+echo "$(date): symlinked bridge.ts into plugin cache as server.ts" >> ~/byte-restarts.log
 
 # Start byte with --channels (bridge connects to daemon via unix socket)
 tmux new-session -d -s "$SESSION" \
