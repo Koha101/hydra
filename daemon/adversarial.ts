@@ -16,6 +16,7 @@ type ReviewEvent = 'critic_posted' | 'owner_posted' | 'final_round' | 'summary_p
 
 const OWNER_SENTINEL = '[owner→critic]'
 const CRITIC_SENTINEL = '[critic→owner]'
+const SUMMARY_SENTINEL = '[summary]'
 
 export type ReviewState = {
   reviewId: string
@@ -29,6 +30,8 @@ export type ReviewState = {
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
   _disconnectTimer?: ReturnType<typeof setTimeout>
+  _finalizing?: boolean
+  _cleanupNudged?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +54,8 @@ const reviews = new Map<string, ReviewState>()
 const sessionToReview = new Map<string, string>()
 const ownerToReview = new Map<string, string>()
 const threadToReview = new Map<string, string>()
+
+const cleaningUpThreads = new Set<string>()
 
 const CRITIC_TIMEOUT_MS = 10 * 60 * 1000
 const OWNER_TIMEOUT_MS = 30 * 60 * 1000
@@ -95,6 +100,9 @@ export async function startReview(
 ): Promise<ReviewState> {
   if (threadToReview.has(ownerThreadId)) {
     throw new Error('A review is already in progress in this thread')
+  }
+  if (cleaningUpThreads.has(ownerThreadId)) {
+    throw new Error('A previous review is still cleaning up — try again in a few seconds')
   }
   if (getBuildByThread(ownerThreadId)) {
     throw new Error('A build is in progress in this thread — finish or cancel it first')
@@ -151,7 +159,9 @@ export async function cancelReview(reviewId: string): Promise<void> {
   const state = reviews.get(reviewId)
   if (!state) return
 
-  state.phase = 'cancelled'
+  const transition = reviewMachine.transition(state.phase, 'cancel')
+  if (!transition.ok) return
+  state.phase = transition.to
   if (state.timeout) clearTimeout(state.timeout)
   if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
 
@@ -207,15 +217,21 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
     const state = reviews.get(ownerReviewId)
     if (!state || chatId !== state.ownerThreadId) return
 
-    // Cleanup phase — check for summary (no sentinel needed, just keyword)
+    // Cleanup phase — sentinel match, same pattern as round routing
     if (state.phase === 'cleanup') {
-      const summaryLine = firstLine.startsWith('**Review Summary**')
-      if (summaryLine) {
+      if (firstLine.startsWith(SUMMARY_SENTINEL)) {
         const result = reviewMachine.transition(state.phase, 'summary_posted')
         if (result.ok) {
           state.phase = result.to
           finalizeReview(state)
         }
+      } else if (!state._cleanupNudged) {
+        state._cleanupNudged = true
+        transport.sendOrQueue(state.ownerSessionId, {
+          type: 'notification',
+          content: `[system] Waiting for your review summary. Your first line must be \`${SUMMARY_SENTINEL}\`.`,
+          meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+        })
       }
       return
     }
@@ -329,23 +345,29 @@ async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<
     state.criticSessionId = undefined
   }
 
-  // If the owner's final defense already contains the summary, skip cleanup
-  if (lastOwnerText.split('\n')[0].trim().startsWith('**Review Summary**')) {
-    state.phase = 'complete'
-    finalizeReview(state)
-    return
+  // If the owner's final defense starts with the summary sentinel, skip cleanup
+  if (lastOwnerText.split('\n')[0].trim().startsWith(SUMMARY_SENTINEL)) {
+    const transition = reviewMachine.transition(state.phase, 'summary_posted')
+    if (transition.ok) {
+      state.phase = transition.to
+      finalizeReview(state)
+      return
+    }
   }
 
   completeReview(state)
 }
 
 function completeReview(state: ReviewState): void {
-  // Phase already set to 'cleanup' by the dispatcher
+  if (state.phase === 'complete' || state.phase === 'cancelled' || state._finalizing) return
 
   state.timeout = setTimeout(async () => {
+    if (state.phase !== 'cleanup') return
     process.stderr.write(`daemon: review cleanup timed out, auto-finalizing\n`)
     await gateway.send(state.ownerThreadId, `**Review Summary** — auto-closed (owner did not post summary)`).catch(() => {})
-    state.phase = 'complete'
+    const transition = reviewMachine.transition(state.phase, 'timeout')
+    if (!transition.ok) return
+    state.phase = transition.to
     finalizeReview(state)
   }, 5 * 60 * 1000)
 
@@ -355,7 +377,10 @@ function completeReview(state: ReviewState): void {
       `[system] Adversarial review complete (${state.rounds} round${state.rounds > 1 ? 's' : ''}).`,
       `Post a brief summary to your thread. After you post, the review messages will be cleaned up.`,
       ``,
+      `**Message routing:** Your first line MUST be \`${SUMMARY_SENTINEL}\`. Messages without this tag won't complete the review.`,
+      ``,
       `Use this format:`,
+      `${SUMMARY_SENTINEL}`,
       `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
       `- ✅ issue — fixed/will fix`,
       `- ⚠️ issue — acknowledged, deferred`,
@@ -367,14 +392,16 @@ function completeReview(state: ReviewState): void {
 
 async function deleteReviewMessages(state: ReviewState): Promise<void> {
   let failures = 0
-  for (const msgId of state.messageIds) {
+  for (let i = 0; i < state.messageIds.length; i++) {
     try {
-      await gateway.delete(state.ownerThreadId, msgId)
+      await gateway.delete(state.ownerThreadId, state.messageIds[i])
     } catch (err) {
       failures++
-      process.stderr.write(`daemon: review cleanup: failed to delete message ${msgId}: ${err}\n`)
+      process.stderr.write(`daemon: review cleanup: failed to delete message ${state.messageIds[i]}: ${err}\n`)
     }
-    await new Promise(r => setTimeout(r, 1000))
+    if (i < state.messageIds.length - 1) {
+      await new Promise(r => setTimeout(r, 1000))
+    }
   }
   if (failures > 0) {
     process.stderr.write(`daemon: review cleanup: ${failures}/${state.messageIds.length} message deletes failed\n`)
@@ -383,13 +410,24 @@ async function deleteReviewMessages(state: ReviewState): Promise<void> {
 
 function finalizeReview(state: ReviewState): void {
   if (state.phase !== 'complete') return
-  if (state.timeout) clearTimeout(state.timeout)
+  if (state._finalizing) return
+  state._finalizing = true
+
+  if (state.timeout) {
+    clearTimeout(state.timeout)
+    state.timeout = undefined
+  }
 
   cleanupReviewMaps(state)
 
-  void deleteReviewMessages(state).catch(err => {
-    process.stderr.write(`daemon: review message cleanup failed: ${err}\n`)
-  })
+  cleaningUpThreads.add(state.ownerThreadId)
+  void deleteReviewMessages(state)
+    .catch(err => {
+      process.stderr.write(`daemon: review message cleanup failed: ${err}\n`)
+    })
+    .finally(() => {
+      cleaningUpThreads.delete(state.ownerThreadId)
+    })
 }
 
 // ---------------------------------------------------------------------------
