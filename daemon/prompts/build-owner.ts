@@ -1,10 +1,10 @@
 export function buildOwnerPrompt(opts: {
   rounds: number
   task?: string
-  shortId: string
+  buildId: string
   worktreePath?: string
 }): string {
-  const { rounds, task, shortId, worktreePath } = opts
+  const { rounds, task, buildId, worktreePath } = opts
 
   const commitInstructions = worktreePath
     ? [
@@ -13,7 +13,7 @@ export function buildOwnerPrompt(opts: {
       ]
     : [
         `2. Run the tests for your changed files. Do NOT post your summary until tests pass.`,
-        `3. Commit your changes to a branch. Follow the project's CLAUDE.md/CLAUDE.local.md for git workflow conventions (e.g. graphite vs raw git). If no convention exists, use \`git checkout -b build/${shortId} && git add -A && git commit -m "build: <summary>"\`.`,
+        `3. Commit your changes to a branch. Follow the project's CLAUDE.md/CLAUDE.local.md for git workflow conventions (e.g. graphite vs raw git). If no convention exists, use \`git checkout -b build/${buildId} && git add -A && git commit -m "build: <summary>"\`.`,
       ]
 
   return [

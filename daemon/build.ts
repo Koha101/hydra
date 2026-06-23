@@ -33,6 +33,7 @@ export type BuildPhase =
   | 'cancelled'
 
 export type BuildState = {
+  buildId: string
   ownerThreadId: string
   ownerSessionId: string
   criticSessionId?: string
@@ -120,7 +121,7 @@ export async function startBuild(
     throw new Error('A review is in progress in this thread — finish or cancel it first')
   }
 
-  const shortId = Math.random().toString(36).slice(2, 10)
+  const buildId = Math.random().toString(36).slice(2, 10)
 
   // Create worktree if requested
   let worktreeRepo: string | undefined
@@ -138,7 +139,7 @@ export async function startBuild(
     }
 
     const branch = taskToBranchName(task ?? 'build')
-    const wtDir = resolve(repoDir, '..', '.worktrees', `${worktreeTarget}-build-${shortId}`)
+    const wtDir = resolve(repoDir, '..', '.worktrees', `${worktreeTarget}-build-${buildId}`)
 
     try { execSync(`git -C ${shq(repoDir)} worktree remove ${shq(wtDir)} --force 2>/dev/null`, { stdio: 'pipe' }) } catch {}
     try { execSync(`git -C ${shq(repoDir)} worktree prune 2>/dev/null`, { stdio: 'pipe' }) } catch {}
@@ -158,6 +159,7 @@ export async function startBuild(
   }
 
   const state: BuildState = {
+    buildId,
     ownerThreadId,
     ownerSessionId,
     task: task ?? 'implement the design discussed above',
@@ -186,7 +188,7 @@ export async function startBuild(
     // Tell owner to start implementing
     transport.sendOrQueue(ownerSessionId, {
       type: 'notification',
-      content: buildOwnerPrompt({ rounds, task, shortId, worktreePath }),
+      content: buildOwnerPrompt({ rounds, task, buildId, worktreePath }),
       meta: { chat_id: ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
 
