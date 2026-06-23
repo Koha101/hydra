@@ -55,7 +55,7 @@ const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
   spawning:    { all_spawned: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
   independent: { all_proposed: 'waiting',    timeout: 'cancelled', cancel: 'cancelled' },
   waiting:     { user_next: 'synthesis', user_refine: 'refinement', user_audit: 'audit', user_done: 'complete', cancel: 'cancelled' },
-  synthesis:   { synthesized: 'waiting',     timeout: 'cancelled', cancel: 'cancelled' },
+  synthesis:   { synthesized: 'waiting',     timeout: 'waiting', cancel: 'cancelled' },
   refinement:  { refined: 'waiting',         timeout: 'cancelled', cancel: 'cancelled' },
   audit:       { audited: 'complete',        timeout: 'cancelled', cancel: 'cancelled' },
   complete:    {},
@@ -220,17 +220,11 @@ export async function handleDesignUserInput(threadId: string, input: string): Pr
     await gateway.send(threadId, `Design session complete.`)
     designs.delete(threadId)
   } else if (cmd === 'audit') {
-    const result = designMachine.transition(state.phase, 'user_audit')
-    if (!result.ok) return
-    state.phase = result.to
-    // TODO: Ticket 6 — spawn auditor
-    await gateway.send(threadId, `Audit phase — not yet implemented. Type \`done\` to finish.`)
+    // TODO: Ticket 6 — spawn auditor. Stay in waiting until implemented.
+    await gateway.send(threadId, `Audit phase — not yet implemented. Type \`next\`, \`refine\`, or \`done\`.`)
   } else if (cmd.startsWith('refine')) {
-    const result = designMachine.transition(state.phase, 'user_refine')
-    if (!result.ok) return
-    state.phase = result.to
-    // TODO: Ticket 5 — parse divergence numbers and route to relevant personas
-    await gateway.send(threadId, `Refinement phase — not yet implemented. Type \`done\` to finish.`)
+    // TODO: Ticket 5 — parse divergence numbers and route to relevant personas. Stay in waiting until implemented.
+    await gateway.send(threadId, `Refinement phase — not yet implemented. Type \`next\`, \`audit\`, or \`done\`.`)
   }
 }
 
@@ -259,13 +253,15 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
 
     state.timeout = setTimeout(async () => {
       process.stderr.write(`daemon: design: synthesizer timeout\n`)
+      const r = designMachine.transition(state.phase, 'timeout')
+      if (r.ok) state.phase = r.to
       await gateway.send(state.ownerThreadId, `Synthesizer timed out. Type \`next\` to retry or \`done\` to end.`)
-      state.phase = 'waiting'
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: synthesizer spawn failed: ${err}\n`)
+    const r = designMachine.transition(state.phase, 'timeout')
+    if (r.ok) state.phase = r.to
     await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`next\` to retry or \`done\` to end.`)
-    state.phase = 'waiting'
   }
 }
 

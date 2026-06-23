@@ -409,12 +409,18 @@ describe('design transition table', () => {
     }
   })
 
-  test('timeout cancels from any active phase', () => {
-    for (const phase of ['spawning', 'independent', 'synthesis', 'refinement', 'audit']) {
+  test('timeout cancels from most active phases', () => {
+    for (const phase of ['spawning', 'independent', 'refinement', 'audit']) {
       const r = sm.transition(phase as any, 'timeout' as any)
       expect(r.ok).toBe(true)
       if (r.ok) expect(r.to).toBe('cancelled')
     }
+  })
+
+  test('synthesis timeout returns to waiting (retry)', () => {
+    const r = sm.transition('synthesis' as any, 'timeout' as any)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('waiting')
   })
 
   test('complete and cancelled are terminal', () => {
