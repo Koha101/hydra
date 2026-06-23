@@ -5,6 +5,7 @@ import { transport } from './bridge-transport.js'
 import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
+import { designAuditorPrompt } from './prompts/design-auditor.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -227,8 +228,10 @@ export async function handleDesignUserInput(threadId: string, input: string): Pr
     await gateway.send(threadId, `Design session complete.`)
     designs.delete(threadId)
   } else if (cmd === 'audit') {
-    // TODO: Ticket 6 — spawn auditor. Stay in waiting until implemented.
-    await gateway.send(threadId, `Audit phase — not yet implemented. Type \`next\`, \`refine\`, or \`done\`.`)
+    const result = designMachine.transition(state.phase, 'user_audit')
+    if (!result.ok) return
+    state.phase = result.to
+    await spawnAuditor(state)
   } else if (cmd.startsWith('refine')) {
     // Parse divergence numbers: "refine 1,3" or "refine 1, 2"
     const nums = cmd.replace('refine', '').split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
@@ -289,6 +292,45 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
     const r = designMachine.transition(state.phase, 'timeout')
     if (r.ok) state.phase = r.to
     await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`next\` to retry or \`done\` to end.`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auditor
+// ---------------------------------------------------------------------------
+
+async function spawnAuditor(state: DesignState): Promise<void> {
+  await gateway.send(state.ownerThreadId, `_Spawning auditor for final review..._`)
+
+  try {
+    const result = await doSpawnSession(`Design auditor`, undefined, undefined, {
+      joinThread: state.ownerThreadId,
+      memberLabel: 'auditor',
+      promptBuilder: (sessionId, tmuxName) => designAuditorPrompt({
+        sessionId,
+        tmuxName,
+        topic: state.topic,
+        threadId: state.ownerThreadId,
+        personaNames: state.personas.map(p => p.name),
+      }),
+    })
+
+    state.auditorSessionId = result.sessionId
+    process.stderr.write(`daemon: design: auditor spawned as ${result.name}\n`)
+
+    state.timeout = setTimeout(async () => {
+      process.stderr.write(`daemon: design: auditor timeout\n`)
+      const r = designMachine.transition(state.phase, 'timeout')
+      if (r.ok) state.phase = r.to
+      await gateway.send(state.ownerThreadId, `Auditor timed out. Cancelling design.`)
+      await cancelDesign(state.ownerThreadId)
+    }, SYNTHESIS_TIMEOUT_MS)
+  } catch (err) {
+    process.stderr.write(`daemon: design: auditor spawn failed: ${err}\n`)
+    // Fall back to complete without audit
+    state.phase = 'complete'
+    await gateway.send(state.ownerThreadId, `Auditor failed to spawn. Design complete without audit.`)
+    designs.delete(state.ownerThreadId)
   }
 }
 
@@ -471,7 +513,22 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       return
     }
 
-    // TODO: Ticket 6 — handle auditor output
+    // Auditor posting
+    if (state.auditorSessionId === sessionId && state.phase === 'audit') {
+      const firstLine = text.split('\n')[0].trim()
+      if (!firstLine.startsWith('[auditor→thread]')) return
+
+      if (state.timeout) clearTimeout(state.timeout)
+      process.stderr.write(`daemon: design: auditor posted findings\n`)
+
+      const result = designMachine.transition(state.phase, 'audited')
+      if (result.ok) {
+        state.phase = result.to
+        void gateway.send(threadId, `_Audit complete. Design session finished._`).catch(() => {})
+        designs.delete(threadId)
+      }
+      return
+    }
   }
 }
 
