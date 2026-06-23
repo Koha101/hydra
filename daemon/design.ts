@@ -24,6 +24,7 @@ type DesignEvent =
   | 'user_next'
   | 'user_refine'
   | 'user_done'
+  | 'user_audit'
   | 'refined'
   | 'audited'
   | 'timeout'
@@ -51,7 +52,7 @@ export type DesignState = {
 const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
   spawning:    { all_spawned: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
   independent: { all_proposed: 'waiting',    timeout: 'cancelled', cancel: 'cancelled' },
-  waiting:     { user_next: 'synthesis', user_refine: 'refinement', user_done: 'complete', cancel: 'cancelled' },
+  waiting:     { user_next: 'synthesis', user_refine: 'refinement', user_audit: 'audit', user_done: 'complete', cancel: 'cancelled' },
   synthesis:   { synthesized: 'waiting',     timeout: 'cancelled', cancel: 'cancelled' },
   refinement:  { refined: 'waiting',         timeout: 'cancelled', cancel: 'cancelled' },
   audit:       { audited: 'complete',        timeout: 'cancelled', cancel: 'cancelled' },
