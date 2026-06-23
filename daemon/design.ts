@@ -2,6 +2,7 @@ import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { createStateMachine } from './state-machine.js'
+import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,8 +70,7 @@ const designs = new Map<string, DesignState>()  // keyed by threadId
 const PERSONA_TIMEOUT_MS = 15 * 60 * 1000
 const SYNTHESIS_TIMEOUT_MS = 10 * 60 * 1000
 
-export const PERSONA_NAMES = ['pragmatist', 'systems_thinker', 'adversary', 'operator', 'historian'] as const
-export type PersonaName = typeof PERSONA_NAMES[number]
+export { PERSONA_NAMES, PersonaName }
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -126,7 +126,7 @@ export async function startDesign(
       const result = await doSpawnSession(`Design persona: ${name}`, undefined, undefined, {
         joinThread: threadId,
         memberLabel: name,
-        promptBuilder: (sessionId, tmuxName) => buildPersonaPrompt(sessionId, tmuxName, name, topic, threadId),
+        promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId }),
       })
       state.personas.push({ name, sessionId: result.sessionId, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)
@@ -237,65 +237,6 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
   }
 }
 
-// ---------------------------------------------------------------------------
-// Persona prompt builder
-// ---------------------------------------------------------------------------
-
-const PERSONA_DESCRIPTIONS: Record<PersonaName, { optimizes: string; lens: string }> = {
-  pragmatist: {
-    optimizes: 'simplicity and deliverability',
-    lens: 'What is the simplest thing that works today? How do we migrate/switch over? What can we cut?',
-  },
-  systems_thinker: {
-    optimizes: 'composability and long-term strength',
-    lens: 'What does this look like at 10x scale and in 4 years? How strong are the contracts? What is the long-term vision?',
-  },
-  adversary: {
-    optimizes: 'robustness and failure resistance',
-    lens: 'How does this break? What are the failure modes? What edge cases will cause problems?',
-  },
-  operator: {
-    optimizes: 'operability and debuggability',
-    lens: 'How do I deploy this? How do I monitor it? How do I debug it at 3am?',
-  },
-  historian: {
-    optimizes: 'learning from precedent',
-    lens: 'What did we try before? What patterns worked or failed in this codebase? What can we learn from prior decisions?',
-  },
-}
-
-function buildPersonaPrompt(
-  sessionId: string,
-  tmuxName: string,
-  persona: PersonaName,
-  topic: string,
-  threadId: string,
-): string {
-  const desc = PERSONA_DESCRIPTIONS[persona]
-  return [
-    `You are ${tmuxName}, the **${persona.replace('_', ' ')}** in a multi-persona design session.`,
-    ``,
-    `Your session_id is ${sessionId}.`,
-    ``,
-    `**Topic:** ${topic}`,
-    ``,
-    `**Your role:** You optimize for **${desc.optimizes}**.`,
-    `${desc.lens}`,
-    ``,
-    `**Instructions:**`,
-    `1. Call fetch_messages(channel="${threadId}", limit=100) to read the design context`,
-    `2. Read any code files, wiki articles, or documents referenced in the thread`,
-    `3. Form your proposal INDEPENDENTLY — do NOT read or reference other personas' proposals`,
-    `4. Post your proposal using reply(chat_id="${threadId}")`,
-    ``,
-    `**Message routing:**`,
-    `- Your first line MUST be exactly: \`[${persona}→thread]\``,
-    `- Post exactly ONE proposal. Be specific — cite code, suggest interfaces, name tradeoffs.`,
-    `- Structure: Summary (2-3 sentences) → Approach → Key decisions → Risks from your lens`,
-    ``,
-    `After posting, **WAIT**. You may be asked to refine your position in a later phase.`,
-  ].join('\n')
-}
 
 // ---------------------------------------------------------------------------
 // Exports for state machine testing
