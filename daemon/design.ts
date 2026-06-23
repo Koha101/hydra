@@ -47,6 +47,7 @@ export type DesignState = {
   refinementQueue?: Array<{ description: string; personas: string[]; impact: string }>
   refinementExpected: number
   refinementResponses: number
+  refinementRespondedIds: Set<string>
   timeout?: ReturnType<typeof setTimeout>
 }
 
@@ -116,6 +117,7 @@ export async function startDesign(
     currentDivergence: 0,
     refinementExpected: 0,
     refinementResponses: 0,
+    refinementRespondedIds: new Set(),
   }
 
   designs.set(threadId, state)
@@ -344,6 +346,7 @@ async function processNextDivergence(state: DesignState): Promise<void> {
   const divergence = state.refinementQueue.shift()!
   state.currentDivergence++
   state.refinementResponses = 0
+  state.refinementRespondedIds = new Set()
 
   // Find relevant personas
   const relevant = state.personas.filter(p =>
@@ -455,6 +458,9 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       const expectedTag = `[${persona.name}→thread]`
       if (!firstLine.startsWith(expectedTag)) return
 
+      // Dedup: skip if this persona already responded for current divergence
+      if (state.refinementRespondedIds.has(persona.sessionId)) return
+      state.refinementRespondedIds.add(persona.sessionId)
       state.refinementResponses++
       process.stderr.write(`daemon: design: ${persona.name} refined (${state.refinementResponses}/${state.refinementExpected})\n`)
 
