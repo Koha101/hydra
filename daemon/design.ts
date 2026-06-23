@@ -138,10 +138,19 @@ export async function startDesign(
     }
   }
 
+  // Adjust expected count for failed spawns
+  state.proposalsExpected = state.personas.length
+  if (state.proposalsExpected === 0) {
+    await gateway.send(threadId, `No personas could be spawned. Design cancelled.`)
+    designs.delete(threadId)
+    state.phase = 'cancelled'
+    return state
+  }
+
   const spawnResult = designMachine.transition(state.phase, 'all_spawned')
   if (spawnResult.ok) state.phase = spawnResult.to
 
-  await gateway.send(threadId, `_All ${state.personas.length} personas spawned. Waiting for proposals..._`)
+  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned. Waiting for proposals..._`)
 
   // Set timeout for proposals
   state.timeout = setTimeout(async () => {
