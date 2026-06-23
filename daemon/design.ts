@@ -1,6 +1,7 @@
 import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
+import { transport } from './bridge-transport.js'
 import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
@@ -43,7 +44,9 @@ export type DesignState = {
   proposalsReceived: number
   divergences: Array<{ description: string; personas: string[]; impact: string }>
   currentDivergence: number
-  nextPhaseAfterWaiting?: 'synthesis' | 'refinement' | 'audit'
+  refinementQueue?: Array<{ description: string; personas: string[]; impact: string }>
+  refinementExpected: number
+  refinementResponses: number
   timeout?: ReturnType<typeof setTimeout>
 }
 
@@ -111,6 +114,8 @@ export async function startDesign(
     proposalsReceived: 0,
     divergences: [],
     currentDivergence: 0,
+    refinementExpected: 0,
+    refinementResponses: 0,
   }
 
   designs.set(threadId, state)
@@ -223,8 +228,28 @@ export async function handleDesignUserInput(threadId: string, input: string): Pr
     // TODO: Ticket 6 — spawn auditor. Stay in waiting until implemented.
     await gateway.send(threadId, `Audit phase — not yet implemented. Type \`next\`, \`refine\`, or \`done\`.`)
   } else if (cmd.startsWith('refine')) {
-    // TODO: Ticket 5 — parse divergence numbers and route to relevant personas. Stay in waiting until implemented.
-    await gateway.send(threadId, `Refinement phase — not yet implemented. Type \`next\`, \`audit\`, or \`done\`.`)
+    // Parse divergence numbers: "refine 1,3" or "refine 1, 2"
+    const nums = cmd.replace('refine', '').split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
+    if (nums.length === 0 || state.divergences.length === 0) {
+      await gateway.send(threadId, `No divergences to refine. Type \`next\`, \`audit\`, or \`done\`.`)
+      return
+    }
+
+    const selected = nums
+      .map(n => state.divergences[n - 1])  // 1-indexed
+      .filter(Boolean)
+
+    if (selected.length === 0) {
+      await gateway.send(threadId, `Invalid divergence numbers. Available: 1-${state.divergences.length}`)
+      return
+    }
+
+    const result = designMachine.transition(state.phase, 'user_refine')
+    if (!result.ok) return
+    state.phase = result.to
+    state.currentDivergence = 0
+
+    await runRefinement(state, selected)
   }
 }
 
@@ -289,7 +314,79 @@ function parseDivergences(text: string): Array<{ description: string; personas: 
 }
 
 // ---------------------------------------------------------------------------
-// Reply handler — track persona proposals + synthesizer output
+// Refinement
+// ---------------------------------------------------------------------------
+
+async function runRefinement(
+  state: DesignState,
+  selectedDivergences: Array<{ description: string; personas: string[]; impact: string }>,
+): Promise<void> {
+  state.refinementQueue = selectedDivergences
+  state.refinementResponses = 0
+  state.refinementExpected = 0
+
+  await processNextDivergence(state)
+}
+
+async function processNextDivergence(state: DesignState): Promise<void> {
+  if (!state.refinementQueue || state.refinementQueue.length === 0) {
+    // All divergences refined
+    const result = designMachine.transition(state.phase, 'refined')
+    if (result.ok) state.phase = result.to
+    void gateway.send(state.ownerThreadId, [
+      `_Refinement complete._`,
+      ``,
+      `Type \`next\` to re-synthesize, \`audit\` for final review, or \`done\` to end.`,
+    ].join('\n')).catch(() => {})
+    return
+  }
+
+  const divergence = state.refinementQueue.shift()!
+  state.currentDivergence++
+  state.refinementResponses = 0
+
+  // Find relevant personas
+  const relevant = state.personas.filter(p =>
+    divergence.personas.some(name => name === p.name || name === p.name.replace('_', ' '))
+  )
+  state.refinementExpected = relevant.length
+
+  if (relevant.length === 0) {
+    await gateway.send(state.ownerThreadId, `_Divergence ${state.currentDivergence}: no matching personas found. Skipping._`)
+    await processNextDivergence(state)
+    return
+  }
+
+  await gateway.send(state.ownerThreadId, [
+    `_Refining divergence ${state.currentDivergence}: **${divergence.description}** (${divergence.impact})_`,
+    `_Asking: ${relevant.map(p => p.name).join(', ')}_`,
+  ].join('\n'))
+
+  // Notify each relevant persona
+  for (const persona of relevant) {
+    transport.sendOrQueue(persona.sessionId, {
+      type: 'notification',
+      content: [
+        `[system] Refinement requested on divergence: **${divergence.description}**`,
+        ``,
+        `Critique the synthesized composite design from your lens (${persona.name}).`,
+        `Suggest specific modifications — don't argue with other personas, critique the proposal.`,
+        ``,
+        `Post your response with: \`[${persona.name}→thread]\``,
+      ].join('\n'),
+      meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+    })
+  }
+
+  // Timeout for refinement responses
+  state.timeout = setTimeout(async () => {
+    process.stderr.write(`daemon: design: refinement timeout\n`)
+    await processNextDivergence(state)
+  }, PERSONA_TIMEOUT_MS)
+}
+
+// ---------------------------------------------------------------------------
+// Reply handler — track persona proposals + synthesizer output + refinement
 // ---------------------------------------------------------------------------
 
 export function onDesignReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
@@ -352,7 +449,23 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       return
     }
 
-    // TODO: Tickets 5-6 — handle refinement replies, auditor output
+    // Refinement responses from personas
+    if (persona && state.phase === 'refinement') {
+      const firstLine = text.split('\n')[0].trim()
+      const expectedTag = `[${persona.name}→thread]`
+      if (!firstLine.startsWith(expectedTag)) return
+
+      state.refinementResponses++
+      process.stderr.write(`daemon: design: ${persona.name} refined (${state.refinementResponses}/${state.refinementExpected})\n`)
+
+      if (state.refinementResponses >= state.refinementExpected) {
+        if (state.timeout) clearTimeout(state.timeout)
+        void processNextDivergence(state)
+      }
+      return
+    }
+
+    // TODO: Ticket 6 — handle auditor output
   }
 }
 
