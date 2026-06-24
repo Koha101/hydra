@@ -14,6 +14,8 @@ import { designBriefPrompt } from './prompts/design-brief.js'
 
 export type DesignPhase =
   | 'spawning'       // spawning persona sessions
+  | 'questioning'    // personas posting clarifying questions
+  | 'answering'      // waiting for user to answer aggregated questions
   | 'independent'    // waiting for all proposals
   | 'synthesis'      // synthesizer analyzing proposals
   | 'refinement'     // targeted persona refinement
@@ -24,6 +26,8 @@ export type DesignPhase =
 
 type DesignEvent =
   | 'all_spawned'
+  | 'all_questions'
+  | 'answers_provided'
   | 'all_proposed'
   | 'synthesized'
   | 'refined'
@@ -40,6 +44,9 @@ export type DesignState = {
   synthesizerSessionId?: string
   auditorSessionId?: string
   briefSessionId?: string
+  questionsExpected: number
+  questionsReceived: number
+  questions: Array<{ persona: string; questions: string }>
   proposalsExpected: number
   proposalsReceived: number
   divergences: Array<{ description: string; personas: string[]; impact: string }>
@@ -57,7 +64,9 @@ export type DesignState = {
 // ---------------------------------------------------------------------------
 
 const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
-  spawning:    { all_spawned: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
+  spawning:    { all_spawned: 'questioning', timeout: 'cancelled', cancel: 'cancelled' },
+  questioning: { all_questions: 'answering', timeout: 'answering', cancel: 'cancelled' },  // timeout advances (some personas may not have questions)
+  answering:   { answers_provided: 'independent', cancel: 'cancelled' },
   independent: { all_proposed: 'synthesis',  timeout: 'cancelled', cancel: 'cancelled' },
   synthesis:   { synthesized: 'refinement',  timeout: 'synthesis', cancel: 'cancelled' },  // timeout retries
   refinement:  { refined: 'synthesis',       timeout: 'cancelled', cancel: 'cancelled' },  // loops back for re-synthesis
@@ -113,6 +122,9 @@ export async function startDesign(
     topic,
     phase: 'spawning',
     personas: [],
+    questionsExpected: PERSONA_NAMES.length,
+    questionsReceived: 0,
+    questions: [],
     proposalsExpected: PERSONA_NAMES.length,
     proposalsReceived: 0,
     divergences: [],
@@ -161,20 +173,89 @@ export async function startDesign(
     return state
   }
 
+  state.questionsExpected = state.personas.length
+
   const spawnResult = designMachine.transition(state.phase, 'all_spawned')
   if (spawnResult.ok) state.phase = spawnResult.to
 
-  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned. Waiting for proposals..._`)
+  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned. Waiting for questions..._`)
 
-  // Set timeout for proposals
+  // Timeout for questions — advance even if some personas don't ask
+  state.timeout = setTimeout(async () => {
+    if (state.phase !== 'questioning') return
+    process.stderr.write(`daemon: design: question timeout, advancing with ${state.questionsReceived} questions\n`)
+    const r = designMachine.transition(state.phase, 'timeout')
+    if (r.ok) state.phase = r.to
+    await aggregateAndPostQuestions(state)
+  }, 5 * 60 * 1000)  // 5 min for questions (shorter than proposals)
+
+  return state
+}
+
+// ---------------------------------------------------------------------------
+// Question aggregation + answer handling
+// ---------------------------------------------------------------------------
+
+async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
+  if (state.timeout) clearTimeout(state.timeout)
+
+  if (state.questions.length === 0) {
+    // No questions — skip straight to proposals
+    await gateway.send(state.ownerThreadId, `_No questions from personas. Proceeding to proposals..._`)
+    const r = designMachine.transition(state.phase, 'answers_provided')
+    if (r.ok) state.phase = r.to
+    await startProposalPhase(state)
+    return
+  }
+
+  const questionList = state.questions.map(q =>
+    `**${q.persona}:**\n${q.questions}`
+  ).join('\n\n')
+
+  await gateway.send(state.ownerThreadId, [
+    `**Personas have questions before proposing:**`,
+    ``,
+    questionList,
+    ``,
+    `Answer in a single message. Your answers will be shared with all personas.`,
+  ].join('\n'))
+}
+
+export async function handleDesignAnswer(threadId: string, answerText: string): Promise<void> {
+  const state = designs.get(threadId)
+  if (!state || state.phase !== 'answering') return
+
+  const r = designMachine.transition(state.phase, 'answers_provided')
+  if (!r.ok) return
+  state.phase = r.to
+
+  // Distribute answers to all personas
+  for (const persona of state.personas) {
+    transport.sendOrQueue(persona.sessionId, {
+      type: 'notification',
+      content: [
+        `[system] The human answered your questions. Here are ALL answers for all personas:`,
+        ``,
+        answerText,
+        ``,
+        `Now post your proposal. Tag with \`[${persona.name}→thread]\`. Be INDEPENDENT — do not read other proposals.`,
+      ].join('\n'),
+      meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+    })
+  }
+
+  await startProposalPhase(state)
+}
+
+async function startProposalPhase(state: DesignState): Promise<void> {
+  await gateway.send(state.ownerThreadId, `_Waiting for proposals..._`)
+
   state.timeout = setTimeout(async () => {
     if (state.phase !== 'independent') return
     process.stderr.write(`daemon: design: proposal timeout\n`)
-    await gateway.send(threadId, `Design timed out waiting for proposals. Cancelling.`)
-    await cancelDesign(threadId)
+    await gateway.send(state.ownerThreadId, `Design timed out waiting for proposals. Cancelling.`)
+    await cancelDesign(state.ownerThreadId)
   }, PERSONA_TIMEOUT_MS)
-
-  return state
 }
 
 // ---------------------------------------------------------------------------
@@ -540,8 +621,30 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
   for (const [threadId, state] of designs) {
     if (chatId !== threadId) continue
 
-    // Check if this is a persona posting a proposal
     const persona = state.personas.find(p => p.sessionId === sessionId)
+
+    // Persona posting questions
+    if (persona && state.phase === 'questioning') {
+      const firstLine = text.split('\n')[0].trim()
+      const expectedTag = `[${persona.name}→questions]`
+      if (!firstLine.startsWith(expectedTag)) return
+
+      const bodyText = text.slice(text.indexOf('\n') + 1).trim()
+      if (bodyText.toLowerCase() !== 'no questions.') {
+        state.questions.push({ persona: persona.name, questions: bodyText })
+      }
+      state.questionsReceived++
+      process.stderr.write(`daemon: design: ${persona.name} asked questions (${state.questionsReceived}/${state.questionsExpected})\n`)
+
+      if (state.questionsReceived >= state.questionsExpected) {
+        const r = designMachine.transition(state.phase, 'all_questions')
+        if (r.ok) state.phase = r.to
+        void aggregateAndPostQuestions(state)
+      }
+      return
+    }
+
+    // Persona posting a proposal
     if (persona && state.phase === 'independent') {
       const firstLine = text.split('\n')[0].trim()
       const expectedTag = `[${persona.name}→thread]`

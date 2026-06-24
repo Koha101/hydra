@@ -12,6 +12,7 @@ import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
+import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -302,6 +303,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
+      // Design answer: user message during 'answering' phase
+      const design = getDesignByThread(msg.channelId)
+      if (design && design.phase === 'answering') {
+        void handleDesignAnswer(msg.channelId, msg.content)
+        void gateway.react(msg.channelId, msg.id, '👍').catch(() => {})
+        return
+      }
     }
 
     if (msg.isThread) {

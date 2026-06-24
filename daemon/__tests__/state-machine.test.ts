@@ -345,11 +345,19 @@ import { designMachine } from '../design.js'
 describe('design transition table (autonomous)', () => {
   const sm = designMachine
 
-  test('full autonomous lifecycle: spawn → propose → synthesize → refine → re-synthesize → audit → brief → complete', () => {
+  test('full autonomous lifecycle: spawn → questions → answers → propose → synthesize → refine → re-synthesize → audit → brief → complete', () => {
     let phase = 'spawning' as any
 
     let r = sm.transition(phase, 'all_spawned' as any)
     expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('questioning')
+
+    r = sm.transition(phase, 'all_questions' as any)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('answering')
+
+    r = sm.transition(phase, 'answers_provided' as any)
     if (r.ok) phase = r.to
     expect(phase).toBe('independent')
 
