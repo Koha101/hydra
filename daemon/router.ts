@@ -6,8 +6,8 @@ import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
-import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleRecoverIntercept } from './commands/thread.js'
+import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -210,9 +210,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*$/i)
+    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*(.*)$/i)
     if (recoverMatch) {
-      void handleRecoverIntercept(msg)
+      void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
       return
     }
 

@@ -129,7 +129,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case 'fetch_messages': {
         const channelId = args.channel as string
         const limit = Math.min((args.limit as number) ?? 20, 100)
-        const msgs = await gateway.fetchMessages(channelId, limit)
+        const msgs = await retrySend(() => gateway.fetchMessages(channelId, limit))
         const botId = gateway.botId
         const out =
           msgs.length === 0
@@ -156,18 +156,18 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'delete_message': {
-        await gateway.delete(args.chat_id as string, args.message_id as string)
+        await retrySend(() => gateway.delete(args.chat_id as string, args.message_id as string))
         return { content: [{ type: 'text', text: 'deleted' }] }
       }
 
       case 'create_thread': {
         const threadName = (args.name as string).slice(0, 100)
-        const thread = await gateway.createThread(args.chat_id as string, threadName, {
+        const thread = await retrySend(() => gateway.createThread(args.chat_id as string, threadName, {
           messageId: args.message_id as string | undefined,
           archiveDuration: (args.auto_archive_minutes as number | undefined) ?? 1440,
           text: args.text as string | undefined,
           files: (args.files as string[] | undefined),
-        })
+        }))
         return {
           content: [{
             type: 'text',

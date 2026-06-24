@@ -30,7 +30,7 @@ export type SessionInfo = {
   description?: string
   messageCount?: number
   claudeSessionId?: string
-  originType?: 'spawn' | 'fork' | 'handoff'
+  originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   capabilities?: SessionCapabilities
   respawnCount?: number
@@ -87,6 +87,9 @@ export type SpawnOpts = {
   joinThread?: string                                          // join existing thread as member (skip thread creation)
   promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
   memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
+  existingThreadId?: string   // spawn into existing thread (skip thread creation)
+  resumeFrom?: string         // --resume <claudeSessionId> (no prompt, full context restore)
+  resurrectFrom?: string      // previous session name — fresh session reads thread history
 }
 
 // ---------------------------------------------------------------------------

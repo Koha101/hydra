@@ -32,17 +32,19 @@ function listTimeBucket(lastActiveMs: number, now: number): string {
 
 function formatSessionEntry(e: SessionEntry): string {
   const s = e.session
-  const desc = s.description ?? fallbackDescription(s.topic)
+  const thread = threadRegistry.get(s.threadId)
+  const desc = s.description ?? fallbackDescription(thread?.topic ?? '')
   const duration = formatDuration(Date.now() - s.createdAt)
   const msgCount = s.messageCount ?? 0
   const ctx = getContextPercent(s.tmuxName)
-  const disconnected = transport.has(s.sessionId) ? '' : ' ⚠️'
+  const badge = transport.has(s.sessionId) ? '' : ' ⚠️'
   const emoji = sessionEmoji(s.tmuxName)
-  const url = s.threadUrl
+  const url = thread?.threadUrl
   const title = url ? `[**${desc}**](${url})` : `**${desc}**`
-  const provenance = s.originFrom ? ` ← ${s.originType === 'handoff' ? '🤝' : '🍴'} (${s.originFrom})` : ''
+  const provenanceEmoji = s.originType === 'handoff' ? '🤝' : s.originType === 'resurrect' ? '🫀' : '🍴'
+  const provenance = s.originFrom ? ` ← ${provenanceEmoji} (${s.originFrom})` : ''
   const lines = [
-    `${emoji} \`${s.tmuxName}\`${disconnected}${provenance}`,
+    `${emoji} \`${s.tmuxName}\`${badge}${provenance}`,
     `- ${title}`,
     `- ${ctx} (${msgCount} msgs · ${duration})`,
   ]
@@ -118,7 +120,21 @@ async function refreshListDisplay(): Promise<void> {
     output = 'No active sessions.'
   } else {
     const entries: SessionEntry[] = all.map(s => ({ session: s }))
-    output = buildListOutput(entries, now)
+
+    // Phase 2: fetch latest message per thread in parallel (mirrors handleListIntercept)
+    const latestInfos = await Promise.all(entries.map(async (e): Promise<string | undefined> => {
+      try {
+        const msgs = await gateway.fetchMessages(e.session.threadId, 1)
+        if (msgs.length === 0) return undefined
+        const m = msgs[0]
+        const who = m.authorId === gateway.botId ? `<@${gateway.botId}>` : 'you'
+        const msgUrl = gateway.getMessageUrl(e.session.threadId, m.id)
+        return msgUrl ? `[📩 latest](${msgUrl}) — by ${who}` : `📩 latest — by ${who}`
+      } catch { return undefined }
+    }))
+
+    const enriched = entries.map((e, i) => ({ ...e, latestLine: latestInfos[i] }))
+    output = buildListOutput(enriched, now)
   }
 
   let changed = false
@@ -201,7 +217,8 @@ export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
   const duration = formatDuration(Date.now() - info.createdAt)
   const msgs = info.messageCount ?? 0
   const status = transport.has(info.sessionId) ? 'connected' : 'disconnected'
-  const desc = info.description ?? fallbackDescription(info.topic)
+  const thread = threadRegistry.get(info.threadId)
+  const desc = info.description ?? fallbackDescription(thread?.topic ?? '')
 
   const forkCount = [...registry.values()].filter(s => s.originType === 'fork' && s.originFrom === info.tmuxName).length
 

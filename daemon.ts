@@ -24,8 +24,21 @@ import './daemon/router.js'
 import { startPrWatcher } from './daemon/pr-watch.js'
 import { getContextPercent } from './daemon/util.js'
 
-// Boot ThreadRegistry — must happen after sessions are loaded
+// Boot thread registry — loads threads.json or migrates from sessions on first run
 threadRegistry.boot(registry)
+
+// Startup reconciliation: ensure thread state matches session state
+for (const thread of threadRegistry.values()) {
+  if (thread.currentSessionId) {
+    const session = registry.get(thread.currentSessionId)
+    if (!session) {
+      process.stderr.write(`daemon: reconcile: thread ${thread.threadId} references missing session ${thread.currentSessionId}, detaching\n`)
+      thread.currentSessionId = null
+    }
+  }
+}
+threadRegistry.persist()
+
 import { isSessionDead } from './daemon/commands/thread.js'
 
 // ---------------------------------------------------------------------------
@@ -53,7 +66,9 @@ function sendRecoveryReport(gapMs: number): void {
   process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
 }
 
-gateway.onReconnectAfterOutage = sendRecoveryReport
+if ('onReconnectAfterOutage' in gateway) {
+  gateway.onReconnectAfterOutage = sendRecoveryReport
+}
 
 // ---------------------------------------------------------------------------
 // Permission UI
@@ -129,6 +144,28 @@ async function startGateway(attempt = 0): Promise<void> {
     if (startupGapMs !== null) {
       sendRecoveryReport(startupGapMs)
       startupGapMs = null
+    }
+
+    const detached = threadRegistry.detachedThreads()
+    if (detached.length > 0) {
+      const sessionLines = detached.map(t => {
+        const last = t.sessionHistory[t.sessionHistory.length - 1]
+        const name = last?.tmuxName ?? t.threadId.slice(0, 8)
+        const link = t.threadUrl ? `[\`${name}\`](${t.threadUrl})` : `\`${name}\``
+        const topicPreview = t.topic.slice(0, 60) + (t.topic.length > 60 ? '...' : '')
+        return `- ${link} — ${topicPreview}`
+      })
+      const access = loadAccess()
+      const dmMsg = [
+        `Found ${detached.length} recoverable thread(s):`,
+        ...sessionLines,
+        `Reply \`recover\` to revive all, or \`recover <name>\` for a specific one.`,
+      ].join('\n')
+      for (const userId of access.allowFrom) {
+        void gateway.sendDM(userId, dmMsg).catch(e =>
+          process.stderr.write(`daemon: recovery DM failed: ${e}\n`),
+        )
+      }
     }
   } catch (err) {
     if (attempt >= GATEWAY_MAX_RETRIES) {

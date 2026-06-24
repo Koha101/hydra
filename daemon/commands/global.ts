@@ -4,8 +4,9 @@ import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { gateway, STATE_DIR } from '../config.js'
 import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
+import type { ThreadInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { doSpawnSession, killSession } from '../session-lifecycle.js'
+import { doSpawnSession, killSession, tryResume, tryRespawn } from '../session-lifecycle.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild } from '../build.js'
 import { getActiveReviews, cancelReview } from '../adversarial.js'
@@ -20,12 +21,9 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   // If spawn is typed in a thread with a dead session, target that thread so it gets reused
   let chatId = msg.channelId
   if (msg.isThread && msg.existingThreadId) {
-    // Check threadRegistry first, then fall back to legacy map
     const thread = threadRegistry.get(msg.existingThreadId)
-    const staleId = thread?.currentSessionId
-      ?? registry.getByThread(msg.existingThreadId)
-    if (staleId && registry.has(staleId)) {
-      const staleInfo = registry.get(staleId)!
+    if (thread?.currentSessionId && registry.has(thread.currentSessionId)) {
+      const staleInfo = registry.get(thread.currentSessionId)!
       let tmuxAlive = false
       try { execSync(`tmux has-session -t '${staleInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
       if (tmuxAlive) {
@@ -33,7 +31,7 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
       } else {
         chatId = msg.existingThreadId
       }
-    } else {
+    } else if (thread && !thread.currentSessionId) {
       chatId = msg.existingThreadId
     }
   }
@@ -71,7 +69,8 @@ export async function handleKillIntercept(msg: InboundMessage, name: string): Pr
   void gateway.react(msg.channelId, msg.id, '☠️').catch(() => {})
   let target: ReturnType<typeof registry.get>
   for (const s of registry.values()) {
-    if (s.tmuxName === name || s.topic.toLowerCase() === name.toLowerCase()) {
+    const t = threadRegistry.get(s.threadId)
+    if (s.tmuxName === name || (t?.topic ?? '').toLowerCase() === name.toLowerCase()) {
       target = s
       break
     }
@@ -108,7 +107,11 @@ export async function handleRestartIntercept(msg: InboundMessage): Promise<void>
   const cancelled = activeBuilds.length + activeReviews.length
   const cancelNote = cancelled > 0 ? ` (cancelled ${cancelled} active build/review${cancelled > 1 ? 's' : ''})` : ''
 
-  const restartScript = join(import.meta.dir, '..', '..', 'restart-daemon.sh')
+  // HYDRA_SOURCE_DIR points to the dev repo; the daemon may be running from an
+  // isolated runtime copy, so import.meta.dir would resolve to the copy — but
+  // restart-daemon.sh must run from the real repo to pick up new code.
+  const sourceDir = process.env.HYDRA_SOURCE_DIR ?? join(import.meta.dir, '..', '..')
+  const restartScript = join(sourceDir, 'restart-daemon.sh')
   try {
     await gateway.send(msg.channelId, `🔄 Restarting daemon${cancelNote} — back in a moment...`, { replyTo: msg.id })
   } catch {}
@@ -168,11 +171,16 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '**Sessions:**',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
     '• 🚀 `spawn-wt: <repo> <topic>` — new session in a git worktree',
-    '• 📊 `list sessions` — show all running sessions',
+    '• 📊 `list sessions` — show all running sessions with lineage',
     '• ☠️ `kill session: <name>` — terminate a named session',
     '• ☠️ `kill` — kill this session (thread-scoped)',
     '• 🍴 `fork` / `fork: <focus>` — fork into a new thread with full history',
     '• 🍽️ `forks` — list forks from this thread',
+    '',
+    '**Recovery (thread-scoped):**',
+    '• ⏯️ `resume` — reconnect to a dead session with full context (via --resume)',
+    '• 🔁 `respawn` — fresh session that reads thread history and continues',
+    '• 🔮 `recover` — revive dead sessions from a crash',
     '',
     '**Multi-agent:**',
     '• `build [N] [task]` — owner implements, critic reviews (default 3 rounds)',
@@ -180,24 +188,14 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• `kill build` — cancel an in-progress build',
     '• `/review [N] [topic]` — adversarial review: critic challenges, owner defends',
     '• `kill review` — cancel an in-progress review',
-    '• `design: <topic>` — autonomous multi-persona design (propose → synthesize → refine → audit)',
-    '• `kill design` — cancel an in-progress design session',
     '',
-    '**Handoff & Recovery:**',
+    '**Handoff:**',
     '• 🤝 `handoff` / `handoff: <direction>` — distill context into an artifact',
-    '• 🤝 `/go` — launch the handoff successor',
-    '• ⏯️ `resume` — reconnect to a dead session with full context',
-    '• 🔁 `respawn` — fresh session that reads thread history and continues',
-    '• 🔮 `recover` — revive dead sessions from a crash',
+    '• 🤝 `/go` — launch the successor session',
     '',
     '**Session control:**',
     '• 👂/⏸️ `listen` / `pause` — toggle message routing to session',
     '• 📈 `usage` — context %, messages, runtime, fork count',
-    '',
-    '**PR Watching:**',
-    '• 👁️ `watch <pr-url>` — poll PR for new comments/reviews (in session thread)',
-    '• 🙈 `unwatch <pr-url>` — stop watching a PR',
-    '• 📡 `watches` — list all watched PRs',
     '',
     '**Daemon:**',
     '• 💚 `health` / `status` — daemon diagnostics',
@@ -206,4 +204,119 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• 📋 `help` / `commands` — this list',
   ].join('\n')
   try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Recover — crash recovery via resume or resurrect
+// ---------------------------------------------------------------------------
+
+let recoveryInProgress = false
+const MAX_CONCURRENT = 2
+const STAGGER_MS = 5_000
+
+async function recoverOne(thread: ThreadInfo): Promise<{ name: string; method: 'resumed' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
+  const lastSession = thread.sessionHistory[thread.sessionHistory.length - 1]
+  const originalName = lastSession?.tmuxName ?? thread.threadId.slice(0, 8)
+  const claudeSessionId = lastSession?.claudeSessionId
+
+  if (claudeSessionId) {
+    const result = await tryResume({
+      topic: thread.topic,
+      threadId: thread.threadId,
+      claudeSessionId,
+      threadUrl: thread.threadUrl,
+    })
+    if (result) {
+      return { name: originalName, method: 'resumed', newName: result.name, threadUrl: thread.threadUrl }
+    }
+    process.stderr.write(`daemon: recover ${originalName}: resume failed or health check timed out, falling back to resurrect\n`)
+  }
+
+  const result = await tryRespawn(thread.threadId, thread.topic, originalName)
+  if (result) {
+    return { name: originalName, method: 'resurrected', newName: result.name, threadUrl: thread.threadUrl }
+  }
+  return { name: originalName, method: 'failed', reason: 'both resume and resurrect failed', threadUrl: thread.threadUrl }
+}
+
+export async function handleRecoverIntercept(msg: InboundMessage, targetName?: string): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '🔮').catch(() => {})
+
+  if (recoveryInProgress) {
+    try { await gateway.send(msg.channelId, 'Recovery already in progress.', { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  const detached = threadRegistry.detachedThreads()
+  if (detached.length === 0) {
+    try { await gateway.send(msg.channelId, 'No recoverable threads.', { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  let targets = detached
+  if (targetName && targetName !== 'all') {
+    targets = targets.filter(t => {
+      const last = t.sessionHistory[t.sessionHistory.length - 1]
+      return last?.tmuxName === targetName
+    })
+    if (targets.length === 0) {
+      try { await gateway.send(msg.channelId, `"${targetName}" not found in recoverable threads.`, { replyTo: msg.id }) } catch {}
+      return
+    }
+  }
+
+  targets.sort((a, b) => b.lastActive - a.lastActive)
+
+  recoveryInProgress = true
+  try {
+    await gateway.send(msg.channelId, `🔮 Recovering ${targets.length} session(s)...`, { replyTo: msg.id })
+  } catch {}
+
+  const results: Awaited<ReturnType<typeof recoverOne>>[] = []
+
+  try {
+    let active = 0
+    const queue = [...targets]
+
+    while (queue.length > 0) {
+      while (active < MAX_CONCURRENT && queue.length > 0) {
+        const thread = queue.shift()!
+        const lastName = thread.sessionHistory[thread.sessionHistory.length - 1]?.tmuxName ?? thread.threadId.slice(0, 8)
+        active++
+
+        recoverOne(thread).then(r => {
+          results.push(r)
+          if (r.method !== 'failed') {
+            const e = sessionEmoji(r.newName)
+            void gateway.send(thread.threadId, `🔮 ${e} \`${r.newName}\` recovered (${r.method})`).catch(() => {})
+          }
+        }).catch(err => {
+          results.push({ name: lastName, method: 'failed' as const, reason: String(err) })
+        }).finally(() => {
+          active--
+        })
+
+        if (queue.length > 0) await new Promise(r => setTimeout(r, STAGGER_MS))
+      }
+      if (active > 0) await new Promise(r => setTimeout(r, 2_000))
+    }
+
+    while (active > 0) await new Promise(r => setTimeout(r, 1_000))
+  } finally {
+    recoveryInProgress = false
+  }
+
+  const resumed = results.filter(r => r.method === 'resumed')
+  const resurrected = results.filter(r => r.method === 'resurrected')
+  const failed = results.filter(r => r.method === 'failed') as Array<{ name: string; method: 'failed'; reason: string }>
+
+  const fmtName = (r: { name: string; threadUrl?: string }) =>
+    r.threadUrl ? `[\`${r.name}\`](${r.threadUrl})` : `\`${r.name}\``
+
+  const lines = [`🔮 **Recovery complete** — ${results.length} session(s)`]
+  if (resumed.length > 0) lines.push(`• ${resumed.length} resumed (full context): ${resumed.map(fmtName).join(', ')}`)
+  if (resurrected.length > 0) lines.push(`• ${resurrected.length} resurrected (thread re-read): ${resurrected.map(fmtName).join(', ')}`)
+  if (failed.length > 0) lines.push(`• ${failed.length} failed: ${failed.map(r => `${fmtName(r)} (${r.reason})`).join(', ')}`)
+
+  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
 }

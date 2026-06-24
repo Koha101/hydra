@@ -27,15 +27,31 @@ if [ -z "$SPAWN_CWD" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Runtime isolation — the daemon runs from a dedicated copy of the repo so
+# development activity (branch switches, half-finished edits) in the main
+# working tree can never land under a running daemon process.
+#
+# SCRIPT_DIR (the dev repo)  → source of truth, compile-checked here
+# RUNTIME_DIR (state-dir copy) → where the daemon actually executes
+# HYDRA_SOURCE_DIR env var     → passed to the daemon so it can locate
+#                                 the restart script in the real repo
+# ---------------------------------------------------------------------------
+RUNTIME_DIR="$STATE_DIR/daemon-runtime"
+
 # Compile gate — never cold-start onto a tree that doesn't load.
 # `bun run` is lazy: parse/export errors surface only when a module is imported,
 # so a broken merge to the running branch sits undetected until a restart, then
 # crash-loops forever (watchdog kills + relaunches a process that dies on boot).
 # Build the entries first; if it fails, refuse to start and leave any running
 # daemon UNTOUCHED — a broken tree must never replace a working process.
-source "$SCRIPT_DIR/compile-check.sh"
-COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
-COMPILE_RC=$?
+cd "$SCRIPT_DIR"
+COMPILE_RC=0
+COMPILE_OUT=""
+for entry in daemon.ts bridge.ts; do
+  err=$(bun build "$entry" --target=bun 2>&1 >/dev/null) || COMPILE_RC=1
+  [ -n "$err" ] && COMPILE_OUT="${COMPILE_OUT}[$entry] ${err}"$'\n'
+done
 if [ "$COMPILE_RC" -ne 0 ]; then
   {
     echo "$(date): COMPILE FAILED — refusing to start daemon; leaving any running session untouched."
@@ -44,6 +60,19 @@ if [ "$COMPILE_RC" -ne 0 ]; then
   } | tee -a "$LOG"
   exit 1
 fi
+
+# Sync source into runtime directory. rsync is atomic-enough here: the daemon
+# is dead (killed below) so nothing reads mid-sync. --delete ensures stale
+# files from removed modules don't linger.
+mkdir -p "$RUNTIME_DIR"
+rsync -a --delete \
+  --exclude '.git' \
+  --exclude 'tmp' \
+  --exclude 'diagrams' \
+  --exclude 'docs' \
+  --exclude '.planning' \
+  "$SCRIPT_DIR/" "$RUNTIME_DIR/"
+echo "$(date): Synced source to runtime dir ($RUNTIME_DIR)" >> "$LOG"
 
 # Kill existing daemon session
 tmux kill-session -t "$SESSION" 2>/dev/null
@@ -57,11 +86,12 @@ rm -f "$STATE_DIR/daemon.sock"
 # vars into new sessions — its server global env is frozen at first launch — so relying on
 # inheritance silently dropped CLAUDE_CONFIG_DIR and broke spawned-session bridges.
 # PATH must also be forwarded so bun/claude are reachable when launched via launchd.
-ENVS="PATH='$PATH' HYDRA_STATE_DIR='$STATE_DIR' SPAWN_CWD='$SPAWN_CWD'"
+# HYDRA_SOURCE_DIR points the daemon back to the dev repo for restart scripts.
+ENVS="PATH='$PATH' HYDRA_STATE_DIR='$STATE_DIR' SPAWN_CWD='$SPAWN_CWD' HYDRA_SOURCE_DIR='$SCRIPT_DIR'"
 [ -n "$CHAT_PLATFORM" ] && ENVS="$ENVS CHAT_PLATFORM='$CHAT_PLATFORM'"
 [ -n "$CLAUDE_CONFIG_DIR" ] && ENVS="$ENVS CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'"
 tmux new-session -d -s "$SESSION" \
-  "cd '$SCRIPT_DIR' && $ENVS bun run daemon.ts 2>&1 | tee -a $LOG"
+  "cd '$RUNTIME_DIR' && $ENVS bun run daemon.ts 2>&1 | tee -a $LOG"
 
-echo "$(date): Daemon started in tmux session '$SESSION' (SPAWN_CWD=$SPAWN_CWD)" >> $LOG
+echo "$(date): Daemon started in tmux session '$SESSION' (SPAWN_CWD=$SPAWN_CWD, runtime=$RUNTIME_DIR)" >> $LOG
 echo "Daemon started. Attach with: tmux attach -t $SESSION"
