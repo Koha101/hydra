@@ -14,6 +14,7 @@ import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/bui
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
+import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 
 // ---------------------------------------------------------------------------
@@ -300,6 +301,24 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const cancelDesignMatch = msg.content.match(/^(?:kill design)\s*$/i)
       if (cancelDesignMatch) {
         void handleCancelDesignIntercept(msg)
+        return
+      }
+
+      const watchMatch = msg.content.match(/^(?:\/watch|watch)(?:\s+(https:\/\/\S+))?\s*$/i)
+      if (watchMatch) {
+        void handleWatchIntercept(msg, watchMatch[1]?.trim())
+        return
+      }
+
+      const unwatchMatch = msg.content.match(/^(?:\/unwatch|unwatch)\s+(https:\/\/\S+)/i)
+      if (unwatchMatch) {
+        void handleUnwatchIntercept(msg, unwatchMatch[1].trim())
+        return
+      }
+
+      const watchesMatch = msg.content.match(/^(?:\/watches|watches)\s*$/i)
+      if (watchesMatch) {
+        void handleWatchesIntercept(msg)
         return
       }
 

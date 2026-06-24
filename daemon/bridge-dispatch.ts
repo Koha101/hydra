@@ -5,6 +5,7 @@ import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
+import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -45,6 +46,9 @@ export const BRIDGE_TOOLS = [
   { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
+  { name: 'watch_pr', description: 'Watch a GitHub PR for new comments/reviews. The daemon polls every 3 min and delivers new feedback to your thread for triage. Omit pr_url to auto-detect from the current branch.', inputSchema: { type: 'object', properties: { pr_url: { type: 'string', description: 'Full GitHub PR URL. Omit to auto-detect from current branch via gh pr view.' }, chat_id: { type: 'string', description: 'Thread to deliver feedback to (defaults to your session thread)' } } } },
+  { name: 'unwatch_pr', description: 'Stop watching a GitHub PR.', inputSchema: { type: 'object', properties: { pr_url: { type: 'string' } }, required: ['pr_url'] } },
+  { name: 'list_watches', description: 'List all PRs being watched (your session or all).', inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'Show all watches, not just yours' } } } },
 ]
 
 export const SPAWN_MODEL = 'claude-opus-4-6[1m]'
@@ -61,7 +65,7 @@ export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
 
 export type ToolResult = { content: Array<{type: string; text: string}>; isError?: boolean; sentIds?: string[] }
 
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+export async function executeTool(name: string, args: Record<string, unknown>, callerSessionId?: string): Promise<ToolResult> {
   try {
     switch (name) {
       case 'reply': {
@@ -240,6 +244,36 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
         const info = registry.get(targetId)!
         await killSession(info, 'session ended')
         return { content: [{ type: 'text', text: `killed session ${targetId}` }] }
+      }
+
+      case 'watch_pr': {
+        let prUrl = args.pr_url as string | undefined
+        const sessionId = callerSessionId ?? 'main'
+        const info = registry.get(sessionId)
+        if (!prUrl) {
+          const cwd = info?.capabilities?.cwd
+          if (!cwd) throw new Error(WATCH_ERRORS.NO_CWD)
+          const detected = await detectPrUrl(cwd)
+          if (!detected.ok) throw new Error(detected.reason)
+          prUrl = detected.url
+        }
+        const threadId = (args.chat_id as string | undefined) ?? info?.threadId ?? ''
+        if (!threadId) throw new Error('could not determine thread — pass chat_id')
+        const result = await watchPr(prUrl, sessionId, threadId)
+        return { content: [{ type: 'text', text: result }] }
+      }
+
+      case 'unwatch_pr': {
+        const result = unwatchPr(args.pr_url as string, callerSessionId)
+        return { content: [{ type: 'text', text: result }] }
+      }
+
+      case 'list_watches': {
+        const all = args.all as boolean | undefined
+        const entries = all ? listWatches() : getWatchesBySession(callerSessionId ?? 'main')
+        if (entries.length === 0) return { content: [{ type: 'text', text: 'no PRs being watched' }] }
+        const lines = entries.map(e => `• ${formatWatchEntry(e)}`)
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
       }
 
       default:
