@@ -493,11 +493,12 @@ function resetTimeout(state: BuildState): void {
 
   // Heartbeat: check critic tmux is alive every 5 min (silent unless dead)
   if (whose === 'critic' && state.criticSessionId) {
-    const criticId = state.criticSessionId
     let elapsed = 0
     state._heartbeat = setInterval(async () => {
       elapsed += 5
-      const criticInfo = registry.get(criticId)
+      const currentCriticId = state.criticSessionId
+      if (!currentCriticId) return
+      const criticInfo = registry.get(currentCriticId)
       if (criticInfo) {
         try {
           execSync(`tmux has-session -t '${criticInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
@@ -512,14 +513,11 @@ function resetTimeout(state: BuildState): void {
     }, 5 * 60 * 1000)
   }
 
-  // Find critic's tmux name for the timeout message
-  const criticInfo = state.criticSessionId ? registry.get(state.criticSessionId) : undefined
-  const criticName = criticInfo?.tmuxName
-
   state.timeout = setTimeout(async () => {
     if (state._heartbeat) clearInterval(state._heartbeat)
     process.stderr.write(`daemon: build turn timed out (${whose})\n`)
-    const debugHint = criticName ? ` Check \`tmux attach -t ${criticName}\` to see what happened.` : ''
+    const ci = state.criticSessionId ? registry.get(state.criticSessionId) : undefined
+    const debugHint = ci ? ` Check \`tmux attach -t ${ci.tmuxName}\` to see what happened.` : ''
     await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
     await cancelBuild(state.buildId)
   }, timeoutMs)

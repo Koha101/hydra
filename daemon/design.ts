@@ -476,6 +476,7 @@ async function spawnAuditor(state: DesignState): Promise<void> {
     // Fall back to complete without audit
     state.phase = 'complete'
     await gateway.send(state.ownerThreadId, `Auditor failed to spawn. Design complete without audit.`)
+    await cleanupDesignSessions(state, 'design complete')
     designs.delete(state.ownerThreadId)
   }
 }
@@ -591,7 +592,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
       if (info) {
         const { execSync } = require('child_process')
         execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-        return  // tmux alive, just a bridge blip
+        continue  // tmux alive, just a bridge blip
       }
     } catch {}
 
