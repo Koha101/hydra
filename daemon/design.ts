@@ -129,13 +129,17 @@ export async function startDesign(
     `Spawning ${PERSONA_NAMES.join(', ')}...`,
   ].join('\n'))
 
+  // Capture thread history BEFORE spawning — prevents cross-contamination
+  const messages = await gateway.fetchMessages(threadId, 100)
+  const contextSnapshot = messages.map(m => `[${m.authorUsername}]: ${m.content}`).join('\n')
+
   // Spawn personas with 2s stagger
   for (const name of PERSONA_NAMES) {
     try {
       const result = await doSpawnSession(`Design persona: ${name}`, undefined, undefined, {
         joinThread: threadId,
         memberLabel: name,
-        promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId }),
+        promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, contextSnapshot }),
       })
       state.personas.push({ name, sessionId: result.sessionId, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)

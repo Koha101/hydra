@@ -31,9 +31,22 @@ export function designPersonaPrompt(opts: {
   persona: PersonaName
   topic: string
   threadId: string
+  contextSnapshot?: string
 }): string {
-  const { sessionId, tmuxName, persona, topic, threadId } = opts
+  const { sessionId, tmuxName, persona, topic, threadId, contextSnapshot } = opts
   const desc = PERSONA_DESCRIPTIONS[persona]
+
+  const contextBlock = contextSnapshot
+    ? [
+        `**Design context (thread snapshot — DO NOT call fetch_messages, your context is here):**`,
+        ``,
+        contextSnapshot,
+        ``,
+      ]
+    : [
+        `1. Call fetch_messages(channel="${threadId}", limit=100) to read the design context`,
+      ]
+
   return [
     `You are ${tmuxName}, the **${persona.replace('_', ' ')}** in a multi-persona design session.`,
     ``,
@@ -45,10 +58,10 @@ export function designPersonaPrompt(opts: {
     `${desc.lens}`,
     ``,
     `**Instructions:**`,
-    `1. Call fetch_messages(channel="${threadId}", limit=100) to read the design context`,
-    `2. Read any code files, wiki articles, or documents referenced in the thread`,
-    `3. Form your proposal INDEPENDENTLY — do NOT read or reference other personas' proposals`,
-    `4. Post your proposal using reply(chat_id="${threadId}")`,
+    ...contextBlock,
+    `- Read any code files, wiki articles, or documents referenced in the context`,
+    `- Form your proposal INDEPENDENTLY — do NOT call fetch_messages or read other proposals`,
+    `- Post your proposal using reply(chat_id="${threadId}")`,
     ``,
     `**Message routing:**`,
     `- Your first line MUST be exactly: \`[${persona}→thread]\``,
