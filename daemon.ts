@@ -21,6 +21,7 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
+import { startPrWatcher } from './daemon/pr-watch.js'
 import { getContextPercent } from './daemon/util.js'
 import { isSessionDead } from './daemon/commands/thread.js'
 
@@ -138,6 +139,12 @@ async function startGateway(attempt = 0): Promise<void> {
 }
 
 void startGateway()
+
+// ---------------------------------------------------------------------------
+// PR watcher — polls GitHub for new PR comments/reviews
+// ---------------------------------------------------------------------------
+
+startPrWatcher()
 
 // ---------------------------------------------------------------------------
 // Session health — crash detection + context alerts (every 5 min)

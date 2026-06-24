@@ -11,6 +11,7 @@ import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from '.
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
 import { setAnchorState } from './anchor-state.js'
+import { unwatchBySession } from './pr-watch.js'
 
 // ---------------------------------------------------------------------------
 // Session death events
@@ -81,6 +82,11 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     }
     registry.delete(info.sessionId)
     registry.persist()
+
+    const removedWatches = unwatchBySession(info.sessionId)
+    if (removedWatches > 0) {
+      process.stderr.write(`daemon: removed ${removedWatches} PR watch(es) for session ${info.sessionId}\n`)
+    }
 
     if (info.isJoinMember) {
       registry.removeMember(info.threadId, info.sessionId)
