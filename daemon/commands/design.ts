@@ -5,7 +5,8 @@ import type { InboundMessage } from '../../gateway.js'
 export async function handleDesignIntercept(msg: InboundMessage, topic: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🎨').catch(() => {})
 
-  const threadId = msg.channelId
+  // Use the thread ID if in a thread, otherwise the channel
+  const threadId = msg.existingThreadId ?? msg.channelId
 
   const existing = getDesignByThread(threadId)
   if (existing) {
