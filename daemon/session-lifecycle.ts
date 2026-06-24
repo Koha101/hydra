@@ -377,7 +377,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   // Append resurrect context to prompt if spawning as a resurrection
   if (opts?.resurrectFrom && !isResume) {
-    prompt += `\n\nYou are continuing the work of **${opts.resurrectFrom}** which died. Read the thread history to understand what was in progress.`
+    const historySource = opts.readHistoryFrom ?? threadId
+    prompt += `\n\nYou are continuing the work of **${opts.resurrectFrom}** which died. Read the thread history using fetch_messages(channel="${historySource}", limit=50) to understand what was in progress.`
   }
 
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork

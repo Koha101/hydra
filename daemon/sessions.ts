@@ -90,6 +90,7 @@ export type SpawnOpts = {
   existingThreadId?: string   // spawn into existing thread (skip thread creation)
   resumeFrom?: string         // --resume <claudeSessionId> (no prompt, full context restore)
   resurrectFrom?: string      // previous session name — fresh session reads thread history
+  readHistoryFrom?: string    // thread ID to read history from (for fork fallback where new thread ≠ source thread)
 }
 
 // ---------------------------------------------------------------------------
