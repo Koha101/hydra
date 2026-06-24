@@ -361,7 +361,7 @@ export async function detectPrUrl(cwd: string): Promise<DetectResult> {
 
     if (!parsePrUrl(url)) return { ok: false, reason: WATCH_ERRORS.INVALID_URL(url) }
 
-    if (state && state !== 'open') {
+    if (state && state.toLowerCase() !== 'open') {
       return { ok: false, reason: WATCH_ERRORS.PR_CLOSED(url, state) }
     }
 
