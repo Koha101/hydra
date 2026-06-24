@@ -195,7 +195,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const protocolsMatch = msg.content.match(/^(?:\/protocols|protocols|active)\s*$/i)
+    const protocolsMatch = msg.content.match(/^(?:\/protocols|protocols)\s*$/i)
     if (protocolsMatch) {
       void handleProtocolsIntercept(msg)
       return
