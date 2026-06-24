@@ -1,5 +1,4 @@
-import { execSync } from 'child_process'
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 import { gateway, STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
@@ -30,13 +29,14 @@ type PRReview = {
 
 export type WatchEntry = {
   prUrl: string
-  owner: string       // repo owner
-  repo: string        // repo name
+  owner: string
+  repo: string
   prNumber: number
   sessionId: string
   threadId: string
-  lastCheckedAt: string  // ISO timestamp
-  lastCommentId: number
+  lastCheckedAt: string
+  lastReviewCommentId: number
+  lastIssueCommentId: number
   lastReviewId: number
   createdAt: number
 }
@@ -45,9 +45,9 @@ export type WatchEntry = {
 // State
 // ---------------------------------------------------------------------------
 
-const watches = new Map<string, WatchEntry>()  // keyed by prUrl
+const watches = new Map<string, WatchEntry>()
 const PERSIST_FILE = join(STATE_DIR, 'pr-watches.json')
-const POLL_INTERVAL_MS = 3 * 60 * 1000  // 3 minutes
+const POLL_INTERVAL_MS = 3 * 60 * 1000
 let pollTimer: ReturnType<typeof setInterval> | undefined
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,6 @@ function loadPersisted(): void {
     const raw = readFileSync(PERSIST_FILE, 'utf8')
     const data = JSON.parse(raw) as WatchEntry[]
     for (const entry of data) {
-      // Only restore if the session still exists
       if (registry.has(entry.sessionId) || entry.sessionId === 'main') {
         watches.set(entry.prUrl, entry)
       }
@@ -87,7 +86,6 @@ function loadPersisted(): void {
 // ---------------------------------------------------------------------------
 
 function parsePrUrl(url: string): { owner: string; repo: string; prNumber: number } | null {
-  // https://github.com/owner/repo/pull/123
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/)
   if (match) {
     return { owner: match[1], repo: match[2], prNumber: parseInt(match[3]) }
@@ -96,29 +94,46 @@ function parsePrUrl(url: string): { owner: string; repo: string; prNumber: numbe
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API via gh CLI
+// GitHub API via gh CLI (async — does not block the event loop)
 // ---------------------------------------------------------------------------
 
-function ghApi(endpoint: string): any {
+async function ghApi(endpoint: string): Promise<any> {
   try {
-    const out = execSync(`gh api "${endpoint}" 2>/dev/null`, {
-      encoding: 'utf8',
-      timeout: 15_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const proc = Bun.spawn(['gh', 'api', endpoint], {
+      stdout: 'pipe',
+      stderr: 'pipe',
     })
-    return JSON.parse(out)
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    const exitCode = await proc.exited
+    if (exitCode !== 0) {
+      process.stderr.write(`daemon: pr-watch: gh api failed (exit ${exitCode}) for ${endpoint}: ${stderr.slice(0, 200)}\n`)
+      return null
+    }
+    return JSON.parse(stdout)
   } catch (err) {
     process.stderr.write(`daemon: pr-watch: gh api failed for ${endpoint}: ${err instanceof Error ? err.message : err}\n`)
     return null
   }
 }
 
-function fetchNewComments(entry: WatchEntry): PRComment[] {
-  const data = ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
+function maxId(items: any[] | null): number {
+  if (!items || !Array.isArray(items) || items.length === 0) return 0
+  return Math.max(...items.map((i: any) => i.id ?? 0))
+}
+
+// ---------------------------------------------------------------------------
+// Fetch helpers
+// ---------------------------------------------------------------------------
+
+async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[]> {
+  const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
   if (!data || !Array.isArray(data)) return []
 
   return data
-    .filter((c: any) => c.id > entry.lastCommentId)
+    .filter((c: any) => c.id > entry.lastReviewCommentId)
     .map((c: any) => ({
       id: c.id,
       user: c.user?.login ?? 'unknown',
@@ -130,8 +145,8 @@ function fetchNewComments(entry: WatchEntry): PRComment[] {
     }))
 }
 
-function fetchNewReviews(entry: WatchEntry): PRReview[] {
-  const data = ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/reviews?per_page=100`)
+async function fetchNewReviews(entry: WatchEntry): Promise<PRReview[]> {
+  const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/reviews?per_page=100`)
   if (!data || !Array.isArray(data)) return []
 
   return data
@@ -145,12 +160,12 @@ function fetchNewReviews(entry: WatchEntry): PRReview[] {
     }))
 }
 
-function fetchIssueComments(entry: WatchEntry): PRComment[] {
-  const data = ghApi(`repos/${entry.owner}/${entry.repo}/issues/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
+async function fetchNewIssueComments(entry: WatchEntry): Promise<PRComment[]> {
+  const data = await ghApi(`repos/${entry.owner}/${entry.repo}/issues/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
   if (!data || !Array.isArray(data)) return []
 
   return data
-    .filter((c: any) => c.id > entry.lastCommentId)
+    .filter((c: any) => c.id > entry.lastIssueCommentId)
     .map((c: any) => ({
       id: c.id,
       user: c.user?.login ?? 'unknown',
@@ -165,26 +180,40 @@ function fetchIssueComments(entry: WatchEntry): PRComment[] {
 // ---------------------------------------------------------------------------
 
 async function pollPr(entry: WatchEntry): Promise<void> {
-  const comments = fetchNewComments(entry)
-  const reviews = fetchNewReviews(entry)
-  const issueComments = fetchIssueComments(entry)
+  const pollTime = new Date().toISOString()
 
-  const allComments = [...comments, ...issueComments]
+  const [reviewComments, reviews, issueComments] = await Promise.all([
+    fetchNewReviewComments(entry),
+    fetchNewReviews(entry),
+    fetchNewIssueComments(entry),
+  ])
 
-  if (allComments.length === 0 && reviews.length === 0) return
+  // Always advance timestamp to avoid growing payloads on quiet PRs
+  entry.lastCheckedAt = pollTime
+
+  if (reviewComments.length === 0 && issueComments.length === 0 && reviews.length === 0) {
+    // Verify entry hasn't been replaced before persisting
+    if (watches.get(entry.prUrl) === entry) persist()
+    return
+  }
 
   // Update watermarks
-  for (const c of allComments) {
-    if (c.id > entry.lastCommentId) entry.lastCommentId = c.id
+  for (const c of reviewComments) {
+    if (c.id > entry.lastReviewCommentId) entry.lastReviewCommentId = c.id
+  }
+  for (const c of issueComments) {
+    if (c.id > entry.lastIssueCommentId) entry.lastIssueCommentId = c.id
   }
   for (const r of reviews) {
     if (r.id > entry.lastReviewId) entry.lastReviewId = r.id
   }
-  entry.lastCheckedAt = new Date().toISOString()
 
-  // Build notification for the session
+  const allComments = [...reviewComments, ...issueComments]
+  const totalItems = allComments.length + reviews.length
+
+  // Build notification — data only, no behavioral instructions
   const parts: string[] = []
-  parts.push(`[PR Feedback] **${entry.owner}/${entry.repo}#${entry.prNumber}** — ${allComments.length + reviews.length} new item(s)`)
+  parts.push(`[PR Feedback] **${entry.owner}/${entry.repo}#${entry.prNumber}** — ${totalItems} new item(s)`)
   parts.push('')
 
   for (const r of reviews) {
@@ -201,9 +230,6 @@ async function pollPr(entry: WatchEntry): Promise<void> {
     if (c.url) parts.push(`> ${c.url}`)
     parts.push('')
   }
-
-  parts.push('---')
-  parts.push('Triage these comments: which are legit issues to fix, which are style nits, and which are questions. Report your assessment to the thread — do NOT post anything to GitHub.')
 
   // Deliver to the session
   const sessionExists = registry.has(entry.sessionId) || entry.sessionId === 'main'
@@ -226,7 +252,8 @@ async function pollPr(entry: WatchEntry): Promise<void> {
     },
   })
 
-  persist()
+  // Verify entry hasn't been replaced (unwatch + re-watch race) before persisting
+  if (watches.get(entry.prUrl) === entry) persist()
   process.stderr.write(`daemon: pr-watch: delivered ${allComments.length} comment(s) + ${reviews.length} review(s) for ${entry.prUrl}\n`)
 }
 
@@ -250,7 +277,7 @@ async function pollAll(): Promise<void> {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function watchPr(prUrl: string, sessionId: string, threadId: string): string {
+export async function watchPr(prUrl: string, sessionId: string, threadId: string): Promise<string> {
   if (watches.has(prUrl)) {
     const existing = watches.get(prUrl)!
     return `already watching ${prUrl} (session: ${existing.sessionId})`
@@ -269,27 +296,22 @@ export function watchPr(prUrl: string, sessionId: string, threadId: string): str
     sessionId,
     threadId,
     lastCheckedAt: new Date().toISOString(),
-    lastCommentId: 0,
+    lastReviewCommentId: 0,
+    lastIssueCommentId: 0,
     lastReviewId: 0,
     createdAt: Date.now(),
   }
 
-  // Grab current max IDs so we only report NEW comments going forward
+  // Seed watermarks with max IDs so we only report NEW comments
   try {
-    const comments = ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=1&sort=created&direction=desc`)
-    if (Array.isArray(comments) && comments.length > 0) {
-      entry.lastCommentId = comments[0].id
-    }
-    const issueComments = ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=1&sort=created&direction=desc`)
-    if (Array.isArray(issueComments) && issueComments.length > 0) {
-      if (issueComments[0].id > entry.lastCommentId) {
-        entry.lastCommentId = issueComments[0].id
-      }
-    }
-    const reviews = ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=100`)
-    if (Array.isArray(reviews) && reviews.length > 0) {
-      entry.lastReviewId = Math.max(...reviews.map((r: any) => r.id))
-    }
+    const [reviewComments, issueComments, reviews] = await Promise.all([
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=100`),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=100`),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=100`),
+    ])
+    entry.lastReviewCommentId = maxId(reviewComments)
+    entry.lastIssueCommentId = maxId(issueComments)
+    entry.lastReviewId = maxId(reviews)
   } catch (err) {
     process.stderr.write(`daemon: pr-watch: failed to seed watermarks for ${prUrl}: ${err}\n`)
   }
@@ -300,9 +322,13 @@ export function watchPr(prUrl: string, sessionId: string, threadId: string): str
   return `watching ${prUrl} — will poll every ${POLL_INTERVAL_MS / 60000} minutes`
 }
 
-export function unwatchPr(prUrl: string): string {
-  if (!watches.has(prUrl)) {
+export function unwatchPr(prUrl: string, callerSessionId?: string): string {
+  const entry = watches.get(prUrl)
+  if (!entry) {
     return `not watching ${prUrl}`
+  }
+  if (callerSessionId && callerSessionId !== entry.sessionId && callerSessionId !== 'main') {
+    return `cannot unwatch — owned by session ${entry.sessionId}`
   }
   watches.delete(prUrl)
   persist()

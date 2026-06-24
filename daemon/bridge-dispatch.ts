@@ -252,12 +252,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const info = registry.get(sessionId)
         const threadId = (args.chat_id as string | undefined) ?? info?.threadId ?? ''
         if (!threadId) throw new Error('could not determine thread — pass chat_id')
-        const result = watchPr(prUrl, sessionId, threadId)
+        const result = await watchPr(prUrl, sessionId, threadId)
         return { content: [{ type: 'text', text: result }] }
       }
 
       case 'unwatch_pr': {
-        const result = unwatchPr(args.pr_url as string)
+        const result = unwatchPr(args.pr_url as string, callerSessionId)
         return { content: [{ type: 'text', text: result }] }
       }
 

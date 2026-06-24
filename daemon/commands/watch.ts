@@ -15,7 +15,7 @@ export async function handleWatchIntercept(msg: InboundMessage, prUrl: string): 
   const threadId = info?.threadId ?? msg.channelId
 
   try {
-    const result = watchPr(prUrl, targetSessionId, threadId)
+    const result = await watchPr(prUrl, targetSessionId, threadId)
     await gateway.send(msg.channelId, result, { replyTo: msg.id })
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
