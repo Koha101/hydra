@@ -66,7 +66,7 @@ export type DesignState = {
 const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
   spawning:    { all_spawned: 'questioning', timeout: 'cancelled', cancel: 'cancelled' },
   questioning: { all_questions: 'answering', timeout: 'answering', cancel: 'cancelled' },  // timeout advances (some personas may not have questions)
-  answering:   { answers_provided: 'independent', cancel: 'cancelled' },
+  answering:   { answers_provided: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
   independent: { all_proposed: 'synthesis',  timeout: 'cancelled', cancel: 'cancelled' },
   synthesis:   { synthesized: 'refinement',  timeout: 'synthesis', cancel: 'cancelled' },  // timeout retries
   refinement:  { refined: 'synthesis',       timeout: 'cancelled', cancel: 'cancelled' },  // loops back for re-synthesis
@@ -219,6 +219,14 @@ async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
     ``,
     `Answer in a single message. Your answers will be shared with all personas.`,
   ].join('\n'))
+
+  // 30-min timeout for user to answer
+  state.timeout = setTimeout(async () => {
+    if (state.phase !== 'answering') return
+    process.stderr.write(`daemon: design: answer timeout\n`)
+    await gateway.send(state.ownerThreadId, `Design timed out waiting for answers. Cancelling.`)
+    await cancelDesign(state.ownerThreadId)
+  }, 30 * 60 * 1000)
 }
 
 export async function handleDesignAnswer(threadId: string, answerText: string): Promise<void> {
@@ -590,7 +598,17 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
     process.stderr.write(`daemon: design: ${persona.name} disconnected/died\n`)
     void gateway.send(threadId, `_⚠️ ${persona.name} disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(() => {})
 
-    if (state.phase === 'independent' && !persona.proposed) {
+    if (state.phase === 'questioning') {
+      state.questionsExpected--
+      if (state.questionsExpected > 0 && state.questionsReceived >= state.questionsExpected) {
+        if (state.timeout) clearTimeout(state.timeout)
+        const result = designMachine.transition(state.phase, 'all_questions')
+        if (result.ok) {
+          state.phase = result.to
+          void aggregateAndPostQuestions(state)
+        }
+      }
+    } else if (state.phase === 'independent' && !persona.proposed) {
       state.proposalsExpected--
       if (state.proposalsExpected > 0 && state.proposalsReceived >= state.proposalsExpected) {
         if (state.timeout) clearTimeout(state.timeout)
