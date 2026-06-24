@@ -342,10 +342,10 @@ describe('sentinel detection', () => {
 
 import { designMachine } from '../design.js'
 
-describe('design transition table', () => {
+describe('design transition table (autonomous)', () => {
   const sm = designMachine
 
-  test('full lifecycle: spawn → propose → synthesize → refine → audit → complete', () => {
+  test('full autonomous lifecycle: spawn → propose → synthesize → refine → re-synthesize → audit → brief → complete', () => {
     let phase = 'spawning' as any
 
     let r = sm.transition(phase, 'all_spawned' as any)
@@ -355,89 +355,66 @@ describe('design transition table', () => {
 
     r = sm.transition(phase, 'all_proposed' as any)
     if (r.ok) phase = r.to
-    expect(phase).toBe('waiting')
-
-    r = sm.transition(phase, 'user_next' as any)
-    if (r.ok) phase = r.to
     expect(phase).toBe('synthesis')
 
     r = sm.transition(phase, 'synthesized' as any)
-    if (r.ok) phase = r.to
-    expect(phase).toBe('waiting')
-
-    r = sm.transition(phase, 'user_refine' as any)
     if (r.ok) phase = r.to
     expect(phase).toBe('refinement')
 
     r = sm.transition(phase, 'refined' as any)
     if (r.ok) phase = r.to
-    expect(phase).toBe('waiting')
+    expect(phase).toBe('synthesis')  // loops back
 
-    // User triggers audit
-    r = sm.transition(phase, 'user_audit' as any)
+    r = sm.transition(phase, 'synthesized' as any)
     if (r.ok) phase = r.to
-    expect(phase).toBe('audit')
+    expect(phase).toBe('refinement')
 
-    r = sm.transition(phase, 'audited' as any)
+    // After max rounds, code transitions to audit directly
+    // (handled by autoAdvanceAfterSynthesis, not the machine)
+  })
+
+  test('proposals go directly to synthesis (no waiting)', () => {
+    const r = sm.transition('independent' as any, 'all_proposed' as any)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('synthesis')
+  })
+
+  test('refinement loops back to synthesis', () => {
+    const r = sm.transition('refinement' as any, 'refined' as any)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('synthesis')
+  })
+
+  test('audit produces brief then complete', () => {
+    let phase = 'audit' as any
+    let r = sm.transition(phase, 'audited' as any)
+    expect(r.ok).toBe(true)
+    if (r.ok) phase = r.to
+    expect(phase).toBe('brief')
+
+    r = sm.transition(phase, 'brief_posted' as any)
     expect(r.ok).toBe(true)
     if (r.ok) phase = r.to
     expect(phase).toBe('complete')
-  })
-
-  test('user can skip directly to done from waiting', () => {
-    const r = sm.transition('waiting' as any, 'user_done' as any)
-    expect(r.ok).toBe(true)
-    if (r.ok) expect(r.to).toBe('complete')
-  })
-
-  test('user can go to audit from waiting', () => {
-    const r = sm.transition('waiting' as any, 'user_audit' as any)
-    expect(r.ok).toBe(true)
-    if (r.ok) expect(r.to).toBe('audit')
   })
 
   test('proposals cannot advance during spawning', () => {
     expect(sm.transition('spawning' as any, 'all_proposed' as any).ok).toBe(false)
   })
 
-  test('user input only valid in waiting phase', () => {
-    for (const phase of ['spawning', 'independent', 'synthesis', 'refinement', 'audit']) {
-      expect(sm.transition(phase as any, 'user_next' as any).ok).toBe(false)
-      expect(sm.transition(phase as any, 'user_refine' as any).ok).toBe(false)
-      expect(sm.transition(phase as any, 'user_done' as any).ok).toBe(false)
-      expect(sm.transition(phase as any, 'user_audit' as any).ok).toBe(false)
-    }
-  })
-
-  test('timeout cancels from most active phases', () => {
-    for (const phase of ['spawning', 'independent', 'refinement', 'audit']) {
+  test('timeout cancels from all active phases', () => {
+    for (const phase of ['spawning', 'independent', 'synthesis', 'refinement', 'audit', 'brief']) {
       const r = sm.transition(phase as any, 'timeout' as any)
       expect(r.ok).toBe(true)
       if (r.ok) expect(r.to).toBe('cancelled')
     }
   })
 
-  test('synthesis timeout returns to waiting (retry)', () => {
-    const r = sm.transition('synthesis' as any, 'timeout' as any)
-    expect(r.ok).toBe(true)
-    if (r.ok) expect(r.to).toBe('waiting')
-  })
-
   test('complete and cancelled are terminal', () => {
     for (const phase of ['complete', 'cancelled']) {
-      for (const event of ['all_spawned', 'all_proposed', 'synthesized', 'user_next', 'user_refine', 'user_done', 'user_audit', 'refined', 'audited', 'timeout', 'cancel']) {
+      for (const event of ['all_spawned', 'all_proposed', 'synthesized', 'refined', 'audited', 'brief_posted', 'timeout', 'cancel']) {
         expect(sm.transition(phase as any, event as any).ok).toBe(false)
       }
     }
-  })
-
-  test('waiting has four valid user actions', () => {
-    const events = sm.validEvents('waiting' as any)
-    expect(events).toContain('user_next')
-    expect(events).toContain('user_refine')
-    expect(events).toContain('user_audit')
-    expect(events).toContain('user_done')
-    expect(events).toContain('cancel')
-    expect(events).not.toContain('all_proposed')
   })
 })

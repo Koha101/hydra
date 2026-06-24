@@ -15,9 +15,9 @@ export type DesignPhase =
   | 'spawning'       // spawning persona sessions
   | 'independent'    // waiting for all proposals
   | 'synthesis'      // synthesizer analyzing proposals
-  | 'refinement'     // targeted persona refinement of divergences
+  | 'refinement'     // targeted persona refinement
   | 'audit'          // auditor reviewing composite
-  | 'waiting'        // paused for user input between phases
+  | 'brief'          // generating final design brief
   | 'complete'
   | 'cancelled'
 
@@ -25,12 +25,9 @@ type DesignEvent =
   | 'all_spawned'
   | 'all_proposed'
   | 'synthesized'
-  | 'user_next'
-  | 'user_refine'
-  | 'user_done'
-  | 'user_audit'
   | 'refined'
   | 'audited'
+  | 'brief_posted'
   | 'timeout'
   | 'cancel'
 
@@ -45,6 +42,7 @@ export type DesignState = {
   proposalsReceived: number
   divergences: Array<{ description: string; personas: string[]; impact: string }>
   currentDivergence: number
+  refinementRound: number
   refinementQueue?: Array<{ description: string; personas: string[]; impact: string }>
   refinementExpected: number
   refinementResponses: number
@@ -58,11 +56,11 @@ export type DesignState = {
 
 const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
   spawning:    { all_spawned: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
-  independent: { all_proposed: 'waiting',    timeout: 'cancelled', cancel: 'cancelled' },
-  waiting:     { user_next: 'synthesis', user_refine: 'refinement', user_audit: 'audit', user_done: 'complete', cancel: 'cancelled' },
-  synthesis:   { synthesized: 'waiting',     timeout: 'waiting', cancel: 'cancelled' },
-  refinement:  { refined: 'waiting',         timeout: 'cancelled', cancel: 'cancelled' },
-  audit:       { audited: 'complete',        timeout: 'cancelled', cancel: 'cancelled' },
+  independent: { all_proposed: 'synthesis',  timeout: 'cancelled', cancel: 'cancelled' },
+  synthesis:   { synthesized: 'refinement',  timeout: 'cancelled', cancel: 'cancelled' },
+  refinement:  { refined: 'synthesis',       timeout: 'cancelled', cancel: 'cancelled' },  // loops back for re-synthesis
+  audit:       { audited: 'brief',           timeout: 'cancelled', cancel: 'cancelled' },
+  brief:       { brief_posted: 'complete',   timeout: 'cancelled', cancel: 'cancelled' },
   complete:    {},
   cancelled:   {},
 })
@@ -116,6 +114,7 @@ export async function startDesign(
     proposalsReceived: 0,
     divergences: [],
     currentDivergence: 0,
+    refinementRound: 0,
     refinementExpected: 0,
     refinementResponses: 0,
     refinementRespondedIds: new Set(),
@@ -217,57 +216,55 @@ export async function cancelDesign(threadId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// User input handler (waiting phase)
+// Autonomous flow — auto-advance after each phase
 // ---------------------------------------------------------------------------
 
-export async function handleDesignUserInput(threadId: string, input: string): Promise<void> {
-  const state = designs.get(threadId)
-  if (!state || state.phase !== 'waiting') return
+const MAX_REFINEMENT_ROUNDS = 2
 
-  const cmd = input.toLowerCase().trim()
-
-  if (cmd === 'next') {
-    const result = designMachine.transition(state.phase, 'user_next')
-    if (!result.ok) return
-    state.phase = result.to
-    await spawnSynthesizer(state)
-  } else if (cmd === 'done') {
-    const result = designMachine.transition(state.phase, 'user_done')
-    if (!result.ok) return
-    state.phase = result.to
-    if (state.timeout) clearTimeout(state.timeout)
-    await cleanupDesignSessions(state, 'design complete')
-    designs.delete(threadId)
-    await gateway.send(threadId, `Design session complete.`)
-  } else if (cmd === 'audit') {
-    const result = designMachine.transition(state.phase, 'user_audit')
-    if (!result.ok) return
-    state.phase = result.to
+async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
+  if (state.divergences.length === 0) {
+    await gateway.send(state.ownerThreadId, `_No divergences found. Proceeding to audit._`)
+    state.phase = 'audit'
     await spawnAuditor(state)
-  } else if (cmd.startsWith('refine')) {
-    // Parse divergence numbers: "refine 1,3" or "refine 1, 2"
-    const nums = cmd.replace('refine', '').split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
-    if (nums.length === 0 || state.divergences.length === 0) {
-      await gateway.send(threadId, `No divergences to refine. Type \`design next\`, \`design audit\`, or \`done\`.`)
-      return
-    }
-
-    const selected = nums
-      .map(n => state.divergences[n - 1])  // 1-indexed
-      .filter(Boolean)
-
-    if (selected.length === 0) {
-      await gateway.send(threadId, `Invalid divergence numbers. Available: 1-${state.divergences.length}`)
-      return
-    }
-
-    const result = designMachine.transition(state.phase, 'user_refine')
-    if (!result.ok) return
-    state.phase = result.to
-    state.currentDivergence = 0
-
-    await runRefinement(state, selected)
+    return
   }
+
+  state.refinementRound++
+
+  // Round 1: high + medium. Round 2: only high.
+  const toRefine = state.refinementRound === 1
+    ? state.divergences.filter(d => d.impact === 'high' || d.impact === 'medium')
+    : state.divergences.filter(d => d.impact === 'high')
+
+  if (toRefine.length === 0 || state.refinementRound > MAX_REFINEMENT_ROUNDS) {
+    await gateway.send(state.ownerThreadId, `_Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
+    state.phase = 'audit'
+    await spawnAuditor(state)
+    return
+  }
+
+  await gateway.send(state.ownerThreadId, `_Refinement round ${state.refinementRound}: ${toRefine.length} divergence${toRefine.length !== 1 ? 's' : ''} (${toRefine.map(d => d.impact).join(', ')})_`)
+
+  const result = designMachine.transition(state.phase, 'synthesized')
+  if (result.ok) state.phase = result.to
+  state.currentDivergence = 0
+
+  await runRefinement(state, toRefine)
+}
+
+async function autoAdvanceAfterRefinement(state: DesignState): Promise<void> {
+  // Refinement done → re-synthesize (machine goes refinement → synthesis)
+  const result = designMachine.transition(state.phase, 'refined')
+  if (result.ok) state.phase = result.to
+
+  await gateway.send(state.ownerThreadId, `_Re-synthesizing with refinement feedback..._`)
+  await spawnSynthesizer(state)
+}
+
+async function autoCompleteDesign(state: DesignState): Promise<void> {
+  await gateway.send(state.ownerThreadId, `_Audit complete. Design session finished._`)
+  await cleanupDesignSessions(state, 'design complete')
+  designs.delete(state.ownerThreadId)
 }
 
 // ---------------------------------------------------------------------------
@@ -394,14 +391,8 @@ async function runRefinement(
 
 async function processNextDivergence(state: DesignState): Promise<void> {
   if (!state.refinementQueue || state.refinementQueue.length === 0) {
-    // All divergences refined
-    const result = designMachine.transition(state.phase, 'refined')
-    if (result.ok) state.phase = result.to
-    void gateway.send(state.ownerThreadId, [
-      `_Refinement complete._`,
-      ``,
-      `Type \`design next\` to re-synthesize, \`design audit\` for final review, or \`done\` to end.`,
-    ].join('\n')).catch(() => {})
+    // All divergences refined — auto re-synthesize
+    void autoAdvanceAfterRefinement(state)
     return
   }
 
@@ -479,7 +470,8 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
         const result = designMachine.transition(state.phase, 'all_proposed')
         if (result.ok) {
           state.phase = result.to
-          void gateway.send(threadId, `_All ${state.proposalsReceived} proposals received. Type \`design next\` to synthesize, or \`design done\` to end._`).catch(() => {})
+          void gateway.send(threadId, `_All ${state.proposalsReceived} proposals received. Auto-synthesizing..._`).catch(() => {})
+          void spawnSynthesizer(state)
         }
       }
     } else if (state.phase === 'refinement') {
@@ -519,11 +511,8 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
         const result = designMachine.transition(state.phase, 'all_proposed')
         if (result.ok) {
           state.phase = result.to
-          void gateway.send(threadId, [
-            `_All ${state.proposalsReceived} proposals received._`,
-            ``,
-            `Type \`design next\` to synthesize, or \`done\` to end.`,
-          ].join('\n')).catch(() => {})
+          void gateway.send(threadId, `_All ${state.proposalsReceived} proposals received. Auto-synthesizing..._`).catch(() => {})
+          void spawnSynthesizer(state)
         }
       }
       return
@@ -540,20 +529,17 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       state.divergences = parseDivergences(text)
       process.stderr.write(`daemon: design: synthesizer posted, ${state.divergences.length} divergences found\n`)
 
-      const result = designMachine.transition(state.phase, 'synthesized')
-      if (result.ok) {
-        state.phase = result.to
-        const divList = state.divergences.length > 0
-          ? state.divergences.map((d, i) => `  ${i + 1}. ${d.description} (${d.impact})`).join('\n')
-          : '  (none identified)'
-        void gateway.send(threadId, [
-          `_Synthesis complete. ${state.divergences.length} divergence${state.divergences.length !== 1 ? 's' : ''} found._`,
-          ``,
-          divList,
-          ``,
-          `Type \`design refine 1,2\` to refine specific divergences, \`design audit\` for final review, or \`done\` to end.`,
-        ].join('\n')).catch(() => {})
-      }
+      const divList = state.divergences.length > 0
+        ? state.divergences.map((d, i) => `  ${i + 1}. ${d.description} (${d.impact})`).join('\n')
+        : '  (none identified)'
+      void gateway.send(threadId, [
+        `_Synthesis complete. ${state.divergences.length} divergence${state.divergences.length !== 1 ? 's' : ''} found._`,
+        ``,
+        divList,
+      ].join('\n')).catch(() => {})
+
+      // Auto-advance to refinement or audit
+      void autoAdvanceAfterSynthesis(state)
       return
     }
 
@@ -587,9 +573,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       const result = designMachine.transition(state.phase, 'audited')
       if (result.ok) {
         state.phase = result.to
-        void cleanupDesignSessions(state, 'design complete').catch(() => {})
-        designs.delete(threadId)
-        void gateway.send(threadId, `_Audit complete. Design session finished._`).catch(() => {})
+        void autoCompleteDesign(state)
       }
       return
     }
