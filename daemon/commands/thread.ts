@@ -243,6 +243,9 @@ export async function handleRecoverIntercept(msg: InboundMessage): Promise<void>
   for (const thread of detachedThreads) {
     try {
       const lastSession = thread.sessionHistory[thread.sessionHistory.length - 1]
+      if (lastSession) {
+        try { execSync(`tmux kill-session -t '${lastSession.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+      }
       const claudeSessionId = lastSession?.claudeSessionId
       const spawnOpts = claudeSessionId
         ? { forkFrom: { claudeSessionId, parentName: lastSession.tmuxName } }

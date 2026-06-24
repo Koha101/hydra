@@ -30,7 +30,7 @@ export type SessionInfo = {
   description?: string
   messageCount?: number
   claudeSessionId?: string
-  originType?: 'spawn' | 'fork' | 'handoff'
+  originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   capabilities?: SessionCapabilities
   respawnCount?: number
@@ -57,7 +57,7 @@ export type SpawnResult = { name: string; sessionId: string; threadId: string; u
 export type ThreadSessionEntry = {
   sessionId: string
   tmuxName: string
-  originType: 'spawn' | 'fork' | 'handoff'
+  originType: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   startedAt: number
   endedAt?: number
