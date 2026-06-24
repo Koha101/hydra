@@ -6,6 +6,7 @@ import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
 import { designAuditorPrompt } from './prompts/design-auditor.js'
+import { designBriefPrompt } from './prompts/design-brief.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +39,7 @@ export type DesignState = {
   personas: Array<{ name: string; sessionId: string; proposed: boolean }>
   synthesizerSessionId?: string
   auditorSessionId?: string
+  briefSessionId?: string
   proposalsExpected: number
   proposalsReceived: number
   divergences: Array<{ description: string; personas: string[]; impact: string }>
@@ -89,6 +91,7 @@ export function isDesignParticipant(sessionId: string): boolean {
     if (design.personas.some(p => p.sessionId === sessionId)) return true
     if (design.synthesizerSessionId === sessionId) return true
     if (design.auditorSessionId === sessionId) return true
+    if (design.briefSessionId === sessionId) return true
   }
   return false
 }
@@ -197,6 +200,12 @@ async function cleanupDesignSessions(state: DesignState, reason: string): Promis
       await killSession(info, reason).catch(() => {})
     }
   }
+  if (state.briefSessionId) {
+    const info = registry.get(state.briefSessionId)
+    if (info && !killsInProgress.has(state.briefSessionId)) {
+      await killSession(info, reason).catch(() => {})
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,9 +271,40 @@ async function autoAdvanceAfterRefinement(state: DesignState): Promise<void> {
 }
 
 async function autoCompleteDesign(state: DesignState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `_Audit complete. Design session finished._`)
-  await cleanupDesignSessions(state, 'design complete')
-  designs.delete(state.ownerThreadId)
+  await gateway.send(state.ownerThreadId, `_Audit complete. Generating design brief..._`)
+  await spawnBriefWriter(state)
+}
+
+async function spawnBriefWriter(state: DesignState): Promise<void> {
+  try {
+    const result = await doSpawnSession(`Design brief writer`, undefined, undefined, {
+      joinThread: state.ownerThreadId,
+      memberLabel: 'brief',
+      promptBuilder: (sessionId, tmuxName) => designBriefPrompt({
+        sessionId,
+        tmuxName,
+        topic: state.topic,
+        threadId: state.ownerThreadId,
+        personaNames: state.personas.map(p => p.name),
+      }),
+    })
+
+    state.briefSessionId = result.sessionId
+    process.stderr.write(`daemon: design: brief writer spawned as ${result.name}\n`)
+
+    state.timeout = setTimeout(async () => {
+      if (state.phase !== 'brief') return
+      process.stderr.write(`daemon: design: brief writer timeout\n`)
+      await gateway.send(state.ownerThreadId, `Brief writer timed out. Design complete without brief.`)
+      await cleanupDesignSessions(state, 'design complete')
+      designs.delete(state.ownerThreadId)
+    }, SYNTHESIS_TIMEOUT_MS)
+  } catch (err) {
+    process.stderr.write(`daemon: design: brief writer spawn failed: ${err}\n`)
+    await gateway.send(state.ownerThreadId, `Brief writer failed. Design complete without brief.`)
+    await cleanupDesignSessions(state, 'design complete')
+    designs.delete(state.ownerThreadId)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +598,24 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       if (state.refinementResponses >= state.refinementExpected) {
         if (state.timeout) clearTimeout(state.timeout)
         void processNextDivergence(state)
+      }
+      return
+    }
+
+    // Brief writer posting
+    if (state.briefSessionId === sessionId && state.phase === 'brief') {
+      const firstLine = text.split('\n')[0].trim()
+      if (!firstLine.startsWith('[brief→thread]')) return
+
+      if (state.timeout) clearTimeout(state.timeout)
+      process.stderr.write(`daemon: design: brief posted\n`)
+
+      const result = designMachine.transition(state.phase, 'brief_posted')
+      if (result.ok) {
+        state.phase = result.to
+        void cleanupDesignSessions(state, 'design complete').catch(() => {})
+        designs.delete(threadId)
+        void gateway.send(threadId, `_Design session complete._`).catch(() => {})
       }
       return
     }
