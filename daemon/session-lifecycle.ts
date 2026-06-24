@@ -38,7 +38,7 @@ export const killsInProgress = new Set<string>()
 // Detach session — unlink session from its thread without killing tmux
 // ---------------------------------------------------------------------------
 
-export function detachSession(sessionId: string): void {
+export function detachSession(sessionId: string, { skipPersist = false } = {}): void {
   const info = registry.get(sessionId)
   if (!info) return
   const thread = threadRegistry.get(info.threadId)
@@ -50,7 +50,7 @@ export function detachSession(sessionId: string): void {
       histEntry.messageCount = info.messageCount ?? 0
       histEntry.claudeSessionId = info.claudeSessionId
     }
-    threadRegistry.persist()
+    if (!skipPersist) threadRegistry.persist()
   }
 }
 
@@ -99,12 +99,12 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     // Co-update ThreadRegistry before deleting from session registry
     // (detachSession needs registry.get to work)
     if (!info.isJoinMember) {
-      detachSession(info.sessionId)
+      detachSession(info.sessionId, { skipPersist: true })
       const thread = threadRegistry.get(info.threadId)
       if (thread) {
         thread.anchorState = 'killed'
-        threadRegistry.persist()
       }
+      threadRegistry.persist()
     }
 
     // Don't delete thread mapping for join members — owner keeps it

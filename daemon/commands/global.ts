@@ -274,6 +274,9 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
 
   const results: Awaited<ReturnType<typeof recoverOne>>[] = []
 
+  const RECOVERY_TIMEOUT_MS = 5 * 60 * 1000
+  const recoveryStart = Date.now()
+
   try {
     let active = 0
     const queue = [...targets]
@@ -299,9 +302,19 @@ export async function handleRecoverIntercept(msg: InboundMessage, targetName?: s
         if (queue.length > 0) await new Promise(r => setTimeout(r, STAGGER_MS))
       }
       if (active > 0) await new Promise(r => setTimeout(r, 2_000))
+      if (Date.now() - recoveryStart > RECOVERY_TIMEOUT_MS) {
+        process.stderr.write(`daemon: recovery timed out after 5 minutes with ${active} still active\n`)
+        break
+      }
     }
 
-    while (active > 0) await new Promise(r => setTimeout(r, 1_000))
+    const waitStart = Date.now()
+    while (active > 0 && Date.now() - waitStart < 60_000) {
+      await new Promise(r => setTimeout(r, 1_000))
+    }
+    if (active > 0) {
+      process.stderr.write(`daemon: recovery drain timed out, ${active} sessions still pending\n`)
+    }
   } finally {
     recoveryInProgress = false
   }
