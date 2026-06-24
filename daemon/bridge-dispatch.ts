@@ -5,7 +5,7 @@ import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
-import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl } from './pr-watch.js'
+import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -252,9 +252,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const info = registry.get(sessionId)
         if (!prUrl) {
           const cwd = info?.capabilities?.cwd
-          if (!cwd) throw new Error('no pr_url provided and could not determine cwd — pass pr_url explicitly')
-          prUrl = await detectPrUrl(cwd)
-          if (!prUrl) throw new Error('no PR found on current branch — pass pr_url explicitly')
+          if (!cwd) throw new Error(WATCH_ERRORS.NO_CWD)
+          const detected = await detectPrUrl(cwd)
+          if (!detected.ok) throw new Error(detected.reason)
+          prUrl = detected.url
         }
         const threadId = (args.chat_id as string | undefined) ?? info?.threadId ?? ''
         if (!threadId) throw new Error('could not determine thread — pass chat_id')

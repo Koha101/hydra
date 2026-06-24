@@ -324,20 +324,51 @@ async function pollAll(): Promise<void> {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function detectPrUrl(cwd: string): Promise<string | null> {
+// Shared error messages for chat and tool paths
+export const WATCH_ERRORS = {
+  NO_SESSION: 'bare `watch` only works in a session thread — provide a PR URL',
+  NO_CWD: 'no URL provided and could not determine session cwd — provide a PR URL',
+  NO_PR: 'no open PR found on current branch — provide a PR URL',
+  PR_CLOSED: (url: string, state: string) => `PR ${url} is ${state} — provide a URL for the current PR`,
+  INVALID_URL: (url: string) => `detected URL from current branch but it doesn't look like a GitHub PR: ${url}`,
+} as const
+
+export type DetectResult =
+  | { ok: true; url: string }
+  | { ok: false; reason: string }
+
+export async function detectPrUrl(cwd: string): Promise<DetectResult> {
+  process.stderr.write(`daemon: pr-watch: detecting PR from cwd=${cwd}\n`)
   try {
-    const proc = Bun.spawn(['gh', 'pr', 'view', '--json', 'url', '-q', '.url'], {
+    const proc = Bun.spawn(['gh', 'pr', 'view', '--json', 'url,state', '-q', '[.url, .state] | join("\\t")'], {
       cwd,
       stdout: 'pipe',
       stderr: 'pipe',
     })
-    const stdout = await new Response(proc.stdout).text()
-    const exitCode = await proc.exited
-    if (exitCode !== 0) return null
-    const url = stdout.trim()
-    return url && url.startsWith('https://') ? url : null
+    const result = await Promise.race([
+      (async () => {
+        const stdout = await new Response(proc.stdout).text()
+        const exitCode = await proc.exited
+        return { stdout, exitCode }
+      })(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => { proc.kill(); reject(new Error('timeout')) }, 15_000)
+      ),
+    ])
+    if (result.exitCode !== 0) return { ok: false, reason: WATCH_ERRORS.NO_PR }
+
+    const [url, state] = result.stdout.trim().split('\t')
+    if (!url || !url.startsWith('https://')) return { ok: false, reason: WATCH_ERRORS.NO_PR }
+
+    if (!parsePrUrl(url)) return { ok: false, reason: WATCH_ERRORS.INVALID_URL(url) }
+
+    if (state && state !== 'open') {
+      return { ok: false, reason: WATCH_ERRORS.PR_CLOSED(url, state) }
+    }
+
+    return { ok: true, url }
   } catch {
-    return null
+    return { ok: false, reason: WATCH_ERRORS.NO_PR }
   }
 }
 

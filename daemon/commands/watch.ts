@@ -1,6 +1,6 @@
 import { gateway } from '../config.js'
 import { registry } from '../sessions.js'
-import { watchPr, unwatchPr, listWatches, formatWatchEntry, detectPrUrl } from '../pr-watch.js'
+import { watchPr, unwatchPr, listWatches, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from '../pr-watch.js'
 import { reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
@@ -17,16 +17,21 @@ export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string):
   // Auto-detect PR from session's cwd if no URL provided
   let resolvedUrl = prUrl
   if (!resolvedUrl) {
+    if (!sessionId) {
+      await reportError(msg.channelId, msg.id, 'watch', WATCH_ERRORS.NO_SESSION)
+      return
+    }
     const cwd = info?.capabilities?.cwd
     if (!cwd) {
-      await reportError(msg.channelId, msg.id, 'watch', 'no URL provided and could not determine session cwd')
+      await reportError(msg.channelId, msg.id, 'watch', WATCH_ERRORS.NO_CWD)
       return
     }
-    resolvedUrl = await detectPrUrl(cwd)
-    if (!resolvedUrl) {
-      await reportError(msg.channelId, msg.id, 'watch', 'no PR found on current branch — provide a URL')
+    const detected = await detectPrUrl(cwd)
+    if (!detected.ok) {
+      await reportError(msg.channelId, msg.id, 'watch', detected.reason)
       return
     }
+    resolvedUrl = detected.url
   }
 
   try {
