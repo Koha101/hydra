@@ -59,7 +59,7 @@ export type DesignState = {
 const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
   spawning:    { all_spawned: 'independent', timeout: 'cancelled', cancel: 'cancelled' },
   independent: { all_proposed: 'synthesis',  timeout: 'cancelled', cancel: 'cancelled' },
-  synthesis:   { synthesized: 'refinement',  timeout: 'cancelled', cancel: 'cancelled' },
+  synthesis:   { synthesized: 'refinement',  timeout: 'synthesis', cancel: 'cancelled' },  // timeout retries
   refinement:  { refined: 'synthesis',       timeout: 'cancelled', cancel: 'cancelled' },  // loops back for re-synthesis
   audit:       { audited: 'brief',           timeout: 'cancelled', cancel: 'cancelled' },
   brief:       { brief_posted: 'complete',   timeout: 'cancelled', cancel: 'cancelled' },
@@ -74,7 +74,7 @@ const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
 const designs = new Map<string, DesignState>()  // keyed by threadId
 
 const PERSONA_TIMEOUT_MS = 15 * 60 * 1000
-const SYNTHESIS_TIMEOUT_MS = 10 * 60 * 1000
+const SYNTHESIS_TIMEOUT_MS = 20 * 60 * 1000
 
 export { PERSONA_NAMES, PersonaName }
 
@@ -332,16 +332,14 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
 
     state.timeout = setTimeout(async () => {
       if (state.phase !== 'synthesis') return
-      process.stderr.write(`daemon: design: synthesizer timeout\n`)
-      const r = designMachine.transition(state.phase, 'timeout')
-      if (r.ok) state.phase = r.to
-      await gateway.send(state.ownerThreadId, `Synthesizer timed out. Type \`design next\` to retry or \`done\` to end.`)
+      process.stderr.write(`daemon: design: synthesizer timeout, retrying\n`)
+      await gateway.send(state.ownerThreadId, `_Synthesizer timed out. Retrying..._`)
+      await spawnSynthesizer(state)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: synthesizer spawn failed: ${err}\n`)
-    const r = designMachine.transition(state.phase, 'timeout')
-    if (r.ok) state.phase = r.to
-    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`design next\` to retry or \`done\` to end.`)
+    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Cancelling design.`)
+    await cancelDesign(state.ownerThreadId)
   }
 }
 

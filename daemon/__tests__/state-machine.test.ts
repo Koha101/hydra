@@ -402,12 +402,18 @@ describe('design transition table (autonomous)', () => {
     expect(sm.transition('spawning' as any, 'all_proposed' as any).ok).toBe(false)
   })
 
-  test('timeout cancels from all active phases', () => {
-    for (const phase of ['spawning', 'independent', 'synthesis', 'refinement', 'audit', 'brief']) {
+  test('timeout cancels from most active phases', () => {
+    for (const phase of ['spawning', 'independent', 'refinement', 'audit', 'brief']) {
       const r = sm.transition(phase as any, 'timeout' as any)
       expect(r.ok).toBe(true)
       if (r.ok) expect(r.to).toBe('cancelled')
     }
+  })
+
+  test('synthesis timeout retries (stays in synthesis)', () => {
+    const r = sm.transition('synthesis' as any, 'timeout' as any)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.to).toBe('synthesis')
   })
 
   test('complete and cancelled are terminal', () => {
