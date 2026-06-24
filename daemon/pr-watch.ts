@@ -1,7 +1,7 @@
 import { execSync } from 'child_process'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { gateway, STATE_DIR } from './config.js'
+import { STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { atomicWriteFileSync, formatDuration } from './util.js'
@@ -321,10 +321,9 @@ async function pollAll(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// PR detection — auto-detect PR URL from a working directory
 // ---------------------------------------------------------------------------
 
-// Shared error messages for chat and tool paths
 export const WATCH_ERRORS = {
   NO_SESSION: 'bare `watch` only works in a session thread — provide a PR URL',
   NO_CWD: 'no URL provided and could not determine session cwd — provide a PR URL',
@@ -371,6 +370,10 @@ export async function detectPrUrl(cwd: string): Promise<DetectResult> {
     return { ok: false, reason: WATCH_ERRORS.NO_PR }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export async function watchPr(prUrl: string, sessionId: string, threadId: string): Promise<string> {
   if (watches.has(prUrl)) {
