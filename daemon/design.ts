@@ -333,6 +333,14 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
     state.timeout = setTimeout(async () => {
       if (state.phase !== 'synthesis') return
       process.stderr.write(`daemon: design: synthesizer timeout, retrying\n`)
+      // Kill the old synthesizer before respawning
+      if (state.synthesizerSessionId) {
+        const old = registry.get(state.synthesizerSessionId)
+        if (old && !killsInProgress.has(state.synthesizerSessionId)) {
+          await killSession(old, 'synthesizer timeout').catch(() => {})
+        }
+        state.synthesizerSessionId = undefined
+      }
       await gateway.send(state.ownerThreadId, `_Synthesizer timed out. Retrying..._`)
       await spawnSynthesizer(state)
     }, SYNTHESIS_TIMEOUT_MS)
