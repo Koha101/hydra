@@ -129,13 +129,8 @@ export async function startDesign(
     `Spawning ${PERSONA_NAMES.join(', ')}...`,
   ].join('\n'))
 
-  // Capture thread history BEFORE spawning — prevents cross-contamination
-  // Limit to last 20 messages, truncate each, cap total to prevent shell argument overflow
-  const messages = await gateway.fetchMessages(threadId, 20)
-  const contextSnapshot = messages
-    .map(m => `[${m.authorUsername}]: ${m.content.replace(/[\n\r]+/g, ' ').slice(0, 200)}`)
-    .join('\n')
-    .slice(0, 3000)
+  // Record cutoff timestamp — personas should ignore messages after this point
+  const cutoffTs = new Date().toISOString()
 
   // Spawn personas with 2s stagger
   for (const name of PERSONA_NAMES) {
@@ -143,7 +138,7 @@ export async function startDesign(
       const result = await doSpawnSession(`Design persona: ${name}`, undefined, undefined, {
         joinThread: threadId,
         memberLabel: name,
-        promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, contextSnapshot }),
+        promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, cutoffTs }),
       })
       state.personas.push({ name, sessionId: result.sessionId, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)
