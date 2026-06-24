@@ -45,7 +45,8 @@ export type BuildState = {
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
   _heartbeat?: ReturnType<typeof setInterval>
-  _disconnectTimer?: ReturnType<typeof setTimeout>
+  _criticDisconnectTimer?: ReturnType<typeof setTimeout>
+  _ownerDisconnectTimer?: ReturnType<typeof setTimeout>
   worktreeRepo?: string
   worktreePath?: string
   worktreeBranch?: string
@@ -217,7 +218,8 @@ export async function cancelBuild(buildId: string): Promise<void> {
   state.phase = 'cancelled'
   if (state.timeout) clearTimeout(state.timeout)
   if (state._heartbeat) clearInterval(state._heartbeat)
-  if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+  if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
+  if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
 
   try {
     if (state.criticSessionId) {
@@ -315,14 +317,14 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
       clearTimeout(state.timeout)
       state.timeout = undefined
     }
-    state._disconnectTimer = setTimeout(async () => {
+    state._criticDisconnectTimer = setTimeout(async () => {
       if (transport.has(sessionId)) {
         process.stderr.write(`daemon: build critic reconnected, grace period cleared\n`)
         resetTimeout(state)
         return
       }
       process.stderr.write(`daemon: build critic did not reconnect, cancelling build\n`)
-      await cancelBuild(state.buildId)
+      void cancelBuild(state.buildId).catch(() => {})
     }, 30_000)
   } else if (state.ownerSessionId === sessionId) {
     process.stderr.write(`daemon: build owner disconnected — 2min grace period\n`)
@@ -337,14 +339,14 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
         meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
-    state._disconnectTimer = setTimeout(async () => {
+    state._ownerDisconnectTimer = setTimeout(async () => {
       if (transport.has(sessionId)) {
         process.stderr.write(`daemon: build owner reconnected, grace period cleared\n`)
         resetTimeout(state)
         return
       }
       process.stderr.write(`daemon: build owner did not reconnect, cancelling build\n`)
-      await cancelBuild(state.buildId)
+      void cancelBuild(state.buildId).catch(() => {})
     }, 120_000)
   }
 }
@@ -354,9 +356,16 @@ export function onBuildParticipantReconnect(sessionId: string): void {
   const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
   if (!buildId) return
   const state = builds.get(buildId)
-  if (!state || !state._disconnectTimer) return
-  clearTimeout(state._disconnectTimer)
-  state._disconnectTimer = undefined
+  if (!state) return
+  if (state.criticSessionId === sessionId && state._criticDisconnectTimer) {
+    clearTimeout(state._criticDisconnectTimer)
+    state._criticDisconnectTimer = undefined
+  } else if (state.ownerSessionId === sessionId && state._ownerDisconnectTimer) {
+    clearTimeout(state._ownerDisconnectTimer)
+    state._ownerDisconnectTimer = undefined
+  } else {
+    return
+  }
   resetTimeout(state)
   process.stderr.write(`daemon: build participant ${sessionId} reconnected, grace period cleared\n`)
 }

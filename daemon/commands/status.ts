@@ -305,7 +305,8 @@ export async function handleProtocolsIntercept(msg: InboundMessage): Promise<voi
   for (const r of reviews) {
     const owner = registry.get(r.ownerSessionId)
     const critic = r.criticSessionId ? registry.get(r.criticSessionId) : undefined
-    const elapsed = formatDuration(Date.now() - (owner?.createdAt ?? Date.now()))
+    const startTime = owner?.createdAt ?? critic?.createdAt
+    const elapsed = startTime ? formatDuration(Date.now() - startTime) : '?'
     const topicLine = r.topic ? ` — ${r.topic}` : ''
     lines.push(`• ⚔️ **Review** (${r.currentRound}/${r.rounds}) ${r.phase}${topicLine}`)
     lines.push(`  Owner: ${owner?.tmuxName ?? '?'} · Critic: ${critic?.tmuxName ?? 'pending'} · ${elapsed}`)
@@ -314,7 +315,8 @@ export async function handleProtocolsIntercept(msg: InboundMessage): Promise<voi
   for (const b of builds) {
     const owner = registry.get(b.ownerSessionId)
     const critic = b.criticSessionId ? registry.get(b.criticSessionId) : undefined
-    const elapsed = formatDuration(Date.now() - (owner?.createdAt ?? Date.now()))
+    const startTime = owner?.createdAt ?? critic?.createdAt
+    const elapsed = startTime ? formatDuration(Date.now() - startTime) : '?'
     lines.push(`• 🔨 **Build** (${b.currentRound}/${b.rounds}) ${b.phase}`)
     lines.push(`  Owner: ${owner?.tmuxName ?? '?'} · Critic: ${critic?.tmuxName ?? 'pending'} · Task: ${b.task.slice(0, 60)} · ${elapsed}`)
   }

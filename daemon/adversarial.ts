@@ -30,7 +30,8 @@ export type ReviewState = {
   phase: ReviewPhase
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
-  _disconnectTimer?: ReturnType<typeof setTimeout>
+  _criticDisconnectTimer?: ReturnType<typeof setTimeout>
+  _ownerDisconnectTimer?: ReturnType<typeof setTimeout>
   _finalizing?: boolean
   _cleanupNudged?: boolean
 }
@@ -167,7 +168,8 @@ export async function cancelReview(reviewId: string): Promise<void> {
   if (!transition.ok) return
   state.phase = transition.to
   if (state.timeout) clearTimeout(state.timeout)
-  if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+  if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
+  if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
 
   try {
     if (state.criticSessionId) {
@@ -277,14 +279,14 @@ export function onParticipantDisconnect(sessionId: string): void {
       clearTimeout(state.timeout)
       state.timeout = undefined
     }
-    state._disconnectTimer = setTimeout(async () => {
+    state._criticDisconnectTimer = setTimeout(async () => {
       if (transport.has(sessionId)) {
         process.stderr.write(`daemon: review critic reconnected, grace period cleared\n`)
         resetTimeout(state)
         return
       }
       process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
-      await cancelReview(state.reviewId)
+      void cancelReview(state.reviewId).catch(() => {})
     }, 30_000)
   } else if (state.ownerSessionId === sessionId) {
     process.stderr.write(`daemon: review owner disconnected — 2min grace period\n`)
@@ -299,14 +301,14 @@ export function onParticipantDisconnect(sessionId: string): void {
         meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
-    state._disconnectTimer = setTimeout(async () => {
+    state._ownerDisconnectTimer = setTimeout(async () => {
       if (transport.has(sessionId)) {
         process.stderr.write(`daemon: review owner reconnected, grace period cleared\n`)
         resetTimeout(state)
         return
       }
       process.stderr.write(`daemon: review owner did not reconnect, cancelling review\n`)
-      await cancelReview(state.reviewId)
+      void cancelReview(state.reviewId).catch(() => {})
     }, 120_000)
   }
 }
@@ -316,9 +318,16 @@ export function onParticipantReconnect(sessionId: string): void {
   const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
   if (!reviewId) return
   const state = reviews.get(reviewId)
-  if (!state || !state._disconnectTimer) return
-  clearTimeout(state._disconnectTimer)
-  state._disconnectTimer = undefined
+  if (!state) return
+  if (state.criticSessionId === sessionId && state._criticDisconnectTimer) {
+    clearTimeout(state._criticDisconnectTimer)
+    state._criticDisconnectTimer = undefined
+  } else if (state.ownerSessionId === sessionId && state._ownerDisconnectTimer) {
+    clearTimeout(state._ownerDisconnectTimer)
+    state._ownerDisconnectTimer = undefined
+  } else {
+    return
+  }
   resetTimeout(state)
   process.stderr.write(`daemon: review participant ${sessionId} reconnected, grace period cleared\n`)
 }
