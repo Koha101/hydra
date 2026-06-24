@@ -5,6 +5,7 @@ import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { getReviewByThread } from './adversarial.js'
+import { getDesignByThread } from './design.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
 import { createStateMachine } from './state-machine.js'
@@ -119,6 +120,9 @@ export async function startBuild(
   }
   if (getReviewByThread(ownerThreadId)) {
     throw new Error('A review is in progress in this thread — finish or cancel it first')
+  }
+  if (getDesignByThread(ownerThreadId)) {
+    throw new Error('A design is in progress in this thread — finish or cancel it first')
   }
 
   const buildId = Math.random().toString(36).slice(2, 10)
@@ -297,16 +301,15 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
   }
 }
 
-/** Called when a critic bridge disconnects. Grace period before cancel. */
+/** Called when a build participant bridge disconnects. Grace period before cancel. */
 export function onBuildParticipantDisconnect(sessionId: string): void {
-  const buildId = sessionToBuild.get(sessionId)
+  const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
   if (!buildId) return
   const state = builds.get(buildId)
-  if (!state) return
+  if (!state || state.phase === 'complete' || state.phase === 'cancelled') return
+  if (transport.has(sessionId)) return
 
-  if (state.phase === 'reviewing' && state.criticSessionId === sessionId) {
-    if (transport.has(sessionId)) return
-
+  if (state.criticSessionId === sessionId) {
     process.stderr.write(`daemon: build critic disconnected — 30s grace period\n`)
     if (state.timeout) {
       clearTimeout(state.timeout)
@@ -321,6 +324,28 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
       process.stderr.write(`daemon: build critic did not reconnect, cancelling build\n`)
       await cancelBuild(state.buildId)
     }, 30_000)
+  } else if (state.ownerSessionId === sessionId) {
+    process.stderr.write(`daemon: build owner disconnected — 2min grace period\n`)
+    if (state.timeout) {
+      clearTimeout(state.timeout)
+      state.timeout = undefined
+    }
+    if (state.criticSessionId) {
+      transport.sendOrQueue(state.criticSessionId, {
+        type: 'notification',
+        content: `[system] Owner session disconnected. Waiting up to 2 minutes for reconnect before cancelling.`,
+        meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    state._disconnectTimer = setTimeout(async () => {
+      if (transport.has(sessionId)) {
+        process.stderr.write(`daemon: build owner reconnected, grace period cleared\n`)
+        resetTimeout(state)
+        return
+      }
+      process.stderr.write(`daemon: build owner did not reconnect, cancelling build\n`)
+      await cancelBuild(state.buildId)
+    }, 120_000)
   }
 }
 
@@ -424,6 +449,8 @@ function completeBuild(state: BuildState, approved: boolean, lastCriticText: str
   })
 
   // Finalize — keep build messages (they're the work product)
+  if (state._heartbeat) clearInterval(state._heartbeat)
+  if (state.timeout) clearTimeout(state.timeout)
   state.phase = 'complete'
   cleanupBuildMaps(state)
 }

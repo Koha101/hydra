@@ -4,6 +4,7 @@ import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { getBuildByThread } from './build.js'
+import { getDesignByThread } from './design.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { createStateMachine } from './state-machine.js'
 
@@ -106,6 +107,9 @@ export async function startReview(
   }
   if (getBuildByThread(ownerThreadId)) {
     throw new Error('A build is in progress in this thread — finish or cancel it first')
+  }
+  if (getDesignByThread(ownerThreadId)) {
+    throw new Error('A design is in progress in this thread — finish or cancel it first')
   }
 
   const reviewId = randomUUID()
@@ -259,16 +263,15 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
   }
 }
 
-/** Called when a critic bridge disconnects. */
+/** Called when a review participant bridge disconnects. */
 export function onParticipantDisconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
+  const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
   if (!reviewId) return
   const state = reviews.get(reviewId)
-  if (!state) return
+  if (!state || state.phase === 'complete' || state.phase === 'cancelled') return
+  if (transport.has(sessionId)) return
 
-  if (state.phase === 'critic_turn' && state.criticSessionId === sessionId) {
-    if (transport.has(sessionId)) return
-
+  if (state.criticSessionId === sessionId) {
     process.stderr.write(`daemon: review critic disconnected — 30s grace period\n`)
     if (state.timeout) {
       clearTimeout(state.timeout)
@@ -283,6 +286,28 @@ export function onParticipantDisconnect(sessionId: string): void {
       process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
       await cancelReview(state.reviewId)
     }, 30_000)
+  } else if (state.ownerSessionId === sessionId) {
+    process.stderr.write(`daemon: review owner disconnected — 2min grace period\n`)
+    if (state.timeout) {
+      clearTimeout(state.timeout)
+      state.timeout = undefined
+    }
+    if (state.criticSessionId) {
+      transport.sendOrQueue(state.criticSessionId, {
+        type: 'notification',
+        content: `[system] Owner session disconnected. Waiting up to 2 minutes for reconnect before cancelling.`,
+        meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    state._disconnectTimer = setTimeout(async () => {
+      if (transport.has(sessionId)) {
+        process.stderr.write(`daemon: review owner reconnected, grace period cleared\n`)
+        resetTimeout(state)
+        return
+      }
+      process.stderr.write(`daemon: review owner did not reconnect, cancelling review\n`)
+      await cancelReview(state.reviewId)
+    }, 120_000)
   }
 }
 

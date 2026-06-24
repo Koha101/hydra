@@ -2,6 +2,8 @@ import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
+import { getReviewByThread } from './adversarial.js'
+import { getBuildByThread } from './build.js'
 import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
@@ -95,6 +97,10 @@ export function getDesignByThread(threadId: string): DesignState | undefined {
   return designs.get(threadId)
 }
 
+export function getActiveDesigns(): DesignState[] {
+  return [...designs.values()].filter(d => d.phase !== 'complete' && d.phase !== 'cancelled')
+}
+
 export function isDesignParticipant(sessionId: string): boolean {
   for (const design of designs.values()) {
     if (design.personas.some(p => p.sessionId === sessionId)) return true
@@ -115,6 +121,12 @@ export async function startDesign(
 ): Promise<DesignState> {
   if (designs.has(threadId)) {
     throw new Error('A design session is already in progress in this thread')
+  }
+  if (getReviewByThread(threadId)) {
+    throw new Error('A review is in progress in this thread — finish or cancel it first')
+  }
+  if (getBuildByThread(threadId)) {
+    throw new Error('A build is in progress in this thread — finish or cancel it first')
   }
 
   const state: DesignState = {

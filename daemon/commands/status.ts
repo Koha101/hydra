@@ -6,6 +6,9 @@ import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
+import { getActiveReviews } from '../adversarial.js'
+import { getActiveBuilds } from '../build.js'
+import { getActiveDesigns } from '../design.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export const daemonStartedAt = Date.now()
@@ -276,6 +279,53 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
       return last?.tmuxName ?? t.threadId.slice(0, 8)
     })
     lines.push(`• 💤 Recoverable threads: ${names.join(', ')}`)
+  }
+
+  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Protocols — show active review/build/design sessions
+// ---------------------------------------------------------------------------
+
+export async function handleProtocolsIntercept(msg: InboundMessage): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '📡').catch(() => {})
+
+  const reviews = getActiveReviews()
+  const builds = getActiveBuilds()
+  const designs = getActiveDesigns()
+
+  if (reviews.length === 0 && builds.length === 0 && designs.length === 0) {
+    try { await gateway.send(msg.channelId, `No active protocols.`, { replyTo: msg.id }) } catch {}
+    return
+  }
+
+  const lines: string[] = ['**Active Protocols**']
+
+  for (const r of reviews) {
+    const owner = registry.get(r.ownerSessionId)
+    const critic = r.criticSessionId ? registry.get(r.criticSessionId) : undefined
+    const elapsed = formatDuration(Date.now() - (owner?.createdAt ?? Date.now()))
+    const topicLine = r.topic ? ` — ${r.topic}` : ''
+    lines.push(`• ⚔️ **Review** (${r.currentRound}/${r.rounds}) ${r.phase}${topicLine}`)
+    lines.push(`  Owner: ${owner?.tmuxName ?? '?'} · Critic: ${critic?.tmuxName ?? 'pending'} · ${elapsed}`)
+  }
+
+  for (const b of builds) {
+    const owner = registry.get(b.ownerSessionId)
+    const critic = b.criticSessionId ? registry.get(b.criticSessionId) : undefined
+    const elapsed = formatDuration(Date.now() - (owner?.createdAt ?? Date.now()))
+    lines.push(`• 🔨 **Build** (${b.currentRound}/${b.rounds}) ${b.phase}`)
+    lines.push(`  Owner: ${owner?.tmuxName ?? '?'} · Critic: ${critic?.tmuxName ?? 'pending'} · Task: ${b.task.slice(0, 60)} · ${elapsed}`)
+  }
+
+  for (const d of designs) {
+    const alivePersonas = d.personas.filter(p => registry.has(p.sessionId))
+    const thread = threadRegistry.get(d.ownerThreadId)
+    const ownerSession = thread?.currentSessionId ? registry.get(thread.currentSessionId) : undefined
+    const elapsed = ownerSession ? formatDuration(Date.now() - ownerSession.createdAt) : '?'
+    lines.push(`• 🎨 **Design** ${d.phase} — ${d.topic.slice(0, 60)}`)
+    lines.push(`  Personas: ${alivePersonas.length}/${d.personas.length} alive · ${elapsed}`)
   }
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
