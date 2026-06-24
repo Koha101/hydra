@@ -351,7 +351,7 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
 
 /** Called when a bridge registers — clears disconnect grace period. */
 export function onBuildParticipantReconnect(sessionId: string): void {
-  const buildId = sessionToBuild.get(sessionId)
+  const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
   if (!buildId) return
   const state = builds.get(buildId)
   if (!state || !state._disconnectTimer) return

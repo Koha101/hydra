@@ -313,7 +313,7 @@ export function onParticipantDisconnect(sessionId: string): void {
 
 /** Called when a bridge registers. */
 export function onParticipantReconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
+  const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
   if (!reviewId) return
   const state = reviews.get(reviewId)
   if (!state || !state._disconnectTimer) return
