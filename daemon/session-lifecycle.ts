@@ -3,6 +3,7 @@ import { execSync, execFileSync } from 'child_process'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
+import { EventEmitter } from 'events'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
 import { registry, sessionEmoji, threadRegistry } from './sessions.js'
@@ -10,6 +11,20 @@ import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from '.
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
 import { setAnchorState } from './anchor-state.js'
+import { unwatchBySession } from './pr-watch.js'
+
+// ---------------------------------------------------------------------------
+// Session death events
+// ---------------------------------------------------------------------------
+
+export type SessionDeathEvent = {
+  sessionId: string
+  threadId: string
+  wasOwner: boolean
+  tmuxName: string
+}
+
+export const sessionDeathEmitter = new EventEmitter()
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -80,6 +95,22 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     }
 
     detachSession(info.sessionId)
+
+    const removedWatches = unwatchBySession(info.sessionId)
+    if (removedWatches > 0) {
+      process.stderr.write(`daemon: removed ${removedWatches} PR watch(es) for session ${info.sessionId}\n`)
+    }
+
+    if (info.isJoinMember) {
+      registry.removeMember(info.threadId, info.sessionId)
+    }
+
+    sessionDeathEmitter.emit('death', {
+      sessionId: info.sessionId,
+      threadId: info.threadId,
+      wasOwner: !info.isJoinMember,
+      tmuxName: info.tmuxName,
+    } satisfies SessionDeathEvent)
 
     setTimeout(() => {
       const current = [...registry.sessions.values()].find(s => s.tmuxName === tmuxName && s.sessionId !== info.sessionId)
@@ -179,41 +210,41 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     await setAnchorState(threadId, respawnCount > 0 ? 'zombie' : 'live', respawnCount)
   }
 
-  // Create thread if we don't have one yet
-  if (!threadId) {
-    if (messageId && targetChannelId === chatId) {
-      try {
+    // Create thread if we don't have one yet
+    if (!threadId) {
+      if (messageId && targetChannelId === chatId) {
+        try {
+          const thread = await gateway.createThread(targetChannelId!, threadName, {
+            messageId,
+            archiveDuration: 1440,
+          })
+          threadId = thread.id
+          anchorMessageId = messageId
+        } catch (err) {
+          process.stderr.write(`daemon: createThread on message failed: ${err}\n`)
+        }
+      }
+
+      if (!threadId) {
+        const e = sessionEmoji(tmuxName)
+        let anchorText: string
+        if (originFrom) {
+          const pe = sessionEmoji(originFrom)
+          const verb = isHandoff ? 'handed off from' : 'forked from'
+          anchorText = `${e} \`${tmuxName}\` — ${verb} ${pe} \`${originFrom}\``
+          if (isFork) anchorText += `\n${topic}`
+        } else {
+          anchorText = `Starting session **${tmuxName}**: ${topic}`
+        }
+        const anchor = await gateway.send(targetChannelId!, anchorText)
+        anchorMessageId = anchor.id
         const thread = await gateway.createThread(targetChannelId!, threadName, {
-          messageId,
+          messageId: anchor.id,
           archiveDuration: 1440,
         })
         threadId = thread.id
-        anchorMessageId = messageId
-      } catch (err) {
-        process.stderr.write(`daemon: createThread on message failed: ${err}\n`)
       }
     }
-
-    if (!threadId) {
-      const e = sessionEmoji(tmuxName)
-      let anchorText: string
-      if (originFrom) {
-        const pe = sessionEmoji(originFrom)
-        const verb = isHandoff ? 'handed off from' : 'forked from'
-        anchorText = `${e} \`${tmuxName}\` — ${verb} ${pe} \`${originFrom}\``
-        if (isFork) anchorText += `\n${topic}`
-      } else {
-        anchorText = `Starting session **${tmuxName}**: ${topic}`
-      }
-      const anchor = await gateway.send(targetChannelId!, anchorText)
-      anchorMessageId = anchor.id
-      const thread = await gateway.createThread(targetChannelId!, threadName, {
-        messageId: anchor.id,
-        archiveDuration: 1440,
-      })
-      threadId = thread.id
-    }
-  }
 
   const channelFlag = `plugin:discord@claude-plugins-official`
   const spawnCwd = process.env.SPAWN_CWD
@@ -395,6 +426,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
     ...(isJoin ? { isJoinMember: true } : {}),
   })
+  if (isJoin) {
+    registry.addMember(threadId!, sessionId, opts?.memberLabel)
+  }
   registry.persist()
 
   // Co-update ThreadInfo — join members don't claim the thread's currentSessionId

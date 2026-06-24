@@ -26,17 +26,10 @@ for c in bun tmux claude; do
 done
 
 # --- code compiles ---
-# `bun run` is lazy: parse/export errors surface only at module-load, so a broken
-# tree boots "fine" until the crashing module is imported, then crash-loops on the
-# next restart. Build the entries up front to catch it before launch.
 if command -v bun >/dev/null 2>&1; then
-  COMPILE_RC=0
-  COMPILE_OUT=""
-  for entry in daemon.ts bridge.ts; do
-    err=$(cd "$SCRIPT_DIR" && bun build "$entry" --target=bun 2>&1 >/dev/null) || COMPILE_RC=1
-    [ -n "$err" ] && COMPILE_OUT="${COMPILE_OUT}[$entry] ${err}"$'\n'
-  done
-  if [ "$COMPILE_RC" -eq 0 ]; then
+  source "$SCRIPT_DIR/compile-check.sh"
+  COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
+  if [ $? -eq 0 ]; then
     ok "daemon + bridge compile"
   else
     bad "compile FAILED — daemon would crash-loop on boot:"

@@ -887,6 +887,9 @@ export class SlackGateway implements ChatGateway {
       '8️⃣': 'eight',
       '9️⃣': 'nine',
       '👨‍👩‍👦‍👦': 'family_man_woman_boy_boy',
+      '👁️': 'eye',
+      '🙈': 'see_no_evil',
+      '📡': 'satellite_antenna',
     }
     if (map[emoji]) return map[emoji]
     // If it's already a text name (no colons), return as-is

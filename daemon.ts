@@ -9,7 +9,7 @@
  */
 
 import { join } from 'path'
-import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs'
+import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry, threadRegistry } from './daemon/sessions.js'
@@ -21,6 +21,9 @@ import { announceRestartComplete } from './daemon/commands/global.js'
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
+import { startPrWatcher } from './daemon/pr-watch.js'
+import { getContextPercent } from './daemon/util.js'
+import { isSessionDead } from './daemon/commands/thread.js'
 
 // Boot thread registry — loads threads.json or migrates from sessions on first run
 threadRegistry.boot(registry)
@@ -62,9 +65,7 @@ function sendRecoveryReport(gapMs: number): void {
   process.stderr.write(`daemon: sent recovery report (offline ${duration})\n`)
 }
 
-if ('onReconnectAfterOutage' in gateway) {
-  gateway.onReconnectAfterOutage = sendRecoveryReport
-}
+gateway.onReconnectAfterOutage = sendRecoveryReport
 
 // ---------------------------------------------------------------------------
 // Permission UI
@@ -80,13 +81,30 @@ try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
   const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
   const daemonConfig = JSON.stringify({ socket: SOCK_PATH, platform: PLATFORM })
+  const mcpJson = JSON.stringify({
+    mcpServers: {
+      discord: {
+        command: 'bun',
+        args: ['run', '--cwd', '${CLAUDE_PLUGIN_ROOT}', '--shell=bun', '--silent', 'start'],
+      },
+    },
+  }, null, 2)
+  const pluginJson = JSON.stringify({
+    name: 'discord',
+    description: 'Discord channel for Claude Code — messaging bridge with built-in access control.',
+    version: '0.0.4',
+    keywords: ['discord', 'messaging', 'channel', 'mcp'],
+  }, null, 2)
   const versionDirs = readdirSync(discordCache, { withFileTypes: true }).filter(d => d.isDirectory())
   for (const d of versionDirs) {
     const targetDir = join(discordCache, d.name)
     copyFileSync(bridgeSrc, join(targetDir, 'server.ts'))
     writeFileSync(join(targetDir, 'daemon.json'), daemonConfig)
+    writeFileSync(join(targetDir, '.mcp.json'), mcpJson)
+    mkdirSync(join(targetDir, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(targetDir, '.claude-plugin', 'plugin.json'), pluginJson)
   }
-  process.stderr.write(`daemon: synced bridge.ts + daemon.json into ${discordCache}/*/\n`)
+  process.stderr.write(`daemon: synced bridge.ts + daemon.json + .mcp.json into ${discordCache}/*/\n`)
 } catch (err) {
   process.stderr.write(`daemon: bridge sync skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`)
 }
@@ -158,6 +176,43 @@ async function startGateway(attempt = 0): Promise<void> {
 }
 
 void startGateway()
+
+// ---------------------------------------------------------------------------
+// PR watcher — polls GitHub for new PR comments/reviews
+// ---------------------------------------------------------------------------
+
+startPrWatcher()
+
+// ---------------------------------------------------------------------------
+// Session health — crash detection + context alerts (every 5 min)
+// ---------------------------------------------------------------------------
+
+const SESSION_CHECK_INTERVAL_MS = 5 * 60 * 1000
+const CONTEXT_ALERT_THRESHOLD = 70
+const contextAlerted = new Set<string>()
+const crashAlerted = new Set<string>()
+
+setInterval(() => {
+  for (const info of registry.values()) {
+    // Crash detection
+    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && isSessionDead(info)) {
+      crashAlerted.add(info.sessionId)
+      process.stderr.write(`daemon: crash detected: ${info.tmuxName}\n`)
+      void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to restore context or \`respawn\` for a fresh start.`).catch(() => {})
+      continue
+    }
+
+    // Context alert
+    const pct = getContextPercent(info.tmuxName)
+    if (pct === '?') continue
+    const num = parseInt(pct)
+    if (num >= CONTEXT_ALERT_THRESHOLD && !contextAlerted.has(info.sessionId)) {
+      contextAlerted.add(info.sessionId)
+      process.stderr.write(`daemon: context alert: ${info.tmuxName} at ${pct}\n`)
+      void gateway.send(info.threadId, `**${info.tmuxName}** is at **${pct}** context. Consider \`handoff\` to a fresh session before it fills up.`).catch(() => {})
+    }
+  }
+}, SESSION_CHECK_INTERVAL_MS)
 
 let shuttingDown = false
 

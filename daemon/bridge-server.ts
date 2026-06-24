@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
-import { createServer, type Socket } from 'net'
 import { execSync } from 'child_process'
+import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
 import { setAnchorState } from './anchor-state.js'
 import { registry, threadRegistry } from './sessions.js'
@@ -11,6 +11,7 @@ import { discoverClaudeSessionId, detachSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
+import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect } from './design.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -97,7 +98,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         if (info) info.lastActive = Date.now()
       }
 
-      void executeTool(name, args).then(result => {
+      void executeTool(name, args, conn.sessionId).then(result => {
         transport.sendToBridge(conn, {
           type: 'tool_result',
           id,
@@ -112,6 +113,10 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         // Build: detect reply from any build participant
         if (name === 'reply' && !result.isError && conn.sessionId && isBuildParticipant(conn.sessionId)) {
           onBuildReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
+        }
+        // Design: detect reply from any design participant
+        if (name === 'reply' && !result.isError && conn.sessionId && isDesignParticipant(conn.sessionId)) {
+          onDesignReply(conn.sessionId, args.text as string, args.chat_id as string, result.sentIds ?? [])
         }
       }).catch(err => {
         transport.sendToBridge(conn, {
@@ -222,6 +227,10 @@ export const socketServer = createServer((socket: Socket) => {
       // Build: handle participant disconnect
       if (isBuildParticipant(conn.sessionId)) {
         onBuildParticipantDisconnect(conn.sessionId)
+      }
+      // Design: handle participant disconnect
+      if (isDesignParticipant(conn.sessionId)) {
+        onDesignParticipantDisconnect(conn.sessionId)
       }
     }
   })

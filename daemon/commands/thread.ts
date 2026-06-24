@@ -126,6 +126,19 @@ export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
   try { await gateway.send(msg.channelId, `Forks from ${pe} \`${info.tmuxName}\`\n\n${lines.join('\n')}`, { replyTo: msg.id }) } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Resume / Respawn
+// ---------------------------------------------------------------------------
+
+export function isSessionDead(info: { tmuxName: string; sessionId: string }): boolean {
+  try {
+    execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+    return !transport.has(info.sessionId)  // tmux alive but bridge gone = Claude crashed inside
+  } catch {
+    return true  // tmux gone = fully dead
+  }
+}
+
 export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
   if (!msg.isThread) {
     await reportError(msg.channelId, msg.id, 'resume', 'must be used in a thread')

@@ -11,7 +11,10 @@ import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, h
 import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
+import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
+import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
+import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 
 // ---------------------------------------------------------------------------
@@ -216,6 +219,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
+    const respawnMatch = msg.content.match(/^(?:respawn|\/respawn)\s*$/i)
+    if (respawnMatch) {
+      void handleRespawnIntercept(msg)
+      return
+    }
+
+    const resumeMatch = msg.content.match(/^(?:resume|\/resume)\s*$/i)
+    if (resumeMatch) {
+      void handleResumeIntercept(msg)
+      return
+    }
+
     const usageMatch = msg.content.match(/^(?:\/usage|usage)\s*$/i)
     if (usageMatch) {
       void handleUsageIntercept(msg)
@@ -291,6 +306,44 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const cancelBuildMatch = msg.content.match(/^(?:kill build)\s*$/i)
       if (cancelBuildMatch) {
         void handleCancelBuildIntercept(msg)
+        return
+      }
+
+      const designMatch = msg.content.match(/^(?:\/design|design):\s*([\s\S]+)$/i)
+      if (designMatch) {
+        void handleDesignIntercept(msg, designMatch[1].trim())
+        return
+      }
+
+      const cancelDesignMatch = msg.content.match(/^(?:kill design)\s*$/i)
+      if (cancelDesignMatch) {
+        void handleCancelDesignIntercept(msg)
+        return
+      }
+
+      const watchMatch = msg.content.match(/^(?:\/watch|watch)(?:\s+(https:\/\/\S+))?\s*$/i)
+      if (watchMatch) {
+        void handleWatchIntercept(msg, watchMatch[1]?.trim())
+        return
+      }
+
+      const unwatchMatch = msg.content.match(/^(?:\/unwatch|unwatch)\s+(https:\/\/\S+)/i)
+      if (unwatchMatch) {
+        void handleUnwatchIntercept(msg, unwatchMatch[1].trim())
+        return
+      }
+
+      const watchesMatch = msg.content.match(/^(?:\/watches|watches)\s*$/i)
+      if (watchesMatch) {
+        void handleWatchesIntercept(msg)
+        return
+      }
+
+      // Design answer: user message during 'answering' phase
+      const design = getDesignByThread(msg.channelId)
+      if (design && design.phase === 'answering') {
+        void handleDesignAnswer(msg.channelId, msg.content)
+        void gateway.react(msg.channelId, msg.id, '👍').catch(() => {})
         return
       }
     }

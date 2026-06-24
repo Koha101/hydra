@@ -20,7 +20,7 @@ fi
 tmux kill-session -t "$SESSION" 2>/dev/null
 sleep 2
 
-# Copy bridge.ts into the plugin cache
+# Symlink bridge.ts into the plugin cache so it always runs from source
 SRC="$SCRIPT_DIR/bridge.ts"
 DEST="$CONFIG_DIR/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts"
 if [ ! -f "$SRC" ]; then
@@ -31,8 +31,8 @@ if [ ! -d "$(dirname "$DEST")" ]; then
   echo "ERROR: plugin cache dir missing at $(dirname "$DEST")" >&2
   exit 1
 fi
-cp "$SRC" "$DEST" || { echo "ERROR: failed to copy bridge.ts into plugin cache" >&2; exit 1; }
-echo "$(date): synced bridge.ts into plugin cache" >> ~/slack-byte-restarts.log
+ln -sf "$SRC" "$DEST"
+echo "$(date): symlinked bridge.ts into plugin cache" >> ~/slack-byte-restarts.log
 
 # Launch prompt: with BYTE_CHANNEL set, greet that DM/channel; otherwise start silent and
 # just wait for incoming messages (no hardcoded channel).
@@ -45,8 +45,12 @@ fi
 # Start slack-byte
 # CLAUDE_CONFIG_DIR is separate from discord (~/.claude-slack) so each platform
 # gets its own plugin cache with its own daemon.json pointing to the right socket.
+# Auth is pinned to the AngelList work account via CLAUDE_CODE_OAUTH_TOKEN, which
+# overrides the config dir's keychain login. This guarantees Slack bills work
+# regardless of what account ~/.claude-slack happens to be logged into, and is
+# immune to CLAUDE_CONFIG_DIR failing to propagate into the spawned process.
 tmux new-session -d -s "$SESSION" \
-  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR='$CONFIG_DIR' && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR='$CONFIG_DIR' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat \$HOME/.angellist-claude-token)\" && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
   \"$PROMPT\""
 
 echo "$(date): Slack Byte started (daemon+bridge)" >> ~/slack-byte-restarts.log

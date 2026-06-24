@@ -28,7 +28,10 @@ export function formatDuration(ms: number): string {
 export function getContextPercent(tmuxName: string): string {
   try {
     const pane = execSync(`tmux capture-pane -t '${tmuxName}' -p 2>/dev/null`, { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }).toString()
-    const match = pane.match(/(\d+)%\n/)
+    // Match from the last few lines only (Claude's status bar) to avoid matching percentages in conversation text
+    const lines = pane.trimEnd().split('\n')
+    const tail = lines.slice(-3).join('\n')
+    const match = tail.match(/(\d+)%/)
     return match ? `${match[1]}%` : '?'
   } catch { return '?' }
 }

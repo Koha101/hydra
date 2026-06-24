@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { SessionRegistry, sessionEmoji, type SessionInfo } from '../sessions.js'
+import { SessionRegistry, sessionEmoji, threadRegistry, type SessionInfo, type ThreadInfo } from '../sessions.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -40,41 +40,36 @@ describe('SessionRegistry', () => {
     expect(reg.has(id)).toBe(false)
   })
 
-  test('thread mapping', () => {
-    const reg = new SessionRegistry()
-    reg.setThread('thread-42', 'sid-1')
-    expect(reg.getByThread('thread-42')).toBe('sid-1')
-    reg.deleteThread('thread-42')
-    expect(reg.getByThread('thread-42')).toBeUndefined()
-  })
-
-  test('resolveThreadSession finds session by channelId', () => {
+  test('resolveThreadSession finds session by channelId via threadRegistry', () => {
     const reg = new SessionRegistry()
     const info = makeInfo({ sessionId: 'sid-resolve-1', threadId: 'thread-99' })
     reg.set('sid-resolve-1', info)
-    reg.setThread('thread-99', 'sid-resolve-1')
+    threadRegistry.set('thread-99', { threadId: 'thread-99', topic: 'test', anchorState: 'live', respawnCount: 0, currentSessionId: 'sid-resolve-1', createdAt: Date.now(), lastActive: Date.now(), totalMessages: 0, sessionHistory: [] } as ThreadInfo)
 
     const found = reg.resolveThreadSession('thread-99')
     expect(found).toBe(info)
+    threadRegistry.delete('thread-99')
   })
 
-  test('resolveThreadSession finds session by existingThreadId', () => {
+  test('resolveThreadSession finds session by existingThreadId via threadRegistry', () => {
     const reg = new SessionRegistry()
     const info = makeInfo({ sessionId: 'sid-resolve-2', threadId: 'thread-100' })
     reg.set('sid-resolve-2', info)
-    reg.setThread('thread-100', 'sid-resolve-2')
+    threadRegistry.set('thread-100', { threadId: 'thread-100', topic: 'test', anchorState: 'live', respawnCount: 0, currentSessionId: 'sid-resolve-2', createdAt: Date.now(), lastActive: Date.now(), totalMessages: 0, sessionHistory: [] } as ThreadInfo)
 
     const found = reg.resolveThreadSession('unknown-channel', 'thread-100')
     expect(found).toBe(info)
+    threadRegistry.delete('thread-100')
   })
 
   test('resolveThreadSession returns null when isThread=false', () => {
     const reg = new SessionRegistry()
     const id = 'sid-resolve-3'
     reg.set(id, makeInfo({ sessionId: id, threadId: 'thread-101' }))
-    reg.setThread('thread-101', id)
+    threadRegistry.set('thread-101', { threadId: 'thread-101', topic: 'test', anchorState: 'live', respawnCount: 0, currentSessionId: id, createdAt: Date.now(), lastActive: Date.now(), totalMessages: 0, sessionHistory: [] } as ThreadInfo)
 
     expect(reg.resolveThreadSession('thread-101', undefined, false)).toBeNull()
+    threadRegistry.delete('thread-101')
   })
 
   test('resolveThreadSession returns null when not found', () => {

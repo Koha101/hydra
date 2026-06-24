@@ -42,6 +42,14 @@ export type SessionInfo = {
   status?: 'live' | 'dead' | 'killed'
 }
 
+export type ThreadMember = {
+  sessionId: string
+  role: 'owner' | 'member'
+  label?: string        // feature-defined: 'critic', 'judge', etc.
+  joinedAt: number
+  leftAt?: number
+}
+
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
 
 export type SpawnOpts = {
@@ -53,6 +61,7 @@ export type SpawnOpts = {
   resumeFrom?: string
   joinThread?: string                                          // join existing thread as member (skip thread creation)
   promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
+  memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
 }
 
 // RecoveryManifest dissolved in B3 — threadRegistry.detachedThreads() IS the recovery manifest.
@@ -138,6 +147,7 @@ export function sessionEmoji(name: string): string {
 
 export class SessionRegistry {
   readonly sessions = new Map<string, SessionInfo>()
+  private readonly threadMembers = new Map<string, ThreadMember[]>() // in-memory only — not persisted across daemon restarts
   private readonly sessionsFile: string
 
   constructor() {
@@ -159,6 +169,36 @@ export class SessionRegistry {
   }
 
   values(): IterableIterator<SessionInfo> { return this.sessions.values() }
+
+  addMember(threadId: string, sessionId: string, label?: string): ThreadMember {
+    const members = this.threadMembers.get(threadId) ?? []
+    const member: ThreadMember = { sessionId, role: 'member', label, joinedAt: Date.now() }
+    members.push(member)
+    this.threadMembers.set(threadId, members)
+    return member
+  }
+
+  removeMember(threadId: string, sessionId: string): void {
+    const members = this.threadMembers.get(threadId)
+    if (!members) return
+    const member = members.find(m => m.sessionId === sessionId && !m.leftAt)
+    if (member) member.leftAt = Date.now()
+  }
+
+  getMembers(threadId: string): ThreadMember[] {
+    return (this.threadMembers.get(threadId) ?? []).filter(m => !m.leftAt)
+  }
+
+  getAllMembers(threadId: string): ThreadMember[] {
+    return this.threadMembers.get(threadId) ?? []
+  }
+
+  isMember(sessionId: string): boolean {
+    for (const members of this.threadMembers.values()) {
+      if (members.some(m => m.sessionId === sessionId && !m.leftAt)) return true
+    }
+    return false
+  }
 
   persist(): void {
     try {

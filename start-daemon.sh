@@ -45,13 +45,9 @@ RUNTIME_DIR="$STATE_DIR/daemon-runtime"
 # crash-loops forever (watchdog kills + relaunches a process that dies on boot).
 # Build the entries first; if it fails, refuse to start and leave any running
 # daemon UNTOUCHED — a broken tree must never replace a working process.
-cd "$SCRIPT_DIR"
-COMPILE_RC=0
-COMPILE_OUT=""
-for entry in daemon.ts bridge.ts; do
-  err=$(bun build "$entry" --target=bun 2>&1 >/dev/null) || COMPILE_RC=1
-  [ -n "$err" ] && COMPILE_OUT="${COMPILE_OUT}[$entry] ${err}"$'\n'
-done
+source "$SCRIPT_DIR/compile-check.sh"
+COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
+COMPILE_RC=$?
 if [ "$COMPILE_RC" -ne 0 ]; then
   {
     echo "$(date): COMPILE FAILED — refusing to start daemon; leaving any running session untouched."
