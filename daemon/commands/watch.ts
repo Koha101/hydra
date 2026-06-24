@@ -5,7 +5,7 @@ import { reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, '👁️').catch(() => {})
+  void gateway.react(msg.channelId, msg.id, '👁️').catch(e => process.stderr.write(`daemon: watch react failed: ${e}\n`))
 
   const sessionId = registry.getByThread(msg.channelId)
     ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
@@ -43,7 +43,7 @@ export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string):
 }
 
 export async function handleUnwatchIntercept(msg: InboundMessage, prUrl: string): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, '🙈').catch(() => {})
+  void gateway.react(msg.channelId, msg.id, '🙈').catch(e => process.stderr.write(`daemon: unwatch react failed: ${e}\n`))
 
   const sessionId = registry.getByThread(msg.channelId)
     ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
@@ -57,7 +57,7 @@ export async function handleUnwatchIntercept(msg: InboundMessage, prUrl: string)
 }
 
 export async function handleWatchesIntercept(msg: InboundMessage): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, '📡').catch(() => {})
+  void gateway.react(msg.channelId, msg.id, '📡').catch(e => process.stderr.write(`daemon: watches react failed: ${e}\n`))
   const entries = listWatches()
   if (entries.length === 0) {
     await gateway.send(msg.channelId, 'No PRs being watched.', { replyTo: msg.id })
