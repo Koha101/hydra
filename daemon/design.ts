@@ -248,7 +248,7 @@ export async function handleDesignUserInput(threadId: string, input: string): Pr
     // Parse divergence numbers: "refine 1,3" or "refine 1, 2"
     const nums = cmd.replace('refine', '').split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
     if (nums.length === 0 || state.divergences.length === 0) {
-      await gateway.send(threadId, `No divergences to refine. Type \`next\`, \`audit\`, or \`done\`.`)
+      await gateway.send(threadId, `No divergences to refine. Type \`design next\`, \`design audit\`, or \`done\`.`)
       return
     }
 
@@ -298,13 +298,13 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
       process.stderr.write(`daemon: design: synthesizer timeout\n`)
       const r = designMachine.transition(state.phase, 'timeout')
       if (r.ok) state.phase = r.to
-      await gateway.send(state.ownerThreadId, `Synthesizer timed out. Type \`next\` to retry or \`done\` to end.`)
+      await gateway.send(state.ownerThreadId, `Synthesizer timed out. Type \`design next\` to retry or \`done\` to end.`)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: synthesizer spawn failed: ${err}\n`)
     const r = designMachine.transition(state.phase, 'timeout')
     if (r.ok) state.phase = r.to
-    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`next\` to retry or \`done\` to end.`)
+    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Type \`design next\` to retry or \`done\` to end.`)
   }
 }
 
@@ -400,7 +400,7 @@ async function processNextDivergence(state: DesignState): Promise<void> {
     void gateway.send(state.ownerThreadId, [
       `_Refinement complete._`,
       ``,
-      `Type \`next\` to re-synthesize, \`audit\` for final review, or \`done\` to end.`,
+      `Type \`design next\` to re-synthesize, \`design audit\` for final review, or \`done\` to end.`,
     ].join('\n')).catch(() => {})
     return
   }
@@ -522,7 +522,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
           void gateway.send(threadId, [
             `_All ${state.proposalsReceived} proposals received._`,
             ``,
-            `Type \`next\` to synthesize, or \`done\` to end.`,
+            `Type \`design next\` to synthesize, or \`done\` to end.`,
           ].join('\n')).catch(() => {})
         }
       }
@@ -551,7 +551,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
           ``,
           divList,
           ``,
-          `Type \`refine 1,2\` to refine specific divergences, \`audit\` for final review, or \`done\` to end.`,
+          `Type \`design refine 1,2\` to refine specific divergences, \`design audit\` for final review, or \`done\` to end.`,
         ].join('\n')).catch(() => {})
       }
       return
