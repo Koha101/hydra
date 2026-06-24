@@ -361,6 +361,7 @@ async function finishDebate(state: ReviewState, lastOwnerText: string): Promise<
 function completeReview(state: ReviewState): void {
   if (state.phase === 'complete' || state.phase === 'cancelled' || state._finalizing) return
 
+  if (state.timeout) clearTimeout(state.timeout)
   state.timeout = setTimeout(async () => {
     if (state.phase !== 'cleanup') return
     process.stderr.write(`daemon: review cleanup timed out, auto-finalizing\n`)
