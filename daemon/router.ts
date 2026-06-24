@@ -304,9 +304,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const watchMatch = msg.content.match(/^(?:\/watch|watch)\s+(https:\/\/\S+)/i)
+      const watchMatch = msg.content.match(/^(?:\/watch|watch)(?:\s+(https:\/\/\S+))?\s*$/i)
       if (watchMatch) {
-        void handleWatchIntercept(msg, watchMatch[1].trim())
+        void handleWatchIntercept(msg, watchMatch[1]?.trim())
         return
       }
 

@@ -324,6 +324,23 @@ async function pollAll(): Promise<void> {
 // Public API
 // ---------------------------------------------------------------------------
 
+export async function detectPrUrl(cwd: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(['gh', 'pr', 'view', '--json', 'url', '-q', '.url'], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const stdout = await new Response(proc.stdout).text()
+    const exitCode = await proc.exited
+    if (exitCode !== 0) return null
+    const url = stdout.trim()
+    return url && url.startsWith('https://') ? url : null
+  } catch {
+    return null
+  }
+}
+
 export async function watchPr(prUrl: string, sessionId: string, threadId: string): Promise<string> {
   if (watches.has(prUrl)) {
     const existing = watches.get(prUrl)!
