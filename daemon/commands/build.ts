@@ -1,17 +1,16 @@
 import { gateway } from '../config.js'
-import { registry } from '../sessions.js'
+import { registry, threadRegistry } from '../sessions.js'
 import { startBuild, getBuildByThread, cancelBuild } from '../build.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleBuildIntercept(msg: InboundMessage, rounds: number, task?: string, worktree?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔨').catch(() => {})
 
-  // Validate rounds
   if (isNaN(rounds)) rounds = 3
 
-  // Must be in a session thread
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const thread = threadRegistry.get(msg.channelId)
+    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+  const sessionId = thread?.currentSessionId ?? undefined
 
   if (!sessionId) {
     await gateway.send(msg.channelId, `No session owns this thread. Use \`build\` in a session thread.`, { replyTo: msg.id })

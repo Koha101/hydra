@@ -1,5 +1,5 @@
 import { gateway } from '../config.js'
-import { registry } from '../sessions.js'
+import { registry, threadRegistry } from '../sessions.js'
 import { watchPr, unwatchPr, listWatches, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from '../pr-watch.js'
 import { reportError } from '../util.js'
 import type { InboundMessage } from '../../gateway.js'
@@ -7,8 +7,9 @@ import type { InboundMessage } from '../../gateway.js'
 export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '👁️').catch(() => {})
 
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const thread = threadRegistry.get(msg.channelId)
+    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+  const sessionId = thread?.currentSessionId ?? undefined
 
   const targetSessionId = sessionId ?? 'main'
   const info = sessionId ? registry.get(sessionId) : undefined
@@ -45,8 +46,9 @@ export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string):
 export async function handleUnwatchIntercept(msg: InboundMessage, prUrl: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🙈').catch(() => {})
 
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const unwatchThread = threadRegistry.get(msg.channelId)
+    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+  const sessionId = unwatchThread?.currentSessionId ?? undefined
 
   try {
     const result = unwatchPr(prUrl, sessionId)

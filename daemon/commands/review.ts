@@ -1,14 +1,14 @@
 import { gateway } from '../config.js'
-import { registry } from '../sessions.js'
+import { registry, threadRegistry } from '../sessions.js'
 import { startReview, getReviewByThread, cancelReview } from '../adversarial.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleReviewIntercept(msg: InboundMessage, rounds: number, topic?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '⚔️').catch(() => {})
 
-  // Must be in a session thread
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const thread = threadRegistry.get(msg.channelId)
+    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
+  const sessionId = thread?.currentSessionId ?? undefined
 
   if (!sessionId) {
     await gateway.send(msg.channelId, `No session owns this thread. Use \`/review\` in a session thread.`, { replyTo: msg.id })
