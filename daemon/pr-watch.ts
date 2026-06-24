@@ -259,7 +259,6 @@ async function pollPr(entry: WatchEntry): Promise<void> {
   const allComments = [...reviewComments, ...issueComments]
   const totalItems = allComments.length + reviews.length
 
-  // Build notification — data only, no behavioral instructions
   const parts: string[] = []
   parts.push(`[PR Feedback] **${entry.owner}/${entry.repo}#${entry.prNumber}** — ${totalItems} new item(s)`)
   parts.push('')
@@ -278,6 +277,9 @@ async function pollPr(entry: WatchEntry): Promise<void> {
     if (c.url) parts.push(`> ${c.url}`)
     parts.push('')
   }
+
+  parts.push('---')
+  parts.push('Categorize the above into: **real bugs to fix**, **valid suggestions**, **false positives/noise**, **nits**. Lead with a TL;DR of what actually needs action.')
 
   // Deliver to the session
   const sessionExists = registry.has(entry.sessionId) || entry.sessionId === 'main'
