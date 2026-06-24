@@ -10,7 +10,7 @@ import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
-import { isDesignParticipant, onDesignReply } from './design.js'
+import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect } from './design.js'
 import { setAnchorState } from './anchor-state.js'
 import type { ButtonDef } from '../gateway.js'
 
@@ -188,6 +188,10 @@ export const socketServer = createServer((socket: Socket) => {
       // Build: handle participant disconnect
       if (isBuildParticipant(conn.sessionId)) {
         onBuildParticipantDisconnect(conn.sessionId)
+      }
+      // Design: handle participant disconnect
+      if (isDesignParticipant(conn.sessionId)) {
+        onDesignParticipantDisconnect(conn.sessionId)
       }
 
       // Death detection: if session dies (tmux gone), notify the thread

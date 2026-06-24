@@ -303,10 +303,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      // Design user input: next, done, audit, refine N,N
-      const designInput = msg.content.match(/^(?:next|done|audit|refine\s+[\d,\s]+)\s*$/i)
+      // Design user input: design next, design done, design audit, design refine N,N
+      const designInput = msg.content.match(/^design\s+(next|done|audit|refine\s+[\d,\s]+)\s*$/i)
       if (designInput && getDesignByThread(msg.channelId)) {
-        void handleDesignUserInput(msg.channelId, msg.content.trim())
+        void handleDesignUserInput(msg.channelId, designInput[1].trim())
         void gateway.react(msg.channelId, msg.id, '👍').catch(() => {})
         return
       }
