@@ -130,8 +130,12 @@ export async function startDesign(
   ].join('\n'))
 
   // Capture thread history BEFORE spawning — prevents cross-contamination
-  const messages = await gateway.fetchMessages(threadId, 100)
-  const contextSnapshot = messages.map(m => `[${m.authorUsername}]: ${m.content}`).join('\n')
+  // Limit to last 20 messages, truncate each, cap total to prevent shell argument overflow
+  const messages = await gateway.fetchMessages(threadId, 20)
+  const contextSnapshot = messages
+    .map(m => `[${m.authorUsername}]: ${m.content.replace(/[\n\r]+/g, ' ').slice(0, 200)}`)
+    .join('\n')
+    .slice(0, 3000)
 
   // Spawn personas with 2s stagger
   for (const name of PERSONA_NAMES) {
