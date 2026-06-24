@@ -5,7 +5,7 @@ import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
-import { watchPr, unwatchPr, listWatches, getWatchesBySession } from './pr-watch.js'
+import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry } from './pr-watch.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -265,10 +265,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const all = args.all as boolean | undefined
         const entries = all ? listWatches() : getWatchesBySession(callerSessionId ?? 'main')
         if (entries.length === 0) return { content: [{ type: 'text', text: 'no PRs being watched' }] }
-        const lines = entries.map(e => {
-          const age = formatDuration(Date.now() - e.createdAt)
-          return `• ${e.prUrl} → session ${e.sessionId} (watching for ${age})`
-        })
+        const lines = entries.map(e => `• ${formatWatchEntry(e)}`)
         return { content: [{ type: 'text', text: lines.join('\n') }] }
       }
 

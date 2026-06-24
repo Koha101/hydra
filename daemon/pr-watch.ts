@@ -1,9 +1,10 @@
+import { execSync } from 'child_process'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { gateway, STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
-import { atomicWriteFileSync } from './util.js'
+import { atomicWriteFileSync, formatDuration } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +50,8 @@ const watches = new Map<string, WatchEntry>()
 const PERSIST_FILE = join(STATE_DIR, 'pr-watches.json')
 const POLL_INTERVAL_MS = 3 * 60 * 1000
 let pollTimer: ReturnType<typeof setInterval> | undefined
+let ghToken: string | null = null
+let rateLimitWarned = false
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -94,25 +97,58 @@ function parsePrUrl(url: string): { owner: string; repo: string; prNumber: numbe
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API via gh CLI (async — does not block the event loop)
+// GitHub API via fetch (non-blocking, rate-limit aware)
 // ---------------------------------------------------------------------------
 
-async function ghApi(endpoint: string): Promise<any> {
+function loadGhToken(): string | null {
+  if (ghToken) return ghToken
   try {
-    const proc = Bun.spawn(['gh', 'api', endpoint], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    ghToken = execSync('gh auth token 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).trim()
+    return ghToken
+  } catch {
+    process.stderr.write('daemon: pr-watch: failed to get gh auth token\n')
+    return null
+  }
+}
+
+async function ghApi(endpoint: string): Promise<any> {
+  const token = loadGhToken()
+  if (!token) return null
+
+  try {
+    const resp = await fetch(`https://api.github.com/${endpoint}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(15_000),
     })
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
-    const exitCode = await proc.exited
-    if (exitCode !== 0) {
-      process.stderr.write(`daemon: pr-watch: gh api failed (exit ${exitCode}) for ${endpoint}: ${stderr.slice(0, 200)}\n`)
+
+    // Rate-limit awareness
+    const remaining = resp.headers.get('X-RateLimit-Remaining')
+    if (remaining !== null) {
+      const rem = parseInt(remaining)
+      if (rem < 100 && !rateLimitWarned) {
+        rateLimitWarned = true
+        process.stderr.write(`daemon: pr-watch: rate limit low (${rem} remaining) — consider reducing watch count\n`)
+      } else if (rem >= 500) {
+        rateLimitWarned = false
+      }
+      if (rem === 0) {
+        const resetAt = resp.headers.get('X-RateLimit-Reset')
+        const resetIn = resetAt ? Math.max(0, parseInt(resetAt) - Math.floor(Date.now() / 1000)) : '?'
+        process.stderr.write(`daemon: pr-watch: rate limited — resets in ${resetIn}s, skipping poll cycle\n`)
+        return null
+      }
+    }
+
+    if (!resp.ok) {
+      process.stderr.write(`daemon: pr-watch: gh api ${resp.status} for ${endpoint}: ${(await resp.text()).slice(0, 200)}\n`)
       return null
     }
-    return JSON.parse(stdout)
+
+    return await resp.json()
   } catch (err) {
     process.stderr.write(`daemon: pr-watch: gh api failed for ${endpoint}: ${err instanceof Error ? err.message : err}\n`)
     return null
@@ -132,6 +168,10 @@ async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[]> {
   const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
   if (!data || !Array.isArray(data)) return []
 
+  if (data.length >= 100) {
+    process.stderr.write(`daemon: pr-watch: ${entry.prUrl} hit 100 review comments in one poll — some may be missed\n`)
+  }
+
   return data
     .filter((c: any) => c.id > entry.lastReviewCommentId)
     .map((c: any) => ({
@@ -146,23 +186,32 @@ async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[]> {
 }
 
 async function fetchNewReviews(entry: WatchEntry): Promise<PRReview[]> {
-  const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/reviews?per_page=100`)
+  // Fetch newest-first, small page — most PRs have few reviews
+  const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/reviews?per_page=10&sort=created&direction=desc`)
   if (!data || !Array.isArray(data)) return []
 
-  return data
-    .filter((r: any) => r.id > entry.lastReviewId && new Date(r.submitted_at) > new Date(entry.lastCheckedAt))
-    .map((r: any) => ({
+  const results: PRReview[] = []
+  for (const r of data) {
+    if (r.id <= entry.lastReviewId) break
+    if (new Date(r.submitted_at) <= new Date(entry.lastCheckedAt)) break
+    results.push({
       id: r.id,
       user: r.user?.login ?? 'unknown',
       state: r.state,
       body: r.body ?? '',
       createdAt: r.submitted_at,
-    }))
+    })
+  }
+  return results
 }
 
 async function fetchNewIssueComments(entry: WatchEntry): Promise<PRComment[]> {
   const data = await ghApi(`repos/${entry.owner}/${entry.repo}/issues/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
   if (!data || !Array.isArray(data)) return []
+
+  if (data.length >= 100) {
+    process.stderr.write(`daemon: pr-watch: ${entry.prUrl} hit 100 issue comments in one poll — some may be missed\n`)
+  }
 
   return data
     .filter((c: any) => c.id > entry.lastIssueCommentId)
@@ -192,7 +241,6 @@ async function pollPr(entry: WatchEntry): Promise<void> {
   entry.lastCheckedAt = pollTime
 
   if (reviewComments.length === 0 && issueComments.length === 0 && reviews.length === 0) {
-    // Verify entry hasn't been replaced before persisting
     if (watches.get(entry.prUrl) === entry) persist()
     return
   }
@@ -252,7 +300,6 @@ async function pollPr(entry: WatchEntry): Promise<void> {
     },
   })
 
-  // Verify entry hasn't been replaced (unwatch + re-watch race) before persisting
   if (watches.get(entry.prUrl) === entry) persist()
   process.stderr.write(`daemon: pr-watch: delivered ${allComments.length} comment(s) + ${reviews.length} review(s) for ${entry.prUrl}\n`)
 }
@@ -356,12 +403,20 @@ export function getWatchesBySession(sessionId: string): WatchEntry[] {
   return [...watches.values()].filter(e => e.sessionId === sessionId)
 }
 
+export function formatWatchEntry(e: WatchEntry): string {
+  const age = formatDuration(Date.now() - e.createdAt)
+  const sessionInfo = registry.get(e.sessionId)
+  const name = sessionInfo?.tmuxName ?? e.sessionId
+  return `[#${e.prNumber}](${e.prUrl}) → **${name}** (${age})`
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
 export function startPrWatcher(): void {
   loadPersisted()
+  loadGhToken()
   pollTimer = setInterval(() => {
     void pollAll().catch(err => {
       process.stderr.write(`daemon: pr-watch: poll cycle failed: ${err}\n`)
