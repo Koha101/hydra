@@ -304,13 +304,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const watchMatch = msg.content.match(/^(?:\/watch|watch)(?:\s+(https:\/\/\S+))?\s*$/i)
+      const watchMatch = msg.content.match(/^(?:\/watch|watch):?(?:\s+<?([^>\s]+)>?)?\s*$/i)
       if (watchMatch) {
         void handleWatchIntercept(msg, watchMatch[1]?.trim())
         return
       }
 
-      const unwatchMatch = msg.content.match(/^(?:\/unwatch|unwatch)\s+(https:\/\/\S+)/i)
+      const unwatchMatch = msg.content.match(/^(?:\/unwatch|unwatch)\s+<?([^>\s]+)>?/i)
       if (unwatchMatch) {
         void handleUnwatchIntercept(msg, unwatchMatch[1].trim())
         return
