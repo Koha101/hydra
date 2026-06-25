@@ -6,6 +6,7 @@ import { registry, sessionEmoji } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
+import { getWatchesBySession } from '../pr-watch.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export const daemonStartedAt = Date.now()
@@ -217,6 +218,11 @@ export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
   } else if (info.originType === 'fork' && info.originFrom) {
     const pe = sessionEmoji(info.originFrom)
     lines.push(`    ◦ 🍴 forked from ${pe} \`${info.originFrom}\``)
+  }
+
+  const watches = getWatchesBySession(info.sessionId)
+  if (watches.length > 0) {
+    lines.push(`    ◦ 👁️ watching: ${watches.map(w => `[#${w.prNumber}](${w.prUrl})`).join(', ')}`)
   }
 
   try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
