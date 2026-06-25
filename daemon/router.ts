@@ -323,18 +323,19 @@ gateway.onMessage(async (msg: InboundMessage) => {
       }
 
       // Design answer: user message during 'answering' phase
-      const design = getDesignByThread(msg.channelId)
+      const designThreadId = registry.resolveThreadId(msg)
+      const design = getDesignByThread(designThreadId)
       if (design && design.phase === 'answering') {
-        void handleDesignAnswer(msg.channelId, msg.content)
+        void handleDesignAnswer(designThreadId, msg.content)
         void gateway.react(msg.channelId, msg.id, '👍').catch(() => {})
         return
       }
     }
 
     if (msg.isThread) {
-      const mappedSession = registry.getByThread(msg.channelId)
-        ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
-      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
+      const resolvedThreadId = registry.resolveThreadId(msg)
+      const mappedSession = registry.getByThread(resolvedThreadId)
+      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} effectiveThreadId=${msg.effectiveThreadId} resolvedThreadId=${resolvedThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
         if (info) {
@@ -433,8 +434,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
   let effectiveChatId = chat_id
 
   if (msg.isThread) {
-    const mappedSession = registry.getByThread(msg.channelId)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const rtid = registry.resolveThreadId(msg)
+    const mappedSession = registry.getByThread(rtid)
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
@@ -443,8 +444,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
   }
   if (targetSessionId === 'main' && chat_id !== msg.channelId) {
-    const mappedSession = registry.getByThread(chat_id)
-      ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+    const rtid = registry.resolveThreadId(msg)
+    const mappedSession = registry.getByThread(chat_id) ?? registry.getByThread(rtid)
     if (mappedSession && registry.has(mappedSession)) {
       targetSessionId = mappedSession
       const info = registry.get(mappedSession)!

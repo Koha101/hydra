@@ -27,6 +27,7 @@ export type InboundMessage = {
   hasExistingThread: boolean
   existingThreadId: string | null
   referenceMessageId: string | null
+  effectiveThreadId: string | null  // normalized thread ID: in Discord = channelId when isThread; in Slack = channel:thread_ts
   attachments: AttachmentInfo[]
   createdAt: Date
 }

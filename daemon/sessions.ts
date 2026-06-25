@@ -198,7 +198,20 @@ export class SessionRegistry {
     return `session-${randomBytes(3).toString('hex')}`
   }
 
-  resolveThreadSession(channelId: string, existingThreadId?: string, isThread?: boolean): SessionInfo | null {
+  resolveThreadId(msg: { channelId: string; effectiveThreadId: string | null }): string {
+    return msg.effectiveThreadId ?? msg.channelId
+  }
+
+  resolveThreadSessionFromMsg(msg: { channelId: string; effectiveThreadId: string | null; isThread: boolean }): SessionInfo | null {
+    if (!msg.isThread) return null
+    const threadId = this.resolveThreadId(msg)
+    const mappedSession = this.threadToSession.get(threadId)
+    if (!mappedSession) return null
+    return this.sessions.get(mappedSession) ?? null
+  }
+
+  /** @deprecated Use resolveThreadSessionFromMsg instead */
+  resolveThreadSession(channelId: string, existingThreadId?: string | null, isThread?: boolean): SessionInfo | null {
     if (isThread === false) return null
     const mappedSession = this.threadToSession.get(channelId)
       ?? (existingThreadId ? this.threadToSession.get(existingThreadId) : undefined)

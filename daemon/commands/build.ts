@@ -10,8 +10,8 @@ export async function handleBuildIntercept(msg: InboundMessage, rounds: number, 
   if (isNaN(rounds)) rounds = 3
 
   // Must be in a session thread
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const resolvedThreadId = registry.resolveThreadId(msg)
+  const sessionId = registry.getByThread(resolvedThreadId)
 
   if (!sessionId) {
     await gateway.send(msg.channelId, `No session owns this thread. Use \`build\` in a session thread.`, { replyTo: msg.id })
@@ -47,7 +47,7 @@ export async function handleBuildIntercept(msg: InboundMessage, rounds: number, 
 export async function handleCancelBuildIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🛑').catch(() => {})
 
-  const threadId = msg.channelId
+  const threadId = registry.resolveThreadId(msg)
   const existing = getBuildByThread(threadId)
 
   if (!existing) {

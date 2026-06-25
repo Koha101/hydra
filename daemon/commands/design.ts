@@ -7,8 +7,8 @@ export async function handleDesignIntercept(msg: InboundMessage, topic: string):
   void gateway.react(msg.channelId, msg.id, '🎨').catch(() => {})
 
   // Same pattern as build/review — resolve thread via session registry
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const resolvedThreadId = registry.resolveThreadId(msg)
+  const sessionId = registry.getByThread(resolvedThreadId)
 
   if (!sessionId) {
     await gateway.send(msg.channelId, `No session owns this thread. Use \`design:\` in a session thread.`, { replyTo: msg.id })
@@ -40,11 +40,12 @@ export async function handleDesignIntercept(msg: InboundMessage, topic: string):
 export async function handleCancelDesignIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🛑').catch(() => {})
 
-  const existing = getDesignByThread(msg.channelId)
+  const threadId = registry.resolveThreadId(msg)
+  const existing = getDesignByThread(threadId)
   if (!existing) {
     await gateway.send(msg.channelId, `No design session in progress.`, { replyTo: msg.id })
     return
   }
 
-  await cancelDesign(msg.channelId)
+  await cancelDesign(threadId)
 }

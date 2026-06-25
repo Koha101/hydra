@@ -7,12 +7,12 @@ import type { InboundMessage } from '../../gateway.js'
 export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '👁️').catch(e => process.stderr.write(`daemon: watch react failed: ${e}\n`))
 
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const resolvedThreadId = registry.resolveThreadId(msg)
+  const sessionId = registry.getByThread(resolvedThreadId)
 
   const targetSessionId = sessionId ?? 'main'
   const info = sessionId ? registry.get(sessionId) : undefined
-  const threadId = info?.threadId ?? msg.channelId
+  const threadId = info?.threadId ?? resolvedThreadId
 
   // Auto-detect PR from session's cwd if no URL provided
   let resolvedUrl = prUrl
@@ -45,8 +45,8 @@ export async function handleWatchIntercept(msg: InboundMessage, prUrl?: string):
 export async function handleUnwatchIntercept(msg: InboundMessage, prUrl: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🙈').catch(e => process.stderr.write(`daemon: unwatch react failed: ${e}\n`))
 
-  const sessionId = registry.getByThread(msg.channelId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const resolvedThreadId = registry.resolveThreadId(msg)
+  const sessionId = registry.getByThread(resolvedThreadId)
 
   try {
     const result = unwatchPr(prUrl, sessionId)

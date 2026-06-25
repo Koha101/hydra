@@ -183,7 +183,7 @@ export async function handleListIntercept(msg: InboundMessage): Promise<void> {
 }
 
 export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
+  const info = registry.resolveThreadSessionFromMsg(msg)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return

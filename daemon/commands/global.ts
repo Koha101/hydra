@@ -19,8 +19,9 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
 
   // If spawn is typed in a thread with a dead session, target that thread so it gets reused
   let chatId = msg.channelId
-  if (msg.isThread && msg.existingThreadId) {
-    const staleId = registry.getByThread(msg.existingThreadId)
+  const resolvedThreadId = registry.resolveThreadId(msg)
+  if (msg.isThread && resolvedThreadId !== msg.channelId) {
+    const staleId = registry.getByThread(resolvedThreadId)
     if (staleId && registry.has(staleId)) {
       const staleInfo = registry.get(staleId)!
       let tmuxAlive = false
@@ -28,10 +29,10 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
       if (tmuxAlive) {
         try { await gateway.send(msg.channelId, `Thread already has a live session (**${staleInfo.tmuxName}**). Spawning in a new thread instead.`, { replyTo: msg.id }) } catch {}
       } else {
-        chatId = msg.existingThreadId
+        chatId = resolvedThreadId
       }
     } else {
-      chatId = msg.existingThreadId
+      chatId = resolvedThreadId
     }
   }
 
@@ -111,7 +112,7 @@ export async function handleRestartIntercept(msg: InboundMessage): Promise<void>
   } catch {}
 
   try {
-    const restartChatId = msg.isThread && msg.existingThreadId ? msg.existingThreadId : msg.channelId
+    const restartChatId = registry.resolveThreadId(msg)
     writeFileSync(RESTART_PENDING_FILE, JSON.stringify({ chatId: restartChatId, messageId: msg.id, ts: Date.now() }) + '\n')
   } catch {}
 

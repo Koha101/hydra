@@ -166,6 +166,7 @@ export class SlackGateway implements ChatGateway {
         hasExistingThread: false,
         existingThreadId: (!!event.thread_ts && event.thread_ts !== event.ts) ? `${event.channel}:${event.thread_ts}` : null,
         referenceMessageId: event.thread_ts ?? null,
+        effectiveThreadId: (!!event.thread_ts && event.thread_ts !== event.ts) ? `${event.channel}:${event.thread_ts}` : null,
         attachments: [],
         createdAt: new Date(parseFloat(event.ts) * 1000),
       }
@@ -813,6 +814,7 @@ export class SlackGateway implements ChatGateway {
       hasExistingThread: false,
       existingThreadId: isThread ? `${msg.channel}:${msg.thread_ts}` : null,
       referenceMessageId: msg.thread_ts ?? null,
+      effectiveThreadId: isThread ? `${msg.channel}:${msg.thread_ts}` : null,
       attachments: atts,
       createdAt: new Date(parseFloat(msg.ts) * 1000),
     }

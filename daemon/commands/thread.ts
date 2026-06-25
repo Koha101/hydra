@@ -8,7 +8,7 @@ import { fallbackDescription, formatDuration, getContextPercent } from '../util.
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleThreadKillIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
+  const info = registry.resolveThreadSessionFromMsg(msg)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -19,7 +19,7 @@ export async function handleThreadKillIntercept(msg: InboundMessage): Promise<vo
 }
 
 export async function handleForkIntercept(msg: InboundMessage, description?: string): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
+  const info = registry.resolveThreadSessionFromMsg(msg)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -83,7 +83,7 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
 }
 
 export async function handleForksIntercept(msg: InboundMessage): Promise<void> {
-  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId, msg.isThread)
+  const info = registry.resolveThreadSessionFromMsg(msg)
   if (!info) {
     void gateway.react(msg.channelId, msg.id, '❌').catch(() => {})
     return
@@ -126,9 +126,8 @@ export function isSessionDead(info: { tmuxName: string; sessionId: string }): bo
 
 export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
   // Find session that owned this thread (may be dead)
-  const threadId = msg.channelId
+  const threadId = registry.resolveThreadId(msg)
   const sessionId = registry.getByThread(threadId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
 
   if (!sessionId) {
     await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })
@@ -179,9 +178,8 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
 }
 
 export async function handleRespawnIntercept(msg: InboundMessage): Promise<void> {
-  const threadId = msg.channelId
+  const threadId = registry.resolveThreadId(msg)
   const sessionId = registry.getByThread(threadId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
 
   if (!sessionId) {
     await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })

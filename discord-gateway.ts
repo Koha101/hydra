@@ -507,6 +507,7 @@ export class DiscordGateway implements ChatGateway {
       hasExistingThread: msg.hasThread,
       existingThreadId: msg.thread?.id ?? null,
       referenceMessageId: msg.reference?.messageId ?? null,
+      effectiveThreadId: msg.channel.isThread() ? msg.channelId : (msg.thread?.id ?? null),
       attachments: atts,
       createdAt: msg.createdAt,
     }
