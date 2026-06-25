@@ -1,23 +1,14 @@
 import { gateway } from '../config.js'
-import { registry, threadRegistry } from '../sessions.js'
+import { registry } from '../sessions.js'
 import { startReview, getReviewByThread, cancelReview } from '../adversarial.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleReviewIntercept(msg: InboundMessage, rounds: number, topic?: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '⚔️').catch(() => {})
 
-  const thread = threadRegistry.get(msg.channelId)
-    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-  const sessionId = thread?.currentSessionId ?? undefined
-
-  if (!sessionId) {
-    await gateway.send(msg.channelId, `No session owns this thread. Use \`/review\` in a session thread.`, { replyTo: msg.id })
-    return
-  }
-
-  const info = registry.get(sessionId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId ?? undefined)
   if (!info) {
-    await gateway.send(msg.channelId, `Session not found.`, { replyTo: msg.id })
+    await gateway.send(msg.channelId, `No session owns this thread. Use \`/review\` in a session thread.`, { replyTo: msg.id })
     return
   }
 
@@ -34,7 +25,7 @@ export async function handleReviewIntercept(msg: InboundMessage, rounds: number,
   const clampedRounds = Math.max(1, Math.min(rounds, 5))
 
   try {
-    await startReview(threadId, sessionId, clampedRounds, topic)
+    await startReview(threadId, info.sessionId, clampedRounds, topic)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await gateway.send(msg.channelId, `Review failed to start: ${errMsg}`, { replyTo: msg.id })

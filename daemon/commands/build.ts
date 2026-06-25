@@ -1,5 +1,5 @@
 import { gateway } from '../config.js'
-import { registry, threadRegistry } from '../sessions.js'
+import { registry } from '../sessions.js'
 import { startBuild, getBuildByThread, cancelBuild } from '../build.js'
 import type { InboundMessage } from '../../gateway.js'
 
@@ -8,18 +8,9 @@ export async function handleBuildIntercept(msg: InboundMessage, rounds: number, 
 
   if (isNaN(rounds)) rounds = 3
 
-  const thread = threadRegistry.get(msg.channelId)
-    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-  const sessionId = thread?.currentSessionId ?? undefined
-
-  if (!sessionId) {
-    await gateway.send(msg.channelId, `No session owns this thread. Use \`build\` in a session thread.`, { replyTo: msg.id })
-    return
-  }
-
-  const info = registry.get(sessionId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId ?? undefined)
   if (!info) {
-    await gateway.send(msg.channelId, `Session not found.`, { replyTo: msg.id })
+    await gateway.send(msg.channelId, `No session owns this thread. Use \`build\` in a session thread.`, { replyTo: msg.id })
     return
   }
 
@@ -36,7 +27,7 @@ export async function handleBuildIntercept(msg: InboundMessage, rounds: number, 
   const clampedRounds = Math.max(1, Math.min(rounds, 5))
 
   try {
-    await startBuild(threadId, sessionId, clampedRounds, task, worktree)
+    await startBuild(threadId, info.sessionId, clampedRounds, task, worktree)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await gateway.send(msg.channelId, `Build failed to start: ${errMsg}`, { replyTo: msg.id })

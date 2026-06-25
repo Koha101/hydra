@@ -220,7 +220,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     const threadKillMatch = msg.content.match(/^(?:kill|\/kill)\s*$/i)
-    if (threadKillMatch) {
+    if (threadKillMatch && msg.isThread) {
       void handleThreadKillIntercept(msg)
       return
     }
@@ -244,12 +244,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     if (msg.isThread) {
-      const resumeMatch = msg.content.match(/^(?:\/resume|resume)\s*$/i)
-      if (resumeMatch) {
-        void handleResumeIntercept(msg)
-        return
-      }
-
       const respawnMatch = msg.content.match(/^(?:\/respawn|respawn)(?::\s*([\s\S]+))?$/i)
       if (respawnMatch) {
         void handleRespawnIntercept(msg, respawnMatch[1]?.trim() || undefined)
@@ -355,13 +349,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
 
     if (msg.isThread) {
-      const thread = threadRegistry.get(msg.channelId)
-        ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-      const mappedSession = thread?.currentSessionId ?? undefined
+      const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId ?? undefined)
+      const mappedSession = info?.sessionId
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threads=${threadRegistry.threads.size}\n`)
-      if (mappedSession) {
-        const info = registry.get(mappedSession)
-        if (info) {
+      if (info) {
           const listenMatch = msg.content.match(/^(listen|pause)\s*$/i)
           if (listenMatch) {
             info.listening = listenMatch[1].toLowerCase() === 'listen'
@@ -379,7 +370,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
           if (shouldRoute) {
             info.lastActive = Date.now()
-            void deliverToSession(msg, mappedSession, access)
+            void deliverToSession(msg, info.sessionId, access)
             return
           }
 
@@ -387,14 +378,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
             const mentioned = await gateway.isMentioned(msg)
             if (mentioned) {
               info.lastActive = Date.now()
-              void deliverToSession(msg, mappedSession, access)
+              void deliverToSession(msg, info.sessionId, access)
               return
             }
           }
 
           return
         }
-      }
     }
   }
 
@@ -421,7 +411,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const preview = msg.content.slice(0, 50).replace(/<@!?\d+>\s*/g, '').trim() || 'Thread'
       const archiveDuration = policy.threadArchiveMinutes ?? 1440
 
-      if (msg.hasExistingThread && msg.existingThreadId) {
+      const existingIsSession = msg.hasExistingThread && msg.existingThreadId
+        && threadRegistry.get(msg.existingThreadId)?.currentSessionId
+      if (msg.hasExistingThread && msg.existingThreadId && !existingIsSession) {
         chat_id = msg.existingThreadId
       } else {
         const threadId = await gateway.startThreadOnMessage(msg, preview, archiveDuration)
@@ -457,28 +449,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
   let effectiveChatId = chat_id
 
   if (msg.isThread) {
-    const thread = threadRegistry.get(msg.channelId)
-      ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-    const mappedSession = thread?.currentSessionId ?? undefined
-    if (mappedSession && registry.has(mappedSession)) {
-      targetSessionId = mappedSession
-      const info = registry.get(mappedSession)!
+    const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId ?? undefined)
+    if (info) {
+      targetSessionId = info.sessionId
       info.lastActive = Date.now()
       effectiveChatId = info.threadId
     }
   }
-  if (targetSessionId === 'main' && chat_id !== msg.channelId) {
-    const thread = threadRegistry.get(chat_id)
-      ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-    const mappedSession = thread?.currentSessionId ?? undefined
-    if (mappedSession && registry.has(mappedSession)) {
-      targetSessionId = mappedSession
-      const info = registry.get(mappedSession)!
-      info.lastActive = Date.now()
-      effectiveChatId = info.threadId
-    }
-  }
-
   const { content, meta } = await buildNotificationPayload(msg, effectiveChatId)
   transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
 })

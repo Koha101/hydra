@@ -1,23 +1,14 @@
 import { gateway } from '../config.js'
-import { registry, threadRegistry } from '../sessions.js'
+import { registry } from '../sessions.js'
 import { startDesign, getDesignByThread, cancelDesign } from '../design.js'
 import type { InboundMessage } from '../../gateway.js'
 
 export async function handleDesignIntercept(msg: InboundMessage, topic: string): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🎨').catch(() => {})
 
-  const thread = threadRegistry.get(msg.channelId)
-    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-  const sessionId = thread?.currentSessionId ?? undefined
-
-  if (!sessionId) {
-    await gateway.send(msg.channelId, `No session owns this thread. Use \`design:\` in a session thread.`, { replyTo: msg.id })
-    return
-  }
-
-  const info = registry.get(sessionId)
+  const info = registry.resolveThreadSession(msg.channelId, msg.existingThreadId ?? undefined)
   if (!info) {
-    await gateway.send(msg.channelId, `Session not found.`, { replyTo: msg.id })
+    await gateway.send(msg.channelId, `No session owns this thread. Use \`design:\` in a session thread.`, { replyTo: msg.id })
     return
   }
 
