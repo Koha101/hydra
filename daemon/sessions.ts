@@ -73,7 +73,6 @@ export type ThreadInfo = {
   description?: string
   anchorState: AnchorState | null
   respawnCount: number
-  currentSessionId: string | null
   createdAt: number
   lastActive: number
   totalMessages: number
@@ -135,12 +134,11 @@ export function sessionEmoji(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// SessionRegistry — owns sessions + threadToSession Maps
+// SessionRegistry — owns live sessions
 // ---------------------------------------------------------------------------
 
 export class SessionRegistry {
   readonly sessions = new Map<string, SessionInfo>()
-  readonly threadToSession = new Map<string, string>()
   private readonly threadMembers = new Map<string, ThreadMember[]>() // in-memory only — not persisted across daemon restarts
   private readonly sessionsFile: string
 
@@ -163,18 +161,6 @@ export class SessionRegistry {
   }
 
   values(): IterableIterator<SessionInfo> { return this.sessions.values() }
-
-  getByThread(threadId: string): string | undefined {
-    return this.threadToSession.get(threadId)
-  }
-
-  setThread(threadId: string, sessionId: string): void {
-    this.threadToSession.set(threadId, sessionId)
-  }
-
-  deleteThread(threadId: string): void {
-    this.threadToSession.delete(threadId)
-  }
 
   addMember(threadId: string, sessionId: string, label?: string): ThreadMember {
     const members = this.threadMembers.get(threadId) ?? []
@@ -231,16 +217,10 @@ export class SessionRegistry {
 
   resolveThreadSession(channelId: string, existingThreadId?: string, isThread?: boolean): SessionInfo | null {
     if (isThread === false) return null
-    // ThreadRegistry primary, legacy threadToSession fallback
-    const thread = threadRegistry.get(channelId)
-      ?? (existingThreadId ? threadRegistry.get(existingThreadId) : undefined)
-    if (thread?.currentSessionId) {
-      return this.sessions.get(thread.currentSessionId) ?? null
-    }
-    const mappedSession = this.threadToSession.get(channelId)
-      ?? (existingThreadId ? this.threadToSession.get(existingThreadId) : undefined)
-    if (!mappedSession) return null
-    return this.sessions.get(mappedSession) ?? null
+    const sessionId = threadRegistry.getBoundSession(channelId)
+      ?? (existingThreadId ? threadRegistry.getBoundSession(existingThreadId) : undefined)
+    if (!sessionId) return null
+    return this.sessions.get(sessionId) ?? null
   }
 
   private loadPersisted(): void {
@@ -264,7 +244,6 @@ export class SessionRegistry {
           continue
         }
         this.sessions.set(info.sessionId, info)
-        this.threadToSession.set(info.threadId, info.sessionId)
         restored++
       }
       if (restored > 0 || dead > 0) {
@@ -287,10 +266,13 @@ export const registry = new SessionRegistry()
 
 export class ThreadRegistry {
   readonly threads = new Map<string, ThreadInfo>()
+  private readonly _bindings = new Map<string, string>()
   private readonly threadsFile: string
+  private readonly bindingsFile: string
 
   constructor() {
     this.threadsFile = join(STATE_DIR, 'threads.json')
+    this.bindingsFile = join(STATE_DIR, 'bindings.json')
   }
 
   get(threadId: string): ThreadInfo | undefined {
@@ -315,9 +297,32 @@ export class ThreadRegistry {
 
   get size(): number { return this.threads.size }
 
-  /** Crashed threads eligible for recovery */
+  // -- Bindings: the sole source of truth for thread→session routing ----------
+
+  bind(threadId: string, sessionId: string): void {
+    this._bindings.set(threadId, sessionId)
+  }
+
+  unbind(threadId: string): void {
+    this._bindings.delete(threadId)
+  }
+
+  getBoundSession(threadId: string): string | undefined {
+    return this._bindings.get(threadId)
+  }
+
+  isBound(threadId: string): boolean {
+    return this._bindings.has(threadId)
+  }
+
+  /** Crashed threads eligible for recovery — unbound with crashed anchor */
   detachedThreads(): ThreadInfo[] {
-    return [...this.threads.values()].filter(t => t.currentSessionId === null && t.anchorState === 'crashed')
+    return [...this.threads.values()].filter(t => !this._bindings.has(t.threadId) && t.anchorState === 'crashed')
+  }
+
+  /** Threads with a live binding */
+  activeThreads(): ThreadInfo[] {
+    return [...this.threads.values()].filter(t => this._bindings.has(t.threadId))
   }
 
   persist(): void {
@@ -327,13 +332,24 @@ export class ThreadRegistry {
     } catch (err) {
       process.stderr.write(`daemon: failed to persist threads: ${err}\n`)
     }
+    try {
+      const bindings = Object.fromEntries(this._bindings)
+      atomicWriteFileSync(this.bindingsFile, JSON.stringify(bindings, null, 2) + '\n')
+    } catch (err) {
+      process.stderr.write(`daemon: failed to persist bindings: ${err}\n`)
+    }
   }
 
   private loadPersisted(): void {
     try {
       const raw = readFileSync(this.threadsFile, 'utf8')
-      const data = JSON.parse(raw) as ThreadInfo[]
+      const data = JSON.parse(raw) as (ThreadInfo & { currentSessionId?: string | null })[]
       for (const info of data) {
+        // Migrate: if old-format ThreadInfo has currentSessionId, extract to bindings
+        if (info.currentSessionId) {
+          this._bindings.set(info.threadId, info.currentSessionId)
+        }
+        delete info.currentSessionId
         this.threads.set(info.threadId, info)
       }
       if (data.length > 0) {
@@ -342,6 +358,18 @@ export class ThreadRegistry {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load threads: ${err}\n`)
+      }
+    }
+    // Load bindings (overwrites any migrated from old-format threads above)
+    try {
+      const raw = readFileSync(this.bindingsFile, 'utf8')
+      const data = JSON.parse(raw) as Record<string, string>
+      for (const [threadId, sessionId] of Object.entries(data)) {
+        this._bindings.set(threadId, sessionId)
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(`daemon: failed to load bindings: ${err}\n`)
       }
     }
   }
@@ -361,7 +389,7 @@ export class ThreadRegistry {
           messageCount: session.messageCount ?? 0,
           claudeSessionId: session.claudeSessionId,
         })
-        existing.currentSessionId = session.sessionId
+        this._bindings.set(session.threadId, session.sessionId)
         existing.totalMessages += (session.messageCount ?? 0)
         if (session.lastActive > existing.lastActive) {
           existing.lastActive = session.lastActive
@@ -377,7 +405,6 @@ export class ThreadRegistry {
         description: session.description,
         anchorState: 'live',
         respawnCount: session.respawnCount ?? 0,
-        currentSessionId: session.sessionId,
         createdAt: session.createdAt,
         lastActive: session.lastActive,
         totalMessages: session.messageCount ?? 0,
@@ -392,6 +419,7 @@ export class ThreadRegistry {
         }],
       }
       this.threads.set(session.threadId, thread)
+      this._bindings.set(session.threadId, session.sessionId)
     }
 
     if (this.threads.size > 0) {
@@ -400,7 +428,7 @@ export class ThreadRegistry {
     }
   }
 
-  /** Boot: load persisted threads, migrate from sessions if first run, reconcile orphans */
+  /** Boot: load persisted threads + bindings, migrate from sessions if first run, reconcile */
   boot(sessionRegistry: SessionRegistry): void {
     this.loadPersisted()
     if (this.threads.size === 0 && sessionRegistry.size > 0) {
@@ -420,7 +448,6 @@ export class ThreadRegistry {
         description: session.description,
         anchorState: 'live',
         respawnCount: session.respawnCount ?? 0,
-        currentSessionId: session.sessionId,
         createdAt: session.createdAt,
         lastActive: session.lastActive,
         totalMessages: session.messageCount ?? 0,
@@ -434,15 +461,17 @@ export class ThreadRegistry {
           claudeSessionId: session.claudeSessionId,
         }],
       })
+      this._bindings.set(session.threadId, session.sessionId)
       orphans++
     }
 
-    // Detach threads referencing sessions that no longer exist
+    // Detach bindings referencing sessions that no longer exist
     let detached = 0
-    for (const thread of this.threads.values()) {
-      if (thread.currentSessionId && !sessionRegistry.has(thread.currentSessionId)) {
-        thread.currentSessionId = null
-        thread.anchorState = 'crashed'
+    for (const [threadId, sessionId] of this._bindings) {
+      if (!sessionRegistry.has(sessionId)) {
+        this._bindings.delete(threadId)
+        const thread = this.threads.get(threadId)
+        if (thread) thread.anchorState = 'crashed'
         detached++
       }
     }

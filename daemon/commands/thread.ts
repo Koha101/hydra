@@ -125,13 +125,9 @@ export function isSessionDead(info: { tmuxName: string; sessionId: string }): bo
 }
 
 export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
-  // Find session that owned this thread (may be dead) — threadRegistry primary
   const threadId = msg.channelId
-  const thread = threadRegistry.get(threadId)
-    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-  const sessionId = thread?.currentSessionId
-    ?? registry.getByThread(threadId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const sessionId = threadRegistry.getBoundSession(threadId)
+    ?? (msg.existingThreadId ? threadRegistry.getBoundSession(msg.existingThreadId) : undefined)
 
   if (!sessionId) {
     await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })
@@ -183,11 +179,8 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
 
 export async function handleRespawnIntercept(msg: InboundMessage): Promise<void> {
   const threadId = msg.channelId
-  const thread = threadRegistry.get(threadId)
-    ?? (msg.existingThreadId ? threadRegistry.get(msg.existingThreadId) : undefined)
-  const sessionId = thread?.currentSessionId
-    ?? registry.getByThread(threadId)
-    ?? (msg.existingThreadId ? registry.getByThread(msg.existingThreadId) : undefined)
+  const sessionId = threadRegistry.getBoundSession(threadId)
+    ?? (msg.existingThreadId ? threadRegistry.getBoundSession(msg.existingThreadId) : undefined)
 
   if (!sessionId) {
     await gateway.send(threadId, `No session found for this thread.`, { replyTo: msg.id })

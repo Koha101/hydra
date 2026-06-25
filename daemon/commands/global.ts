@@ -20,10 +20,7 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
   // If spawn is typed in a thread with a dead session, target that thread so it gets reused
   let chatId = msg.channelId
   if (msg.isThread && msg.existingThreadId) {
-    // Check threadRegistry first, then fall back to legacy map
-    const thread = threadRegistry.get(msg.existingThreadId)
-    const staleId = thread?.currentSessionId
-      ?? registry.getByThread(msg.existingThreadId)
+    const staleId = threadRegistry.getBoundSession(msg.existingThreadId)
     if (staleId && registry.has(staleId)) {
       const staleInfo = registry.get(staleId)!
       let tmuxAlive = false

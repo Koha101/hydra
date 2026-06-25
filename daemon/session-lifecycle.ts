@@ -40,14 +40,16 @@ export const killsInProgress = new Set<string>()
 export function detachSession(sessionId: string, { skipPersist = false } = {}): void {
   const info = registry.get(sessionId)
   if (!info) return
-  const thread = threadRegistry.get(info.threadId)
-  if (thread && thread.currentSessionId === sessionId) {
-    thread.currentSessionId = null
-    const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
-    if (histEntry) {
-      histEntry.endedAt = Date.now()
-      histEntry.messageCount = info.messageCount ?? 0
-      histEntry.claudeSessionId = info.claudeSessionId
+  if (threadRegistry.getBoundSession(info.threadId) === sessionId) {
+    threadRegistry.unbind(info.threadId)
+    const thread = threadRegistry.get(info.threadId)
+    if (thread) {
+      const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+      if (histEntry) {
+        histEntry.endedAt = Date.now()
+        histEntry.messageCount = info.messageCount ?? 0
+        histEntry.claudeSessionId = info.claudeSessionId
+      }
     }
     if (!skipPersist) threadRegistry.persist()
   }
@@ -106,9 +108,9 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       threadRegistry.persist()
     }
 
-    // Don't delete thread mapping for join members — owner keeps it
+    // Don't unbind for join members — owner keeps the binding
     if (!info.isJoinMember) {
-      registry.deleteThread(info.threadId)
+      threadRegistry.unbind(info.threadId)
     }
     registry.delete(info.sessionId)
     registry.persist()
@@ -192,7 +194,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
     // Clean up dead session in this thread before spawning
     if (threadId) {
-      const staleId = registry.getByThread(threadId)
+      const staleId = threadRegistry.getBoundSession(threadId)
       if (staleId) {
         const stale = registry.get(staleId)
         if (stale) {
@@ -411,15 +413,15 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
     ...(isJoin ? { isJoinMember: true } : {}),
   })
-  // Don't register in threadToSession for join members — owner keeps that mapping
+  // Don't bind for join members — owner keeps the binding
   if (!isJoin) {
-    registry.setThread(threadId!, sessionId)
+    threadRegistry.bind(threadId!, sessionId)
   } else {
     registry.addMember(threadId!, sessionId, opts?.memberLabel)
   }
   registry.persist()
 
-  // Co-update ThreadRegistry — join members don't claim the thread's currentSessionId
+  // Co-update ThreadRegistry
   let thread = threadRegistry.get(threadId!)
   if (!thread) {
     thread = {
@@ -430,7 +432,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       description: undefined,
       anchorState: respawnCount > 0 ? 'zombie' : 'live',
       respawnCount,
-      currentSessionId: isJoin ? null : sessionId,
       createdAt: now,
       lastActive: now,
       totalMessages: 0,
@@ -438,7 +439,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
     threadRegistry.set(threadId!, thread)
   } else {
-    if (!isJoin) thread.currentSessionId = sessionId
     thread.lastActive = now
     thread.threadUrl = url || thread.threadUrl
     thread.anchorState = respawnCount > 0 ? 'zombie' : 'live'
