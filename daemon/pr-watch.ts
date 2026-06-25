@@ -39,6 +39,8 @@ export type WatchEntry = {
   lastReviewCommentId: number
   lastIssueCommentId: number
   lastReviewId: number
+  lastHeadSha: string
+  lastCheckStatus: 'pending' | 'success' | 'failure' | 'unknown'
   createdAt: number
 }
 
@@ -70,6 +72,9 @@ function loadPersisted(): void {
     const raw = readFileSync(PERSIST_FILE, 'utf8')
     const data = JSON.parse(raw) as WatchEntry[]
     for (const entry of data) {
+      // Backfill new fields from older persisted data
+      if (!entry.lastHeadSha) entry.lastHeadSha = ''
+      if (!entry.lastCheckStatus) entry.lastCheckStatus = 'unknown'
       if (registry.has(entry.sessionId) || entry.sessionId === 'main') {
         watches.set(entry.prUrl, entry)
       }
@@ -225,22 +230,67 @@ async function fetchNewIssueComments(entry: WatchEntry): Promise<PRComment[]> {
 }
 
 // ---------------------------------------------------------------------------
+// CI status
+// ---------------------------------------------------------------------------
+
+type CheckResult = {
+  headSha: string
+  status: 'pending' | 'success' | 'failure' | 'unknown'
+  failed: Array<{ name: string; conclusion: string; url: string }>
+}
+
+async function fetchCheckStatus(entry: WatchEntry): Promise<CheckResult | null> {
+  // Get current head SHA from the PR
+  const pr = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}`)
+  if (!pr?.head?.sha) return null
+
+  const headSha = pr.head.sha as string
+
+  // Fetch check runs for this SHA
+  const checks = await ghApi(`repos/${entry.owner}/${entry.repo}/commits/${headSha}/check-runs?per_page=100`)
+  if (!checks?.check_runs) return { headSha, status: 'unknown', failed: [] }
+
+  const runs = checks.check_runs as Array<{ name: string; status: string; conclusion: string | null; html_url: string }>
+  if (runs.length === 0) return { headSha, status: 'unknown', failed: [] }
+
+  const pending = runs.some((r: any) => r.status !== 'completed')
+  const failed = runs
+    .filter((r: any) => r.conclusion === 'failure' || r.conclusion === 'cancelled' || r.conclusion === 'timed_out')
+    .map((r: any) => ({ name: r.name, conclusion: r.conclusion, url: r.html_url }))
+
+  if (pending && failed.length === 0) return { headSha, status: 'pending', failed: [] }
+  if (failed.length > 0) return { headSha, status: 'failure', failed }
+  return { headSha, status: 'success', failed: [] }
+}
+
+// ---------------------------------------------------------------------------
 // Poll a single PR
 // ---------------------------------------------------------------------------
 
 async function pollPr(entry: WatchEntry): Promise<void> {
   const pollTime = new Date().toISOString()
 
-  const [reviewComments, reviews, issueComments] = await Promise.all([
+  const [reviewComments, reviews, issueComments, checkResult] = await Promise.all([
     fetchNewReviewComments(entry),
     fetchNewReviews(entry),
     fetchNewIssueComments(entry),
+    fetchCheckStatus(entry),
   ])
 
   // Always advance timestamp to avoid growing payloads on quiet PRs
   entry.lastCheckedAt = pollTime
 
-  if (reviewComments.length === 0 && issueComments.length === 0 && reviews.length === 0) {
+  // Detect CI status changes
+  let ciChanged = false
+  if (checkResult) {
+    const newSha = checkResult.headSha !== entry.lastHeadSha
+    const statusFlipped = checkResult.status !== entry.lastCheckStatus && checkResult.status !== 'pending' && checkResult.status !== 'unknown'
+    ciChanged = (newSha && checkResult.status === 'failure') || statusFlipped
+    entry.lastHeadSha = checkResult.headSha
+    entry.lastCheckStatus = checkResult.status
+  }
+
+  if (reviewComments.length === 0 && issueComments.length === 0 && reviews.length === 0 && !ciChanged) {
     if (watches.get(entry.prUrl) === entry) persist()
     return
   }
@@ -257,7 +307,7 @@ async function pollPr(entry: WatchEntry): Promise<void> {
   }
 
   const allComments = [...reviewComments, ...issueComments]
-  const totalItems = allComments.length + reviews.length
+  const totalItems = allComments.length + reviews.length + (ciChanged ? 1 : 0)
 
   const parts: string[] = []
   parts.push(`[PR Feedback] **${entry.owner}/${entry.repo}#${entry.prNumber}** — ${totalItems} new item(s)`)
@@ -278,8 +328,28 @@ async function pollPr(entry: WatchEntry): Promise<void> {
     parts.push('')
   }
 
+  if (ciChanged && checkResult) {
+    if (checkResult.status === 'failure') {
+      parts.push(`🔴 **CI Failed** (${checkResult.failed.length} check${checkResult.failed.length !== 1 ? 's' : ''})`)
+      for (const f of checkResult.failed) {
+        parts.push(`  • \`${f.name}\` — ${f.conclusion}${f.url ? ` — ${f.url}` : ''}`)
+      }
+      parts.push('')
+    } else if (checkResult.status === 'success' && entry.lastCheckStatus !== 'unknown') {
+      parts.push(`✅ **CI Passed** — all checks green`)
+      parts.push('')
+    }
+  }
+
   parts.push('---')
-  parts.push('Categorize the above into: **real bugs to fix**, **valid suggestions**, **false positives/noise**, **nits**. Lead with a TL;DR of what actually needs action.')
+  const hasReviewFeedback = allComments.length > 0 || reviews.length > 0
+  if (hasReviewFeedback && ciChanged && checkResult?.status === 'failure') {
+    parts.push('CI is failing. Categorize the review feedback into: **real bugs to fix**, **valid suggestions**, **false positives/noise**, **nits**. Then investigate and fix the CI failures. Lead with a TL;DR of what needs action.')
+  } else if (ciChanged && checkResult?.status === 'failure') {
+    parts.push('CI is failing. Investigate the failed checks, identify the root cause, and fix the issue.')
+  } else if (hasReviewFeedback) {
+    parts.push('Categorize the above into: **real bugs to fix**, **valid suggestions**, **false positives/noise**, **nits**. Lead with a TL;DR of what actually needs action.')
+  }
 
   // Deliver to the session
   const sessionExists = registry.has(entry.sessionId) || entry.sessionId === 'main'
@@ -399,19 +469,26 @@ export async function watchPr(prUrl: string, sessionId: string, threadId: string
     lastReviewCommentId: 0,
     lastIssueCommentId: 0,
     lastReviewId: 0,
+    lastHeadSha: '',
+    lastCheckStatus: 'unknown',
     createdAt: Date.now(),
   }
 
-  // Seed watermarks with max IDs so we only report NEW comments
+  // Seed watermarks with max IDs so we only report NEW comments/status
   try {
-    const [reviewComments, issueComments, reviews] = await Promise.all([
+    const [reviewComments, issueComments, reviews, checkResult] = await Promise.all([
       ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=100`),
       ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=100`),
       ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=100`),
+      fetchCheckStatus(entry),
     ])
     entry.lastReviewCommentId = maxId(reviewComments)
     entry.lastIssueCommentId = maxId(issueComments)
     entry.lastReviewId = maxId(reviews)
+    if (checkResult) {
+      entry.lastHeadSha = checkResult.headSha
+      entry.lastCheckStatus = checkResult.status
+    }
   } catch (err) {
     process.stderr.write(`daemon: pr-watch: failed to seed watermarks for ${prUrl}: ${err}\n`)
   }
