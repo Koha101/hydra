@@ -21,14 +21,10 @@ import { killSession } from './session-lifecycle.js'
 // Thread-primary session resolution
 // ---------------------------------------------------------------------------
 
-/** Resolve a thread/channel ID to a session ID — threadRegistry primary, registry.getByThread fallback */
+/** Resolve a thread/channel ID to a session ID via the binding map */
 function resolveSessionForThread(channelId: string, existingThreadId?: string): string | undefined {
-  const thread = threadRegistry.get(channelId)
-    ?? (existingThreadId ? threadRegistry.get(existingThreadId) : undefined)
-  if (thread?.currentSessionId) return thread.currentSessionId
-  // Fallback to legacy threadToSession map
-  return registry.getByThread(channelId)
-    ?? (existingThreadId ? registry.getByThread(existingThreadId) : undefined)
+  return threadRegistry.getBoundSession(channelId)
+    ?? (existingThreadId ? threadRegistry.getBoundSession(existingThreadId) : undefined)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +343,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     if (msg.isThread) {
       const mappedSession = resolveSessionForThread(msg.channelId, msg.existingThreadId)
-      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
+      process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} existingThreadId=${msg.existingThreadId} mappedSession=${mappedSession ?? 'none'}\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
         if (info) {
@@ -411,7 +407,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const archiveDuration = policy.threadArchiveMinutes ?? 1440
 
       const existingIsSession = msg.hasExistingThread && msg.existingThreadId
-        && threadRegistry.get(msg.existingThreadId)?.currentSessionId
+        && threadRegistry.isBound(msg.existingThreadId)
       if (msg.hasExistingThread && msg.existingThreadId && !existingIsSession) {
         chat_id = msg.existingThreadId
       } else {

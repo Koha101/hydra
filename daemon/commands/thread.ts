@@ -154,9 +154,10 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
     return
   }
 
-  // If thread has a live session, check if it's actually running
-  if (thread.currentSessionId) {
-    const liveInfo = registry.get(thread.currentSessionId)
+  // If thread has a live binding, check if session is actually running
+  const boundSessionId = threadRegistry.getBoundSession(threadId)
+  if (boundSessionId) {
+    const liveInfo = registry.get(boundSessionId)
     if (liveInfo) {
       let tmuxAlive = false
       try { execSync(`tmux has-session -t '${liveInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
@@ -257,9 +258,10 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
 
   const threadId = msg.existingThreadId ?? msg.channelId
   const thread = threadRegistry.get(threadId)
+  const boundSessionId = threadRegistry.getBoundSession(threadId)
 
-  if (thread?.currentSessionId) {
-    const liveInfo = registry.get(thread.currentSessionId)
+  if (boundSessionId) {
+    const liveInfo = registry.get(boundSessionId)
     if (liveInfo) {
       let tmuxAlive = false
       try { execSync(`tmux has-session -t '${liveInfo.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}

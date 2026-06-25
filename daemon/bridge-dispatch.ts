@@ -1,6 +1,6 @@
 import { statSync } from 'fs'
 import { gateway, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
@@ -234,7 +234,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (sessionId) {
           targetId = sessionId
         } else if (threadId) {
-          targetId = registry.getByThread(threadId)
+          targetId = threadRegistry.getBoundSession(threadId)
         }
 
         if (!targetId || !registry.has(targetId)) {
