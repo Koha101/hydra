@@ -63,6 +63,11 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 
     if (info.worktreePath && info.worktreeRepo) {
       const branch = `wt/${info.tmuxName}`
+      const cleanupScript = `${info.worktreePath}/bin/dev/on-worktree-remove.sh`
+      try {
+        execSync(`test -x ${shq(cleanupScript)} && ${shq(cleanupScript)} ${shq(info.tmuxName)}`, { stdio: 'pipe' })
+        process.stderr.write(`daemon: ran worktree cleanup hook for ${info.tmuxName}\n`)
+      } catch {}
       try {
         execSync(`git -C ${shq(info.worktreeRepo)} worktree remove ${shq(info.worktreePath)} --force`, { stdio: 'pipe' })
         process.stderr.write(`daemon: removed worktree ${info.worktreePath}\n`)
