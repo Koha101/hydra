@@ -22,14 +22,17 @@ export type SessionInfo = {
   topic: string
   threadId: string
   anchorMessageId?: string
+  anchorChannelId?: string
   createdAt: number
   lastActive: number
   tmuxName: string
   listening: boolean
+  paused?: boolean
   description?: string
+  contentEmoji?: string
   messageCount?: number
   claudeSessionId?: string
-  originType?: 'spawn' | 'fork' | 'handoff'
+  originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   capabilities?: SessionCapabilities
   respawnCount?: number
@@ -37,6 +40,7 @@ export type SessionInfo = {
   worktreeRepo?: string
   worktreePath?: string
   isJoinMember?: boolean
+  status?: 'live' | 'dead'
 }
 
 export type ThreadMember = {
@@ -50,7 +54,7 @@ export type ThreadMember = {
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
 
 // ---------------------------------------------------------------------------
-// Thread metadata — observational, not load-bearing for routing
+// Thread metadata — observational, not load-bearing for message routing
 // ---------------------------------------------------------------------------
 
 export type ThreadSessionEntry = {
@@ -82,6 +86,9 @@ export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
   handedOffFrom?: string
   artifact?: string
+  existingThreadId?: string                                    // reuse an existing thread instead of creating a new one
+  resumeFrom?: string                                          // claude session ID for --resume (no --fork-session)
+  resurrectFrom?: string                                       // tmuxName of predecessor (for lineage in respawn)
   joinThread?: string                                          // join existing thread as member (skip thread creation)
   promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
   memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
@@ -254,28 +261,37 @@ export class SessionRegistry {
       const data = JSON.parse(raw) as SessionInfo[]
       let restored = 0
       let dead = 0
+      let pruned = 0
       for (const info of data) {
-        try {
-          execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-        } catch {
-          dead++
-          continue
-        }
-        // Orphaned join members (review critics/judges) can't be re-associated
-        // with their review state after restart — kill them immediately
+        // Orphaned join members can't be re-associated with their review state
+        // after restart — kill them and discard
         if (info.isJoinMember) {
           try { execSync(`tmux kill-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
-          dead++
+          pruned++
           continue
+        }
+
+        let tmuxAlive = false
+        try {
+          execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
+          tmuxAlive = true
+        } catch {}
+
+        if (tmuxAlive) {
+          info.status = 'live'
+          restored++
+        } else {
+          // Mark dead but keep in registry so recovery commands can find them
+          info.status = 'dead'
+          dead++
         }
         this.sessions.set(info.sessionId, info)
         this.threadToSession.set(info.threadId, info.sessionId)
-        restored++
       }
-      if (restored > 0 || dead > 0) {
-        process.stderr.write(`daemon: restored ${restored} session(s), pruned ${dead} dead\n`)
+      if (restored > 0 || dead > 0 || pruned > 0) {
+        process.stderr.write(`daemon: restored ${restored} session(s), marked ${dead} dead, pruned ${pruned}\n`)
       }
-      if (dead > 0) this.persist()
+      this.persist()
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`daemon: failed to load sessions: ${err}\n`)
@@ -287,7 +303,7 @@ export class SessionRegistry {
 export const registry = new SessionRegistry()
 
 // ---------------------------------------------------------------------------
-// ThreadRegistry — lightweight thread metadata (not load-bearing for routing)
+// ThreadRegistry — lightweight thread metadata (not load-bearing for message routing)
 // ---------------------------------------------------------------------------
 
 export class ThreadRegistry {

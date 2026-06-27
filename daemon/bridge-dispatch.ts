@@ -199,7 +199,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'list_sessions': {
-        const sorted = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
+        const sorted = [...registry.values()].filter(s => s.status !== 'dead').sort((a, b) => b.lastActive - a.lastActive)
         const list = sorted.map(s => {
           const desc = s.description ?? fallbackDescription(s.topic)
           return {
