@@ -199,6 +199,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Daemon:**',
     '• 💚 `health` / `status` — daemon diagnostics',
+    '• 🧩 `protocols` — show active reviews/builds/designs',
     '• 🔌 `reconnect` — re-establish chat connection',
     '• 🔄 `restart` — restart daemon (sessions reconnect)',
     '• 📋 `help` / `commands` — this list',

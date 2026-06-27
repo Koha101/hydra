@@ -4,8 +4,10 @@ import { registry } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { getBuildByThread } from './build.js'
+import { getDesignByThread } from './design.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { createStateMachine } from './state-machine.js'
+import { refreshSessionVisual, registerProtocolBadge } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,7 +31,8 @@ export type ReviewState = {
   phase: ReviewPhase
   messageIds: string[]
   timeout?: ReturnType<typeof setTimeout>
-  _disconnectTimer?: ReturnType<typeof setTimeout>
+  _criticDisconnectTimer?: ReturnType<typeof setTimeout>
+  _ownerDisconnectTimer?: ReturnType<typeof setTimeout>
   _finalizing?: boolean
   _cleanupNudged?: boolean
 }
@@ -75,6 +78,8 @@ function cleanupReviewMaps(state: ReviewState): void {
 // Lookups
 // ---------------------------------------------------------------------------
 
+registerProtocolBadge(threadId => getReviewByThread(threadId) ? '⚔️' : undefined)
+
 export function getActiveReviews(): ReviewState[] {
   return [...reviews.values()].filter(r => r.phase !== 'complete' && r.phase !== 'cancelled')
 }
@@ -107,6 +112,9 @@ export async function startReview(
   if (getBuildByThread(ownerThreadId)) {
     throw new Error('A build is in progress in this thread — finish or cancel it first')
   }
+  if (getDesignByThread(ownerThreadId)) {
+    throw new Error('A design is in progress in this thread — finish or cancel it first')
+  }
 
   const reviewId = randomUUID()
   const state: ReviewState = {
@@ -123,6 +131,7 @@ export async function startReview(
   reviews.set(reviewId, state)
   threadToReview.set(ownerThreadId, reviewId)
   ownerToReview.set(ownerSessionId, reviewId)
+  refreshSessionVisual(ownerThreadId, '⚔️')
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
@@ -163,7 +172,8 @@ export async function cancelReview(reviewId: string): Promise<void> {
   if (!transition.ok) return
   state.phase = transition.to
   if (state.timeout) clearTimeout(state.timeout)
-  if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+  if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
+  if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
 
   try {
     if (state.criticSessionId) {
@@ -178,6 +188,7 @@ export async function cancelReview(reviewId: string): Promise<void> {
     cleanupReviewMaps(state)
   }
 
+  refreshSessionVisual(state.ownerThreadId)
   await gateway.send(state.ownerThreadId, `Review cancelled.`)
 
   void deleteReviewMessages(state).catch(err => {
@@ -251,7 +262,7 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
     if (isFinalRound) {
       void finishDebate(state, bodyText).catch(err => {
         process.stderr.write(`daemon: finishDebate failed: ${err}\n`)
-        void cancelReview(state.reviewId).catch(() => {})
+        void cancelReview(state.reviewId).catch(e => process.stderr.write(`daemon: cancelReview failed: ${e}\n`))
       })
     } else {
       onOwnerPosted(state, bodyText)
@@ -259,41 +270,69 @@ export function onReviewReply(sessionId: string, text: string, chatId: string, s
   }
 }
 
-/** Called when a critic bridge disconnects. */
+/** Called when a review participant bridge disconnects. */
 export function onParticipantDisconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
+  const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
   if (!reviewId) return
   const state = reviews.get(reviewId)
-  if (!state) return
+  if (!state || state.phase === 'complete' || state.phase === 'cancelled') return
+  if (transport.has(sessionId)) return
 
-  if (state.phase === 'critic_turn' && state.criticSessionId === sessionId) {
-    if (transport.has(sessionId)) return
-
+  if (state.criticSessionId === sessionId) {
     process.stderr.write(`daemon: review critic disconnected — 30s grace period\n`)
     if (state.timeout) {
       clearTimeout(state.timeout)
       state.timeout = undefined
     }
-    state._disconnectTimer = setTimeout(async () => {
+    state._criticDisconnectTimer = setTimeout(async () => {
       if (transport.has(sessionId)) {
         process.stderr.write(`daemon: review critic reconnected, grace period cleared\n`)
         resetTimeout(state)
         return
       }
       process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
-      await cancelReview(state.reviewId)
+      void cancelReview(state.reviewId).catch(e => process.stderr.write(`daemon: cancelReview failed: ${e}\n`))
     }, 30_000)
+  } else if (state.ownerSessionId === sessionId) {
+    process.stderr.write(`daemon: review owner disconnected — 2min grace period\n`)
+    if (state.timeout) {
+      clearTimeout(state.timeout)
+      state.timeout = undefined
+    }
+    if (state.criticSessionId) {
+      transport.sendOrQueue(state.criticSessionId, {
+        type: 'notification',
+        content: `[system] Owner session disconnected. Waiting up to 2 minutes for reconnect before cancelling.`,
+        meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+    state._ownerDisconnectTimer = setTimeout(async () => {
+      if (transport.has(sessionId)) {
+        process.stderr.write(`daemon: review owner reconnected, grace period cleared\n`)
+        resetTimeout(state)
+        return
+      }
+      process.stderr.write(`daemon: review owner did not reconnect, cancelling review\n`)
+      void cancelReview(state.reviewId).catch(e => process.stderr.write(`daemon: cancelReview failed: ${e}\n`))
+    }, 120_000)
   }
 }
 
 /** Called when a bridge registers. */
 export function onParticipantReconnect(sessionId: string): void {
-  const reviewId = sessionToReview.get(sessionId)
+  const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
   if (!reviewId) return
   const state = reviews.get(reviewId)
-  if (!state || !state._disconnectTimer) return
-  clearTimeout(state._disconnectTimer)
-  state._disconnectTimer = undefined
+  if (!state) return
+  if (state.criticSessionId === sessionId && state._criticDisconnectTimer) {
+    clearTimeout(state._criticDisconnectTimer)
+    state._criticDisconnectTimer = undefined
+  } else if (state.ownerSessionId === sessionId && state._ownerDisconnectTimer) {
+    clearTimeout(state._ownerDisconnectTimer)
+    state._ownerDisconnectTimer = undefined
+  } else {
+    return
+  }
   resetTimeout(state)
   process.stderr.write(`daemon: review participant ${sessionId} reconnected, grace period cleared\n`)
 }
@@ -420,6 +459,7 @@ function finalizeReview(state: ReviewState): void {
   }
 
   cleanupReviewMaps(state)
+  refreshSessionVisual(state.ownerThreadId)
 
   cleaningUpThreads.add(state.ownerThreadId)
   void deleteReviewMessages(state)

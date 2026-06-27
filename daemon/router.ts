@@ -13,7 +13,7 @@ import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/r
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { getDesignByThread, handleDesignAnswer } from './design.js'
-import { handleListIntercept, handleUsageIntercept, handleHealthIntercept } from './commands/status.js'
+import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 
@@ -187,6 +187,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const healthMatch = msg.content.match(/^(?:\/health|health|status)\s*$/i)
     if (healthMatch) {
       void handleHealthIntercept(msg)
+      return
+    }
+
+    const protocolsMatch = msg.content.match(/^(?:\/protocols|protocols)\s*$/i)
+    if (protocolsMatch) {
+      void handleProtocolsIntercept(msg)
       return
     }
 
