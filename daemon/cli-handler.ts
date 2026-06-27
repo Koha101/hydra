@@ -8,31 +8,34 @@ import { fallbackDescription, formatDuration, getContextPercent } from './util.j
 import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
 
 // ---------------------------------------------------------------------------
-// CLI session tracking (in-memory, keyed by sessionId)
+// CLI session state (unified, keyed by sessionId)
 // ---------------------------------------------------------------------------
 
-const cliAuthSources = new Map<string, string>()
-const sessionToIdempotencyKey = new Map<string, string>()
-const sessionTimeouts = new Map<string, Timer>()
+type CLISessionState = {
+  authSource: string
+  idempotencyKey?: string
+  timeout?: Timer
+}
+
+const cliSessions = new Map<string, CLISessionState>()
 
 export function getCLIAuthSource(sessionId: string): string | undefined {
-  return cliAuthSources.get(sessionId)
+  return cliSessions.get(sessionId)?.authSource
 }
 
 sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
-  cliAuthSources.delete(event.sessionId)
+  const state = cliSessions.get(event.sessionId)
+  if (!state) return
 
-  const key = sessionToIdempotencyKey.get(event.sessionId)
-  if (key) {
-    updateIdempotency(key, 'completed')
-    sessionToIdempotencyKey.delete(event.sessionId)
+  if (state.idempotencyKey) {
+    updateIdempotency(state.idempotencyKey, 'completed')
   }
 
-  const timer = sessionTimeouts.get(event.sessionId)
-  if (timer) {
-    clearTimeout(timer)
-    sessionTimeouts.delete(event.sessionId)
+  if (state.timeout) {
+    clearTimeout(state.timeout)
   }
+
+  cliSessions.delete(event.sessionId)
 })
 
 // ---------------------------------------------------------------------------
@@ -80,6 +83,7 @@ export type CLIResponse = {
   ok: boolean
   data?: unknown
   error?: string
+  exitCode?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +104,7 @@ function validateAuth(authSource: string | undefined, purpose: string | undefine
     }
   }
 
-  const activeCount = [...cliAuthSources.values()].filter(s => s === source).length
+  const activeCount = [...cliSessions.values()].filter(s => s.authSource === source).length
   if (activeCount >= entry.max_concurrent) {
     return { ok: false, error: `source "${source}" at max concurrent (${entry.max_concurrent})` }
   }
@@ -113,12 +117,17 @@ function validateAuth(authSource: string | undefined, purpose: string | undefine
 // ---------------------------------------------------------------------------
 
 function respond(req: CLIRequest, ok: true, data?: unknown): CLIResponse
-function respond(req: CLIRequest, ok: false, error: string, data?: unknown): CLIResponse
-function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?: unknown): CLIResponse {
+function respond(req: CLIRequest, ok: false, error: string, data?: unknown, exitCode?: number): CLIResponse
+function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?: unknown, exitCode?: number): CLIResponse {
   if (ok) {
     return { type: 'cli-response', command: req.command, id: req.id, ok: true, data: dataOrError }
   }
-  return { type: 'cli-response', command: req.command, id: req.id, ok: false, error: dataOrError as string, ...(maybeData !== undefined ? { data: maybeData } : {}) }
+  return {
+    type: 'cli-response', command: req.command, id: req.id, ok: false,
+    error: dataOrError as string,
+    ...(maybeData !== undefined ? { data: maybeData } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +155,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
       return respond(req, false,
         `idempotency key "${idempotencyKey}" already exists (status: ${check.entry.status}, session: ${check.entry.sessionId})`,
         { existing: check.entry },
+        2,
       )
     }
   }
@@ -164,25 +174,30 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
   const topic = purpose ? `[${purpose}] ${prompt}` : prompt
   const result = await doSpawnSession(topic, notifyThread)
 
-  cliAuthSources.set(result.sessionId, authSource)
+  const sessionState: CLISessionState = { authSource, idempotencyKey }
 
   if (idempotencyKey) {
     registerIdempotency(idempotencyKey, result.sessionId)
-    sessionToIdempotencyKey.set(result.sessionId, idempotencyKey)
   }
 
   if (timeoutMinutes && timeoutMinutes > 0) {
-    const timer = setTimeout(() => {
-      sessionTimeouts.delete(result.sessionId)
+    sessionState.timeout = setTimeout(() => {
+      const state = cliSessions.get(result.sessionId)
+      if (state) {
+        if (state.idempotencyKey) {
+          updateIdempotency(state.idempotencyKey, 'timed_out')
+          state.idempotencyKey = undefined
+        }
+        state.timeout = undefined
+      }
       const info = registry.get(result.sessionId)
       if (info) {
-        if (idempotencyKey) updateIdempotency(idempotencyKey, 'timed_out')
-        sessionToIdempotencyKey.delete(result.sessionId)
         void killSession(info, `CLI timeout (${timeoutMinutes}m)`).catch(() => {})
       }
     }, timeoutMinutes * 60 * 1000)
-    sessionTimeouts.set(result.sessionId, timer)
   }
+
+  cliSessions.set(result.sessionId, sessionState)
 
   return respond(req, true, {
     sessionId: result.sessionId,
@@ -203,7 +218,7 @@ function handleList(req: CLIRequest): CLIResponse {
     context: getContextPercent(s.tmuxName),
     running_for: formatDuration(Date.now() - s.createdAt),
     status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-    cliSource: cliAuthSources.get(s.sessionId),
+    cliSource: cliSessions.get(s.sessionId)?.authSource,
   }))
   return respond(req, true, list)
 }
@@ -234,7 +249,7 @@ function handleStatus(req: CLIRequest): CLIResponse {
     bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
     tmux: tmuxAlive ? 'alive' : 'dead',
     origin: info.originType,
-    cliSource: cliAuthSources.get(info.sessionId),
+    cliSource: cliSessions.get(info.sessionId)?.authSource,
   })
 }
 
@@ -245,8 +260,13 @@ async function handleKill(req: CLIRequest): Promise<CLIResponse> {
   const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
   if (!info) return respond(req, false, `session "${name}" not found`)
 
+  const state = cliSessions.get(info.sessionId)
+  if (state?.idempotencyKey) {
+    updateIdempotency(state.idempotencyKey, 'failed')
+    state.idempotencyKey = undefined
+  }
+
   await killSession(info, 'killed via CLI')
-  cliAuthSources.delete(info.sessionId)
   return respond(req, true, { killed: info.tmuxName })
 }
 

@@ -5,7 +5,6 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
-import { parseArgs } from 'util'
 
 // ---------------------------------------------------------------------------
 // Config discovery
@@ -143,7 +142,7 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
 
   if (!response.ok) {
     console.error(`error: ${response.error}`)
-    process.exit(1)
+    process.exit(typeof response.exitCode === 'number' ? response.exitCode : 1)
   }
 
   const data = response.data as any
