@@ -12,12 +12,14 @@ import { join } from 'path'
 import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
-import { registry } from './daemon/sessions.js'
+import { registry, threadRegistry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
 import { socketServer } from './daemon/bridge-server.js'
 import { announceRestartComplete } from './daemon/commands/global.js'
+
+threadRegistry.boot(registry)
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
