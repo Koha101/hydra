@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
-import { checkIdempotency, registerIdempotency, updateIdempotency, getIdempotencyEntry, listIdempotencyEntries } from '../idempotency.js'
+import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempotency, getIdempotencyEntry, listIdempotencyEntries } from '../idempotency.js'
 
 // Note: these tests operate on the live idempotency registry.
 // We use unique keys per test to avoid cross-test interference.
@@ -39,12 +39,12 @@ describe('idempotency', () => {
     expect(result.blocked).toBe(true)
   })
 
-  test('timed_out status blocks re-spawn', () => {
-    const key = `${PREFIX}timed-out-blocks`
+  test('timed_out status allows re-spawn', () => {
+    const key = `${PREFIX}timed-out-allows`
     registerIdempotency(key, 'session-4')
     updateIdempotency(key, 'timed_out')
     const result = checkIdempotency(key)
-    expect(result.blocked).toBe(true)
+    expect(result.blocked).toBe(false)
   })
 
   test('getIdempotencyEntry returns entry', () => {
@@ -67,6 +67,18 @@ describe('idempotency', () => {
     const entries = listIdempotencyEntries()
     const found = entries.find(e => e.key === key)
     expect(found).toBeDefined()
+  })
+
+  test('clearIdempotency removes entry', () => {
+    const key = `${PREFIX}clear-test`
+    registerIdempotency(key, 'session-8')
+    expect(clearIdempotency(key)).toBe(true)
+    const result = checkIdempotency(key)
+    expect(result.blocked).toBe(false)
+  })
+
+  test('clearIdempotency returns false for unknown key', () => {
+    expect(clearIdempotency(`${PREFIX}no-such-key`)).toBe(false)
   })
 
   test('expired entries are pruned on check', () => {

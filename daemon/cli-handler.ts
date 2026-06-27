@@ -1,12 +1,21 @@
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent } from './util.js'
-import { checkIdempotency, registerIdempotency, updateIdempotency, listIdempotencyEntries } from './idempotency.js'
+import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
+
+// ---------------------------------------------------------------------------
+// CLI auth source tracking (in-memory, keyed by sessionId)
+// ---------------------------------------------------------------------------
+
+const cliAuthSources = new Map<string, string>()
+
+export function getCLIAuthSource(sessionId: string): string | undefined {
+  return cliAuthSources.get(sessionId)
+}
 
 // ---------------------------------------------------------------------------
 // CLI access config
@@ -72,10 +81,7 @@ function validateAuth(authSource: string | undefined, purpose: string | undefine
     }
   }
 
-  const activeCount = [...registry.values()].filter(s => {
-    const meta = (s as any)._cliAuthSource
-    return meta === source
-  }).length
+  const activeCount = [...cliAuthSources.values()].filter(s => s === source).length
   if (activeCount >= entry.max_concurrent) {
     return { ok: false, error: `source "${source}" at max concurrent (${entry.max_concurrent})` }
   }
@@ -88,15 +94,17 @@ function validateAuth(authSource: string | undefined, purpose: string | undefine
 // ---------------------------------------------------------------------------
 
 async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
-  const { prompt, purpose, idempotencyKey, timeoutMinutes } = req.params as {
+  const { prompt, purpose, idempotencyKey, timeoutMinutes, notifyThread } = req.params as {
     prompt?: string
     purpose?: string
     idempotencyKey?: string
     timeoutMinutes?: number
+    notifyThread?: string
   }
 
   if (!prompt) return { type: 'cli-response', id: req.id, ok: false, error: 'prompt is required' }
 
+  const authSource = req.authSource ?? 'manual'
   const authResult = validateAuth(req.authSource, purpose)
   if (!authResult.ok) return { type: 'cli-response', id: req.id, ok: false, error: authResult.error }
 
@@ -112,7 +120,9 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
   }
 
   const topic = purpose ? `[${purpose}] ${prompt}` : prompt
-  const result = await doSpawnSession(topic)
+  const result = await doSpawnSession(topic, notifyThread)
+
+  cliAuthSources.set(result.sessionId, authSource)
 
   if (idempotencyKey) {
     registerIdempotency(idempotencyKey, result.sessionId)
@@ -125,6 +135,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
         void killSession(info, `CLI timeout (${timeoutMinutes}m)`).catch(() => {})
         if (idempotencyKey) updateIdempotency(idempotencyKey, 'timed_out')
       }
+      cliAuthSources.delete(result.sessionId)
     }, timeoutMinutes * 60 * 1000)
   }
 
@@ -150,6 +161,7 @@ function handleList(req: CLIRequest): CLIResponse {
     context: getContextPercent(s.tmuxName),
     running_for: formatDuration(Date.now() - s.createdAt),
     status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
+    cliSource: cliAuthSources.get(s.sessionId),
   }))
   return { type: 'cli-response', id: req.id, ok: true, data: list }
 }
@@ -161,9 +173,11 @@ function handleStatus(req: CLIRequest): CLIResponse {
   const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
   if (!info) return { type: 'cli-response', id: req.id, ok: false, error: `session "${name}" not found` }
 
-  const alive = (() => {
-    try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); return true } catch { return false }
-  })()
+  let tmuxAlive = false
+  try {
+    Bun.spawnSync(['tmux', 'has-session', '-t', info.tmuxName], { stdio: ['pipe', 'pipe', 'pipe'] })
+    tmuxAlive = true
+  } catch {}
 
   return {
     type: 'cli-response', id: req.id, ok: true,
@@ -177,8 +191,9 @@ function handleStatus(req: CLIRequest): CLIResponse {
       context: getContextPercent(info.tmuxName),
       running_for: formatDuration(Date.now() - info.createdAt),
       bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
-      tmux: alive ? 'alive' : 'dead',
+      tmux: tmuxAlive ? 'alive' : 'dead',
       origin: info.originType,
+      cliSource: cliAuthSources.get(info.sessionId),
     },
   }
 }
@@ -191,6 +206,7 @@ async function handleKill(req: CLIRequest): Promise<CLIResponse> {
   if (!info) return { type: 'cli-response', id: req.id, ok: false, error: `session "${name}" not found` }
 
   await killSession(info, 'killed via CLI')
+  cliAuthSources.delete(info.sessionId)
   return { type: 'cli-response', id: req.id, ok: true, data: { killed: info.tmuxName } }
 }
 
@@ -199,18 +215,28 @@ function handleHealth(req: CLIRequest): CLIResponse {
   const connected = sessions.filter(s => transport.has(s.sessionId)).length
   const disconnected = sessions.length - connected
 
-  const alive = (() => {
-    try { execSync("tmux list-sessions 2>/dev/null", { stdio: 'pipe', encoding: 'utf8' }); return true } catch { return false }
-  })()
+  let tmuxRunning = false
+  try {
+    const result = Bun.spawnSync(['tmux', 'list-sessions'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    tmuxRunning = result.exitCode === 0
+  } catch {}
 
   return {
     type: 'cli-response', id: req.id, ok: true,
     data: {
       sessions: { total: sessions.length, connected, disconnected },
-      tmux: alive ? 'running' : 'not running',
+      tmux: tmuxRunning ? 'running' : 'not running',
       idempotency: { active: listIdempotencyEntries().length },
     },
   }
+}
+
+function handleClearKey(req: CLIRequest): CLIResponse {
+  const { key } = req.params as { key?: string }
+  if (!key) return { type: 'cli-response', id: req.id, ok: false, error: 'key is required' }
+  const cleared = clearIdempotency(key)
+  if (!cleared) return { type: 'cli-response', id: req.id, ok: false, error: `key "${key}" not found` }
+  return { type: 'cli-response', id: req.id, ok: true, data: { cleared: key } }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +251,7 @@ export async function handleCLIRequest(req: CLIRequest): Promise<CLIResponse> {
       case 'status': return handleStatus(req)
       case 'kill': return await handleKill(req)
       case 'health': return handleHealth(req)
+      case 'clear-key': return handleClearKey(req)
       default:
         return { type: 'cli-response', id: req.id, ok: false, error: `unknown command: ${req.command}` }
     }

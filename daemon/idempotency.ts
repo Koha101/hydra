@@ -47,7 +47,7 @@ export function checkIdempotency(key: string): { blocked: true; entry: Idempoten
   prune()
   const existing = entries.get(key)
   if (!existing) return { blocked: false }
-  if (existing.status === 'failed') return { blocked: false }
+  if (existing.status === 'failed' || existing.status === 'timed_out') return { blocked: false }
   return { blocked: true, entry: existing }
 }
 
@@ -73,6 +73,13 @@ export function updateIdempotency(key: string, status: IdempotencyEntry['status'
 
 export function getIdempotencyEntry(key: string): IdempotencyEntry | undefined {
   return entries.get(key)
+}
+
+export function clearIdempotency(key: string): boolean {
+  if (!entries.has(key)) return false
+  entries.delete(key)
+  persist()
+  return true
 }
 
 export function listIdempotencyEntries(): IdempotencyEntry[] {

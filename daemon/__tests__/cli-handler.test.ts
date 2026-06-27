@@ -83,4 +83,27 @@ describe('cli-handler', () => {
     expect(res.type).toBe('cli-response')
     expect(res.id).toBe(id)
   })
+
+  test('clear-key with missing key returns error', async () => {
+    const res = await handleCLIRequest(makeReq({ command: 'clear-key', params: {} }))
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('key is required')
+  })
+
+  test('clear-key removes registered key', async () => {
+    const key = `cli-test-clear-${Date.now()}`
+    const { registerIdempotency } = await import('../idempotency.js')
+    registerIdempotency(key, 'some-session')
+
+    const res = await handleCLIRequest(makeReq({ command: 'clear-key', params: { key } }))
+    expect(res.ok).toBe(true)
+    const data = res.data as any
+    expect(data.cleared).toBe(key)
+  })
+
+  test('clear-key with unknown key returns error', async () => {
+    const res = await handleCLIRequest(makeReq({ command: 'clear-key', params: { key: 'no-such-key-xyz' } }))
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('not found')
+  })
 })

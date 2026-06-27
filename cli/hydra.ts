@@ -211,6 +211,7 @@ Usage:
   hydra status <name>                  Session details
   hydra kill <name>                    Kill a session
   hydra health                         Daemon diagnostics
+  hydra clear-key <key>                Clear a stuck idempotency key
 
 Spawn options:
   --purpose <name>                     Semantic label for the session
@@ -325,6 +326,19 @@ async function main(): Promise<void> {
     case 'health': {
       const response = await sendRequest(socketPath, {
         type: 'cli', command: 'health', id: randomUUID(), params: {},
+      })
+      printResponse(response, json)
+      break
+    }
+
+    case 'clear-key': {
+      const key = filtered[1]
+      if (!key) {
+        console.error('error: idempotency key required')
+        process.exit(1)
+      }
+      const response = await sendRequest(socketPath, {
+        type: 'cli', command: 'clear-key', id: randomUUID(), params: { key },
       })
       printResponse(response, json)
       break
