@@ -63,6 +63,7 @@ Then lock down: `/discord:access policy allowlist`
 - **Typing indicator:** Automatic while Claude is processing.
 - **Gateway singleton:** Discord enforces one WebSocket per bot token. The daemon architecture prevents race conditions from multiple sessions.
 - **DM spawning:** Discord DMs don't support threads, so `spawn:` from a DM creates the session thread in `DEFAULT_SESSION_CHANNEL` instead.
+- **Table rendering:** Discord has no native markdown table support. The daemon automatically detects pipe-tables in outbound messages, renders them as dark-themed PNG images via Playwright, and attaches them inline. If Playwright/Chromium is unavailable, tables degrade to aligned monospace code blocks. Sessions write standard markdown tables — the conversion is transparent. See `daemon/table-image.ts`.
 
 ## User IDs
 
