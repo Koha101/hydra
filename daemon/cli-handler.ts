@@ -3,7 +3,7 @@ import { join } from 'path'
 import { STATE_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
-import { doSpawnSession, killSession } from './session-lifecycle.js'
+import { doSpawnSession, killSession, sessionDeathEmitter } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent } from './util.js'
 import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
 
@@ -16,6 +16,10 @@ const cliAuthSources = new Map<string, string>()
 export function getCLIAuthSource(sessionId: string): string | undefined {
   return cliAuthSources.get(sessionId)
 }
+
+sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
+  cliAuthSources.delete(event.sessionId)
+})
 
 // ---------------------------------------------------------------------------
 // CLI access config
@@ -119,6 +123,18 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     }
   }
 
+  if (notifyThread) {
+    const existing = registry.getByThread(notifyThread)
+    if (!existing) {
+      try {
+        const { gateway } = await import('./config.js')
+        await gateway.fetchChannel(notifyThread)
+      } catch {
+        return { type: 'cli-response', id: req.id, ok: false, error: `invalid notifyThread: "${notifyThread}" is not a valid channel or thread` }
+      }
+    }
+  }
+
   const topic = purpose ? `[${purpose}] ${prompt}` : prompt
   const result = await doSpawnSession(topic, notifyThread)
 
@@ -173,11 +189,12 @@ function handleStatus(req: CLIRequest): CLIResponse {
   const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
   if (!info) return { type: 'cli-response', id: req.id, ok: false, error: `session "${name}" not found` }
 
-  let tmuxAlive = false
-  try {
-    Bun.spawnSync(['tmux', 'has-session', '-t', info.tmuxName], { stdio: ['pipe', 'pipe', 'pipe'] })
-    tmuxAlive = true
-  } catch {}
+  const tmuxAlive = (() => {
+    try {
+      const result = Bun.spawnSync(['tmux', 'has-session', '-t', info.tmuxName], { stdio: ['pipe', 'pipe', 'pipe'] })
+      return result.exitCode === 0
+    } catch { return false }
+  })()
 
   return {
     type: 'cli-response', id: req.id, ok: true,

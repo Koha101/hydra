@@ -160,7 +160,8 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
     for (const item of data) {
       const status = item.status === 'connected' ? '●' : '○'
       const ctx = item.context ? ` [${item.context}]` : ''
-      console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx})`)
+      const src = item.cliSource ? ` via:${item.cliSource}` : ''
+      console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx}${src})`)
     }
     return
   }
