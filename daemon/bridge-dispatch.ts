@@ -6,7 +6,7 @@ import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
-import { renderTablesForDiscord } from './table-image.js'
+import { renderTablesForDiscord, cleanupTableFiles } from './table-image.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -98,11 +98,14 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (files.length > 10) throw new Error('max 10 attachments per message')
 
         // Discord: convert markdown pipe-tables to inline PNG images
+        let tableFiles: string[] = []
         if (gateway.platform === 'discord') {
           const result = await renderTablesForDiscord(text)
           text = result.text
-          files.push(...result.files)
+          tableFiles = result.files
+          files.push(...tableFiles)
         }
+        if (files.length > 10) throw new Error('max 10 attachments per message')
 
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
@@ -125,6 +128,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
+        } finally {
+          cleanupTableFiles(tableFiles)
         }
 
         const result =

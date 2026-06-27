@@ -48,7 +48,8 @@ export function extractTables(text: string): { tables: ParsedTable[]; cleanedTex
   let i = 0
 
   while (i < lines.length) {
-    if (lines[i].trimStart().startsWith('```')) {
+    const trimmed = lines[i].trimStart()
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
       inCodeBlock = !inCodeBlock
       i++
       continue
@@ -152,10 +153,13 @@ function tableToCodeBlock(table: ParsedTable): string {
 // ---------------------------------------------------------------------------
 
 const TABLE_TMP = join(tmpdir(), 'hydra-tables')
-mkdirSync(TABLE_TMP, { recursive: true })
+let tmpDirReady = false
 
-let playwrightChecked = false
-let playwrightOk = false
+function ensureTmpDir(): void {
+  if (tmpDirReady) return
+  mkdirSync(TABLE_TMP, { recursive: true })
+  tmpDirReady = true
+}
 
 interface PlaywrightEnv {
   nodeModules: string
@@ -179,8 +183,13 @@ function resolvePlaywright(): PlaywrightEnv | null {
   }
 
   let chromiumPath = ''
-  const cacheDir = join(home, 'Library/Caches/ms-playwright')
-  if (existsSync(cacheDir)) {
+  const cacheDirs = [
+    join(home, 'Library/Caches/ms-playwright'),
+    join(home, '.cache/ms-playwright'),
+  ]
+  for (const cacheDir of cacheDirs) {
+    if (chromiumPath) break
+    if (!existsSync(cacheDir)) continue
     try {
       const result = Bun.spawnSync(['find', cacheDir, '-maxdepth', '2', '-type', 'd', '-name', 'chromium-*'], { timeout: 5_000 })
       const dirs = result.stdout.toString().trim().split('\n').filter(Boolean).sort().reverse()
@@ -199,46 +208,63 @@ function resolvePlaywright(): PlaywrightEnv | null {
   return resolvedEnv
 }
 
-function makeScreenshotScript(chromiumPath: string): string {
+function makeBatchScreenshotScript(chromiumPath: string): string {
   return `
 const { chromium } = require('playwright');
+const fs = require('fs');
 (async () => {
-  const [,, htmlPath, pngPath] = process.argv;
+  const jobs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const browser = await chromium.launch({
     headless: true,
     executablePath: ${JSON.stringify(chromiumPath)},
   });
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
-  await page.goto('file://' + htmlPath, { waitUntil: 'load' });
-  const el = await page.locator('.wrap').first();
-  await el.screenshot({ path: pngPath, omitBackground: true });
+  for (const { htmlPath, pngPath } of jobs) {
+    await page.goto('file://' + htmlPath, { waitUntil: 'load' });
+    const el = await page.locator('.wrap').first();
+    await el.screenshot({ path: pngPath, omitBackground: true });
+  }
   await browser.close();
 })().catch(e => { console.error(e.message); process.exit(1); });
 `
 }
 
-async function screenshotHtml(html: string, outPath: string): Promise<boolean> {
+let scriptPath: string | null = null
+
+async function screenshotTables(tables: { html: string; pngPath: string }[]): Promise<boolean[]> {
   const env = resolvePlaywright()
-  if (!env) return false
+  if (!env) return tables.map(() => false)
 
-  const scriptPath = join(TABLE_TMP, '_screenshot.cjs')
-  writeFileSync(scriptPath, makeScreenshotScript(env.chromiumPath))
+  ensureTmpDir()
 
-  const htmlPath = outPath.replace(/\.png$/, '.html')
-  writeFileSync(htmlPath, html)
+  if (!scriptPath) {
+    scriptPath = join(TABLE_TMP, `_screenshot-${process.pid}.cjs`)
+    writeFileSync(scriptPath, makeBatchScreenshotScript(env.chromiumPath))
+  }
+
+  const jobs = tables.map(t => {
+    const htmlPath = t.pngPath.replace(/\.png$/, '.html')
+    writeFileSync(htmlPath, t.html)
+    return { htmlPath, pngPath: t.pngPath }
+  })
+
+  const jobsFile = join(TABLE_TMP, `_jobs-${Date.now()}.json`)
+  writeFileSync(jobsFile, JSON.stringify(jobs))
 
   try {
-    const proc = Bun.spawn(['node', scriptPath, htmlPath, outPath], {
+    const proc = Bun.spawn(['node', scriptPath, jobsFile], {
       env: { ...process.env, NODE_PATH: env.nodeModules },
       stdout: 'pipe',
       stderr: 'pipe',
     })
     const code = await proc.exited
-    try { unlinkSync(htmlPath) } catch {}
-    return code === 0 && existsSync(outPath)
+    try { unlinkSync(jobsFile) } catch {}
+    for (const j of jobs) { try { unlinkSync(j.htmlPath) } catch {} }
+    return tables.map(t => code === 0 && existsSync(t.pngPath))
   } catch {
-    try { unlinkSync(htmlPath) } catch {}
-    return false
+    try { unlinkSync(jobsFile) } catch {}
+    for (const j of jobs) { try { unlinkSync(j.htmlPath) } catch {} }
+    return tables.map(() => false)
   }
 }
 
@@ -253,21 +279,30 @@ export type TableRenderResult = {
   degraded: number
 }
 
+export function cleanupTableFiles(files: string[]): void {
+  for (const f of files) {
+    try { unlinkSync(f) } catch {}
+  }
+}
+
 export async function renderTablesForDiscord(text: string): Promise<TableRenderResult> {
   const { tables, cleanedText } = extractTables(text)
   if (tables.length === 0) return { text, files: [], rendered: 0, degraded: 0 }
 
-  if (!playwrightChecked) {
-    playwrightChecked = true
-    const testHtml = '<html><body><div class="wrap" style="padding:4px">test</div></body></html>'
-    const testPng = join(TABLE_TMP, '_test.png')
-    playwrightOk = await screenshotHtml(testHtml, testPng)
-    try { unlinkSync(testPng) } catch {}
-    if (playwrightOk) {
-      process.stderr.write('daemon: table-image: playwright available, tables will render as PNG\n')
-    } else {
-      process.stderr.write('daemon: table-image: playwright unavailable, tables will degrade to code blocks\n')
+  ensureTmpDir()
+
+  if (resolvedEnv === undefined) {
+    resolvePlaywright()
+    if (resolvedEnv) {
+      const testHtml = '<html><body><div class="wrap" style="padding:4px">test</div></body></html>'
+      const testPng = join(TABLE_TMP, '_test.png')
+      const [ok] = await screenshotTables([{ html: testHtml, pngPath: testPng }])
+      if (!ok) resolvedEnv = null
+      try { unlinkSync(testPng) } catch {}
     }
+    process.stderr.write(resolvedEnv
+      ? 'daemon: table-image: playwright available, tables will render as PNG\n'
+      : 'daemon: table-image: playwright unavailable, tables will degrade to code blocks\n')
   }
 
   const files: string[] = []
@@ -275,20 +310,27 @@ export async function renderTablesForDiscord(text: string): Promise<TableRenderR
   let rendered = 0
   let degraded = 0
 
-  for (let i = 0; i < tables.length; i++) {
-    const table = tables[i]
-    if (playwrightOk) {
-      const pngPath = join(TABLE_TMP, `table-${Date.now()}-${i}.png`)
-      const html = tableToHtml(table)
-      const ok = await screenshotHtml(html, pngPath)
-      if (ok) {
-        files.push(pngPath)
+  if (resolvedEnv) {
+    const jobs = tables.map((table, i) => ({
+      table,
+      html: tableToHtml(table),
+      pngPath: join(TABLE_TMP, `table-${Date.now()}-${i}.png`),
+    }))
+    const results = await screenshotTables(jobs.map(j => ({ html: j.html, pngPath: j.pngPath })))
+    for (let i = 0; i < jobs.length; i++) {
+      if (results[i]) {
+        files.push(jobs[i].pngPath)
         rendered++
-        continue
+      } else {
+        codeBlocks.push(tableToCodeBlock(jobs[i].table))
+        degraded++
       }
     }
-    codeBlocks.push(tableToCodeBlock(table))
-    degraded++
+  } else {
+    for (const table of tables) {
+      codeBlocks.push(tableToCodeBlock(table))
+      degraded++
+    }
   }
 
   let finalText = cleanedText
