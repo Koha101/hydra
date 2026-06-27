@@ -6,6 +6,7 @@ import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
+import { renderTablesForDiscord } from './table-image.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -70,7 +71,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     switch (name) {
       case 'reply': {
         const chat_id = args.chat_id as string
-        const text = args.text as string
+        let text = args.text as string
         const reply_to = args.reply_to as string | undefined
         const files = (args.files as string[] | undefined) ?? []
 
@@ -95,6 +96,13 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           }
         }
         if (files.length > 10) throw new Error('max 10 attachments per message')
+
+        // Discord: convert markdown pipe-tables to inline PNG images
+        if (gateway.platform === 'discord') {
+          const result = await renderTablesForDiscord(text)
+          text = result.text
+          files.push(...result.files)
+        }
 
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
