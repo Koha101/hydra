@@ -1,0 +1,83 @@
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { STATE_DIR } from './config.js'
+import { atomicWriteFileSync } from './util.js'
+
+export type IdempotencyEntry = {
+  key: string
+  sessionId: string
+  status: 'spawned' | 'completed' | 'failed' | 'timed_out'
+  createdAt: number
+  expiresAt: number
+}
+
+const REGISTRY_PATH = join(STATE_DIR, 'idempotency.json')
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
+
+let entries: Map<string, IdempotencyEntry> = new Map()
+
+function load(): void {
+  try {
+    if (existsSync(REGISTRY_PATH)) {
+      const data = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as IdempotencyEntry[]
+      entries = new Map(data.map(e => [e.key, e]))
+    }
+  } catch {
+    entries = new Map()
+  }
+}
+
+function persist(): void {
+  atomicWriteFileSync(REGISTRY_PATH, JSON.stringify([...entries.values()], null, 2))
+}
+
+function prune(): void {
+  const now = Date.now()
+  let changed = false
+  for (const [key, entry] of entries) {
+    if (entry.expiresAt < now) {
+      entries.delete(key)
+      changed = true
+    }
+  }
+  if (changed) persist()
+}
+
+export function checkIdempotency(key: string): { blocked: true; entry: IdempotencyEntry } | { blocked: false } {
+  prune()
+  const existing = entries.get(key)
+  if (!existing) return { blocked: false }
+  if (existing.status === 'failed') return { blocked: false }
+  return { blocked: true, entry: existing }
+}
+
+export function registerIdempotency(key: string, sessionId: string, ttlMs?: number): void {
+  const now = Date.now()
+  entries.set(key, {
+    key,
+    sessionId,
+    status: 'spawned',
+    createdAt: now,
+    expiresAt: now + (ttlMs ?? DEFAULT_TTL_MS),
+  })
+  persist()
+}
+
+export function updateIdempotency(key: string, status: IdempotencyEntry['status']): void {
+  const entry = entries.get(key)
+  if (entry) {
+    entry.status = status
+    persist()
+  }
+}
+
+export function getIdempotencyEntry(key: string): IdempotencyEntry | undefined {
+  return entries.get(key)
+}
+
+export function listIdempotencyEntries(): IdempotencyEntry[] {
+  prune()
+  return [...entries.values()]
+}
+
+load()
