@@ -147,57 +147,56 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
   }
 
   const data = response.data as any
+  const command = response.command as string | undefined
+
   if (!data) {
     console.log('ok')
     return
   }
 
-  if (Array.isArray(data)) {
-    if (data.length === 0) {
-      console.log('(none)')
+  switch (command) {
+    case 'list': {
+      const items = data as any[]
+      if (items.length === 0) { console.log('(none)'); return }
+      for (const item of items) {
+        const status = item.status === 'connected' ? '●' : '○'
+        const ctx = item.context ? ` [${item.context}]` : ''
+        const src = item.cliSource ? ` via:${item.cliSource}` : ''
+        console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx}${src})`)
+      }
       return
     }
-    for (const item of data) {
-      const status = item.status === 'connected' ? '●' : '○'
-      const ctx = item.context ? ` [${item.context}]` : ''
-      const src = item.cliSource ? ` via:${item.cliSource}` : ''
-      console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx}${src})`)
-    }
-    return
+    case 'spawn':
+      console.log(`spawned: ${data.name} (${data.sessionId})`)
+      if (data.url) console.log(`thread:  ${data.url}`)
+      if (data.idempotencyKey) console.log(`key:     ${data.idempotencyKey}`)
+      return
+    case 'kill':
+      console.log(`killed: ${data.killed}`)
+      return
+    case 'health':
+      console.log(`sessions: ${data.sessions.total} (${data.sessions.connected} connected, ${data.sessions.disconnected} disconnected)`)
+      console.log(`tmux: ${data.tmux}`)
+      console.log(`idempotency: ${data.idempotency.active} active keys`)
+      return
+    case 'status':
+      console.log(`${data.name} (${data.sessionId})`)
+      console.log(`  topic:   ${data.topic}`)
+      if (data.description) console.log(`  desc:    ${data.description}`)
+      console.log(`  bridge:  ${data.bridge}`)
+      console.log(`  tmux:    ${data.tmux}`)
+      console.log(`  uptime:  ${data.running_for}`)
+      if (data.context) console.log(`  context: ${data.context}`)
+      if (data.url) console.log(`  url:     ${data.url}`)
+      if (data.origin) console.log(`  origin:  ${data.origin}`)
+      if (data.cliSource) console.log(`  source:  ${data.cliSource}`)
+      return
+    case 'clear-key':
+      console.log(`cleared: ${data.cleared}`)
+      return
+    default:
+      console.log(JSON.stringify(data, null, 2))
   }
-
-  if (data.sessionId) {
-    console.log(`spawned: ${data.name} (${data.sessionId})`)
-    if (data.url) console.log(`thread:  ${data.url}`)
-    if (data.idempotencyKey) console.log(`key:     ${data.idempotencyKey}`)
-    return
-  }
-
-  if (data.killed) {
-    console.log(`killed: ${data.killed}`)
-    return
-  }
-
-  if (data.sessions) {
-    console.log(`sessions: ${data.sessions.total} (${data.sessions.connected} connected, ${data.sessions.disconnected} disconnected)`)
-    console.log(`tmux: ${data.tmux}`)
-    console.log(`idempotency: ${data.idempotency.active} active keys`)
-    return
-  }
-
-  if (data.name && data.bridge) {
-    console.log(`${data.name} (${data.sessionId})`)
-    console.log(`  topic:   ${data.topic}`)
-    if (data.description) console.log(`  desc:    ${data.description}`)
-    console.log(`  bridge:  ${data.bridge}`)
-    console.log(`  tmux:    ${data.tmux}`)
-    console.log(`  uptime:  ${data.running_for}`)
-    if (data.context) console.log(`  context: ${data.context}`)
-    if (data.url) console.log(`  url:     ${data.url}`)
-    return
-  }
-
-  console.log(JSON.stringify(data, null, 2))
 }
 
 // ---------------------------------------------------------------------------
