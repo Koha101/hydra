@@ -1,17 +1,18 @@
 import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
-import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleRecoverIntercept } from './commands/thread.js'
+import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { getDesignByThread, handleDesignAnswer } from './design.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
@@ -81,6 +82,8 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
   const sessionInfo = registry.get(targetSessionId)
   if (sessionInfo) {
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
+    const thread = threadRegistry.get(sessionInfo.threadId)
+    if (thread) thread.totalMessages++
   }
   const chatId = sessionInfo?.threadId ?? msg.channelId
 
@@ -201,9 +204,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const recoverMatch = msg.content.match(/^(?:recover|\/recover)\s*$/i)
+    const recoverMatch = msg.content.match(/^(?:recover|\/recover)(?:\s+(.+))?$/i)
     if (recoverMatch) {
-      void handleRecoverIntercept(msg)
+      void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
       return
     }
 
@@ -219,9 +222,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
       return
     }
 
-    const respawnMatch = msg.content.match(/^(?:respawn|\/respawn)\s*$/i)
+    const respawnMatch = msg.content.match(/^(?:respawn|\/respawn)(?::\s*([\s\S]+))?$/i)
     if (respawnMatch) {
-      void handleRespawnIntercept(msg)
+      void handleRespawnIntercept(msg, respawnMatch[1]?.trim() || undefined)
       return
     }
 
@@ -331,12 +334,21 @@ gateway.onMessage(async (msg: InboundMessage) => {
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} effectiveThreadId=${msg.effectiveThreadId} resolvedThreadId=${resolvedThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
-        if (info) {
-          const listenMatch = msg.content.match(/^(listen|pause)\s*$/i)
+        if (info && info.status !== 'dead') {
+          const listenMatch = msg.content.match(/^(listen|unlisten)\s*$/i)
           if (listenMatch) {
             info.listening = listenMatch[1].toLowerCase() === 'listen'
             registry.persist()
-            void gateway.react(msg.channelId, msg.id, info.listening ? '👂' : '⏸️').catch(() => {})
+            void gateway.react(msg.channelId, msg.id, info.listening ? '👂' : '🔇').catch(() => {})
+            return
+          }
+
+          const pauseMatch = msg.content.match(/^(pause|unpause)\s*$/i)
+          if (pauseMatch) {
+            info.paused = pauseMatch[1].toLowerCase() === 'pause'
+            registry.persist()
+            void gateway.react(msg.channelId, msg.id, info.paused ? '⏸️' : '▶️').catch(() => {})
+            refreshSessionVisual(resolvedThreadId)
             return
           }
 
@@ -432,10 +444,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const rtid = registry.resolveThreadId(msg)
     const mappedSession = registry.getByThread(rtid)
     if (mappedSession && registry.has(mappedSession)) {
-      targetSessionId = mappedSession
       const info = registry.get(mappedSession)!
-      info.lastActive = Date.now()
-      effectiveChatId = info.threadId
+      if (info.status !== 'dead') {
+        targetSessionId = mappedSession
+        info.lastActive = Date.now()
+        effectiveChatId = info.threadId
+      }
     }
   }
   const { content, meta } = await buildNotificationPayload(msg, effectiveChatId)
