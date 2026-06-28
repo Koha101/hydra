@@ -191,6 +191,7 @@ export async function startDesign(
   if (state.proposalsExpected === 0) {
     await gateway.send(threadId, `No personas could be spawned. Design cancelled.`)
     designs.delete(threadId)
+    refreshSessionVisual(threadId)
     state.phase = 'cancelled'
     return state
   }
@@ -337,6 +338,7 @@ export async function cancelDesign(threadId: string): Promise<void> {
 
   await cleanupDesignSessions(state, 'design cancelled')
   designs.delete(threadId)
+  refreshSessionVisual(threadId)
   await gateway.send(state.ownerThreadId, `Design session cancelled.`)
 }
 
@@ -420,6 +422,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
       if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
       await cleanupDesignSessions(state, 'design complete')
       designs.delete(state.ownerThreadId)
+      refreshSessionVisual(state.ownerThreadId)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: brief writer spawn failed: ${err}\n`)
@@ -429,6 +432,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
     if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
     await cleanupDesignSessions(state, 'design complete')
     designs.delete(state.ownerThreadId)
+    refreshSessionVisual(state.ownerThreadId)
   }
 }
 
@@ -517,6 +521,7 @@ async function spawnAuditor(state: DesignState): Promise<void> {
     if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
     if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
     designs.delete(state.ownerThreadId)
+    refreshSessionVisual(state.ownerThreadId)
   }
 }
 
@@ -826,6 +831,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
         state.phase = result.to
         void cleanupDesignSessions(state, 'design complete').catch(e => process.stderr.write(`daemon: design cleanup failed: ${e}\n`))
         designs.delete(threadId)
+        refreshSessionVisual(threadId)
         void gateway.send(threadId, `_Design session complete._`).catch(() => {})
       }
       return

@@ -35,6 +35,8 @@ export function getActiveProtocolBadge(threadId: string): string | undefined {
 // Design phase indicators
 // ---------------------------------------------------------------------------
 
+// Glyph per user-visible design stage. Internal substates share a glyph (e.g. spawning/questioning/answering are all "gathering").
+// Phases not listed (cancelled, complete) get bare emoji — no indicator.
 const DESIGN_PHASE_INDICATOR: Record<string, string> = {
   spawning: '↗', questioning: '↗', answering: '↗',
   independent: '◆',
