@@ -2,7 +2,7 @@ import { gateway } from './config.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
 
 // ---------------------------------------------------------------------------
 // Protocol badge registry — protocols register badge resolvers at module load
@@ -30,6 +30,8 @@ export function refreshSessionVisual(_threadId: string, _badge?: string): void {
   // Callers declare visual intent here. Implementation delegates to
   // gateway.updateSessionVisual when available (added by #43).
 }
+
+export { setAnchorState as setSessionVisual }
 
 // ---------------------------------------------------------------------------
 // Anchor state — emoji reactions on the spawn message
