@@ -213,9 +213,10 @@ Usage:
   hydra clear-key <key>                Clear a stuck idempotency key
 
 Spawn options:
-  --purpose <name>                     Semantic label for the session
+  --purpose <name>                     Semantic label (visible in session prompt)
   --idempotency-key <key>              Prevent duplicate spawns
   --timeout <minutes>                  Auto-kill after timeout
+  --thread <id>                        Target thread (join existing or create in channel)
 
 Global options:
   --daemon <name>                      Target a specific daemon
@@ -252,6 +253,7 @@ async function main(): Promise<void> {
       let purpose: string | undefined
       let idempotencyKey: string | undefined
       let timeoutMinutes: number | undefined
+      let thread: string | undefined
       const promptParts: string[] = []
 
       for (let i = 1; i < filtered.length; i++) {
@@ -261,6 +263,8 @@ async function main(): Promise<void> {
           idempotencyKey = filtered[++i]
         } else if (filtered[i] === '--timeout' && i + 1 < filtered.length) {
           timeoutMinutes = parseInt(filtered[++i], 10)
+        } else if (filtered[i] === '--thread' && i + 1 < filtered.length) {
+          thread = filtered[++i]
         } else {
           promptParts.push(filtered[i])
         }
@@ -277,7 +281,7 @@ async function main(): Promise<void> {
         type: 'cli',
         command: 'spawn',
         id: randomUUID(),
-        params: { prompt, purpose, idempotencyKey, timeoutMinutes },
+        params: { prompt, purpose, idempotencyKey, timeoutMinutes, thread },
       })
       printResponse(response, json)
       break

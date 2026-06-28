@@ -74,12 +74,12 @@ function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?
 // ---------------------------------------------------------------------------
 
 async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
-  const { prompt, purpose, idempotencyKey, timeoutMinutes, notifyThread } = req.params as {
+  const { prompt, purpose, idempotencyKey, timeoutMinutes, thread } = req.params as {
     prompt?: string
     purpose?: string
     idempotencyKey?: string
     timeoutMinutes?: number
-    notifyThread?: string
+    thread?: string
   }
 
   if (!prompt) return respond(req, false, 'prompt is required')
@@ -96,21 +96,27 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     registerIdempotency(idempotencyKey, '', undefined, 'pending')
   }
 
-  if (notifyThread) {
-    const existing = registry.getByThread(notifyThread)
+  if (thread) {
+    const existing = registry.getByThread(thread)
     if (!existing) {
       try {
-        await gateway.fetchChannel(notifyThread)
+        await gateway.fetchChannel(thread)
       } catch {
         if (idempotencyKey) clearIdempotency(idempotencyKey)
-        return respond(req, false, `invalid notifyThread: "${notifyThread}" is not a valid channel or thread`)
+        return respond(req, false, `invalid thread: "${thread}" is not a valid channel or thread`)
       }
     }
   }
 
+  const topicParts = [prompt]
+  if (purpose) topicParts.unshift(`[Purpose: ${purpose}]`)
+  if (timeoutMinutes) topicParts.push(`[Timeout: ${timeoutMinutes}m — execute directly, skip extended orientation]`)
+  topicParts.push('[Programmatic spawn — begin task immediately after brief greeting]')
+  const topic = topicParts.join(' ')
+
   let result
   try {
-    result = await doSpawnSession(prompt, notifyThread)
+    result = await doSpawnSession(topic, thread)
   } catch (err) {
     if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err
