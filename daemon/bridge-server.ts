@@ -78,7 +78,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         process.stderr.write(`daemon: circuit breaker: ${info?.tmuxName ?? sessionId} flapping (${FLAP_THRESHOLD}+ registrations in ${FLAP_WINDOW_MS / 1000}s) — killing session\n`)
         try { execSync(`tmux kill-session -t '${info?.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
         if (info) {
-          info.status = 'dead'
+          info.deadAt = Date.now()
           registry.persist()
           void gateway.send(info.threadId, `⚠️ **${info.tmuxName}** killed by circuit breaker — bridge was flapping (${FLAP_THRESHOLD}+ reconnects in ${FLAP_WINDOW_MS / 1000}s). Use \`respawn\` to start fresh.`).catch(() => {})
         }
@@ -218,7 +218,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
       threadRegistry.persist()
     }
 
-    info.status = 'dead'
+    info.deadAt = Date.now()
     registry.persist()
 
     try {

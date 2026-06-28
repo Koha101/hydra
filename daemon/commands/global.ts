@@ -7,7 +7,7 @@ import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { ThreadMetadata } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
-import { tmuxHasSession } from '../util.js'
+import { tmuxHasSession, isAlive } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild } from '../build.js'
 import { getActiveReviews, cancelReview } from '../adversarial.js'
@@ -225,7 +225,7 @@ function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: s
   // Check all sessions in registry for dead ones
   for (const info of registry.values()) {
     if (info.isJoinMember) continue
-    if (info.status !== 'dead' && tmuxHasSession(info.tmuxName)) continue
+    if (isAlive(info)) continue
 
     const thread = threadRegistry.get(info.threadId)
     if (!thread) continue

@@ -5,7 +5,7 @@ import { gateway, STATE_DIR, PLATFORM } from '../config.js'
 import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync } from '../util.js'
+import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync, isAlive } from '../util.js'
 import { getWatchesBySession } from '../pr-watch.js'
 import { getActiveReviews } from '../adversarial.js'
 import { getActiveBuilds } from '../build.js'
@@ -117,7 +117,7 @@ export function debouncedRefreshListDisplay(): void {
 async function refreshListDisplay(): Promise<void> {
   if (lastListMsgs.length === 0) return
   const now = Date.now()
-  const all = [...registry.values()].filter(s => s.status !== 'dead').sort((a, b) => b.lastActive - a.lastActive)
+  const all = [...registry.values()].filter(s => isAlive(s)).sort((a, b) => b.lastActive - a.lastActive)
 
   let output: string
   if (all.length === 0) {
@@ -160,7 +160,7 @@ async function refreshListDisplay(): Promise<void> {
 
 export async function handleListIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '📊').catch(() => {})
-  const liveSessions = [...registry.values()].filter(s => s.status !== 'dead')
+  const liveSessions = [...registry.values()].filter(s => isAlive(s))
   if (liveSessions.length === 0) {
     try { await gateway.send(msg.channelId, 'No active sessions.', { replyTo: msg.id }) } catch {}
     return
@@ -248,8 +248,8 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
   void gateway.react(msg.channelId, msg.id, '💚').catch(() => {})
   const uptimeMin = Math.round((Date.now() - daemonStartedAt) / 60000)
   const allSessions = [...registry.values()]
-  const deadSessions = allSessions.filter(s => s.status === 'dead')
-  const liveSessions = allSessions.filter(s => s.status !== 'dead')
+  const deadSessions = allSessions.filter(s => !isAlive(s))
+  const liveSessions = allSessions.filter(s => isAlive(s))
   const connectedSessions = liveSessions.filter(s => transport.has(s.sessionId))
   const disconnectedSessions = liveSessions.filter(s => !transport.has(s.sessionId))
   const queuedMsgCount = [...transport.messageQueues.values()].reduce((sum, q) => sum + q.length, 0)

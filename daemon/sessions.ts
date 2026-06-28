@@ -40,7 +40,7 @@ export type SessionInfo = {
   worktreeRepo?: string
   worktreePath?: string
   isJoinMember?: boolean
-  status?: 'live' | 'dead'
+  deadAt?: number
 }
 
 export type ThreadMember = {
@@ -278,11 +278,10 @@ export class SessionRegistry {
         } catch {}
 
         if (tmuxAlive) {
-          info.status = 'live'
+          delete info.deadAt
           restored++
         } else {
-          // Mark dead but keep in registry so recovery commands can find them
-          info.status = 'dead'
+          info.deadAt = info.deadAt ?? Date.now()
           dead++
         }
         this.sessions.set(info.sessionId, info)

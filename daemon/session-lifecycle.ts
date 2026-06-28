@@ -419,7 +419,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
     tmuxName, listening: false, originType, originFrom, capabilities,
-    status: 'live',
     threadUrl: url || undefined,
     ...(respawnCount > 0 ? { respawnCount } : {}),
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),

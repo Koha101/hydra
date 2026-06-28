@@ -25,6 +25,11 @@ export function formatDuration(ms: number): string {
   return remHrs > 0 ? `${days}d ${remHrs}h` : `${days}d`
 }
 
+export function isAlive(info: { tmuxName: string; deadAt?: number }): boolean {
+  if (info.deadAt) return false
+  return tmuxHasSession(info.tmuxName)
+}
+
 export function tmuxHasSession(name: string): boolean {
   try {
     execSync(`tmux has-session -t '${name}' 2>/dev/null`, { stdio: 'pipe' })

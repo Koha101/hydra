@@ -4,7 +4,7 @@ import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
-import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
+import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 
 const SEND_RETRY_ATTEMPTS = 3
@@ -199,7 +199,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'list_sessions': {
-        const sorted = [...registry.values()].filter(s => s.status !== 'dead').sort((a, b) => b.lastActive - a.lastActive)
+        const sorted = [...registry.values()].filter(s => isAlive(s)).sort((a, b) => b.lastActive - a.lastActive)
         const list = sorted.map(s => {
           const desc = s.description ?? fallbackDescription(s.topic)
           return {

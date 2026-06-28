@@ -158,11 +158,6 @@ async function announceRecovery(
 // Resume / Respawn
 // ---------------------------------------------------------------------------
 
-export function isSessionDead(info: { tmuxName: string; sessionId: string }): boolean {
-  if (!tmuxHasSession(info.tmuxName)) return true
-  return !transport.has(info.sessionId)
-}
-
 export async function handleResumeIntercept(msg: InboundMessage): Promise<void> {
   if (!msg.isThread) {
     await reportError(msg.channelId, msg.id, 'resume', 'must be used in a thread')

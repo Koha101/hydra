@@ -16,6 +16,7 @@ import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
+import { isAlive } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -334,7 +335,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} effectiveThreadId=${msg.effectiveThreadId} resolvedThreadId=${resolvedThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
         const info = registry.get(mappedSession)
-        if (info && info.status !== 'dead') {
+        if (info && isAlive(info)) {
           const listenMatch = msg.content.match(/^(listen|unlisten)\s*$/i)
           if (listenMatch) {
             info.listening = listenMatch[1].toLowerCase() === 'listen'
@@ -445,7 +446,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const mappedSession = registry.getByThread(rtid)
     if (mappedSession && registry.has(mappedSession)) {
       const info = registry.get(mappedSession)!
-      if (info.status !== 'dead') {
+      if (isAlive(info)) {
         targetSessionId = mappedSession
         info.lastActive = Date.now()
         effectiveChatId = info.threadId
