@@ -1,15 +1,10 @@
 /**
- * Markdown pipe-table → PNG image conversion for Discord.
+ * Markdown pipe-table → code-block conversion for Discord.
  *
  * Discord has no native table rendering. This module detects markdown tables
- * in outbound text, renders them as styled HTML, screenshots via Playwright,
- * and returns file paths for attachment. Falls back to monospace code blocks
- * if Playwright is unavailable.
+ * in outbound text and converts them to aligned monospace code blocks that
+ * render cleanly on both desktop and mobile.
  */
-
-import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 
 // ---------------------------------------------------------------------------
 // Table parsing
@@ -88,54 +83,50 @@ export function extractTables(text: string): { tables: ParsedTable[]; cleanedTex
 }
 
 // ---------------------------------------------------------------------------
-// HTML generation (Discord-dark themed)
+// Display width — accounts for emoji and East Asian Wide characters
 // ---------------------------------------------------------------------------
 
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-function tableToHtml(table: ParsedTable): string {
-  const ths = table.headers
-    .map((h, i) => `<th style="text-align:${table.alignments[i] ?? 'left'}">${esc(h)}</th>`)
-    .join('')
-  const trs = table.rows
-    .map(row => '<tr>' + row.map((c, i) =>
-      `<td style="text-align:${table.alignments[i] ?? 'left'}">${esc(c)}</td>`
-    ).join('') + '</tr>')
-    .join('\n      ')
-
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:transparent;padding:4px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px}
-.wrap{display:inline-block;background:#2b2d31;border-radius:8px;overflow:hidden;border:1px solid #3f4147}
-table{border-collapse:collapse;white-space:nowrap}
-th{background:#2b2d31;color:#f2f3f5;font-weight:600;font-size:12px;letter-spacing:.03em;padding:8px 14px;border-bottom:2px solid #3f4147}
-td{padding:7px 14px;border-bottom:1px solid #3f4147;color:#dbdee1}
-tr:last-child td{border-bottom:none}
-</style></head><body>
-  <div class="wrap">
-    <table>
-      <thead><tr>${ths}</tr></thead>
-      <tbody>${trs}</tbody>
-    </table>
-  </div>
-</body></html>`
+function displayWidth(s: string): number {
+  let w = 0
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!
+    if (
+      (cp >= 0x1F000 && cp <= 0x1FAFF) || // emoji block
+      (cp >= 0x2600 && cp <= 0x27BF) ||    // misc symbols, dingbats
+      (cp >= 0xFE00 && cp <= 0xFE0F) ||    // variation selectors (zero-width but often paired)
+      (cp >= 0x200D && cp <= 0x200D)       // ZWJ
+    ) {
+      w += 2
+    } else if (
+      (cp >= 0x1100 && cp <= 0x115F) ||    // Hangul Jamo
+      (cp >= 0x2E80 && cp <= 0x303E) ||    // CJK radicals, ideographic
+      (cp >= 0x3040 && cp <= 0x33BF) ||    // Hiragana, Katakana, CJK
+      (cp >= 0x3400 && cp <= 0x4DBF) ||    // CJK Unified Ext A
+      (cp >= 0x4E00 && cp <= 0x9FFF) ||    // CJK Unified
+      (cp >= 0xF900 && cp <= 0xFAFF) ||    // CJK Compatibility
+      (cp >= 0xFF01 && cp <= 0xFF60) ||    // Fullwidth forms
+      (cp >= 0x20000 && cp <= 0x2FA1F)     // CJK Unified Ext B+
+    ) {
+      w += 2
+    } else {
+      w += 1
+    }
+  }
+  return w
 }
 
 // ---------------------------------------------------------------------------
-// Code-block fallback (graceful degradation)
+// Code-block formatting
 // ---------------------------------------------------------------------------
 
 function tableToCodeBlock(table: ParsedTable): string {
   const all = [table.headers, ...table.rows]
   const widths = table.headers.map((_, i) =>
-    Math.max(...all.map(r => (r[i] ?? '').length))
+    Math.max(...all.map(r => displayWidth(r[i] ?? '')))
   )
 
   const pad = (s: string, w: number, a: Align) => {
-    const gap = w - s.length
+    const gap = w - displayWidth(s)
     if (gap <= 0) return s
     if (a === 'right') return ' '.repeat(gap) + s
     if (a === 'center') { const l = Math.floor(gap / 2); return ' '.repeat(l) + s + ' '.repeat(gap - l) }
@@ -149,194 +140,15 @@ function tableToCodeBlock(table: ParsedTable): string {
 }
 
 // ---------------------------------------------------------------------------
-// Playwright screenshot
-// ---------------------------------------------------------------------------
-
-const TABLE_TMP = join(tmpdir(), 'hydra-tables')
-let tmpDirReady = false
-
-function ensureTmpDir(): void {
-  if (tmpDirReady) return
-  mkdirSync(TABLE_TMP, { recursive: true })
-  tmpDirReady = true
-}
-
-interface PlaywrightEnv {
-  nodeModules: string
-  chromiumPath: string
-}
-
-let resolvedEnv: PlaywrightEnv | null | undefined = undefined
-
-function resolvePlaywright(): PlaywrightEnv | null {
-  if (resolvedEnv !== undefined) return resolvedEnv
-  const home = process.env.HOME ?? ''
-
-  let nodeModules = ''
-  const npxDir = join(home, '.npm/_npx')
-  if (existsSync(npxDir)) {
-    try {
-      const result = Bun.spawnSync(['find', npxDir, '-maxdepth', '4', '-path', '*/node_modules/playwright/index.js', '-type', 'f'], { timeout: 5_000 })
-      const lines = result.stdout.toString().trim().split('\n').filter(Boolean)
-      if (lines[0]) nodeModules = lines[0].replace(/\/playwright\/index\.js$/, '')
-    } catch {}
-  }
-
-  let chromiumPath = ''
-  const cacheDirs = [
-    join(home, 'Library/Caches/ms-playwright'),
-    join(home, '.cache/ms-playwright'),
-  ]
-  for (const cacheDir of cacheDirs) {
-    if (chromiumPath) break
-    if (!existsSync(cacheDir)) continue
-    try {
-      const result = Bun.spawnSync(['find', cacheDir, '-maxdepth', '2', '-type', 'd', '-name', 'chromium-*'], { timeout: 5_000 })
-      const dirs = result.stdout.toString().trim().split('\n').filter(Boolean).sort().reverse()
-      for (const dir of dirs) {
-        const macExe = Bun.spawnSync(['find', dir, '-name', 'Google Chrome for Testing', '-type', 'f'], { timeout: 3_000 })
-        const exe = macExe.stdout.toString().trim().split('\n')[0]
-        if (exe) { chromiumPath = exe; break }
-        const linuxExe = Bun.spawnSync(['find', dir, '-name', 'chrome', '-type', 'f'], { timeout: 3_000 })
-        const lexe = linuxExe.stdout.toString().trim().split('\n')[0]
-        if (lexe) { chromiumPath = lexe; break }
-      }
-    } catch {}
-  }
-
-  resolvedEnv = nodeModules && chromiumPath ? { nodeModules, chromiumPath } : null
-  return resolvedEnv
-}
-
-function makeBatchScreenshotScript(chromiumPath: string): string {
-  return `
-const { chromium } = require('playwright');
-const fs = require('fs');
-(async () => {
-  const jobs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: ${JSON.stringify(chromiumPath)},
-  });
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
-  for (const { htmlPath, pngPath } of jobs) {
-    await page.goto('file://' + htmlPath, { waitUntil: 'load' });
-    const el = await page.locator('.wrap').first();
-    await el.screenshot({ path: pngPath, omitBackground: true });
-  }
-  await browser.close();
-})().catch(e => { console.error(e.message); process.exit(1); });
-`
-}
-
-let scriptPath: string | null = null
-
-async function screenshotTables(tables: { html: string; pngPath: string }[]): Promise<boolean[]> {
-  const env = resolvePlaywright()
-  if (!env) return tables.map(() => false)
-
-  ensureTmpDir()
-
-  if (!scriptPath) {
-    scriptPath = join(TABLE_TMP, `_screenshot-${process.pid}.cjs`)
-    writeFileSync(scriptPath, makeBatchScreenshotScript(env.chromiumPath))
-  }
-
-  const jobs = tables.map(t => {
-    const htmlPath = t.pngPath.replace(/\.png$/, '.html')
-    writeFileSync(htmlPath, t.html)
-    return { htmlPath, pngPath: t.pngPath }
-  })
-
-  const jobsFile = join(TABLE_TMP, `_jobs-${Date.now()}.json`)
-  writeFileSync(jobsFile, JSON.stringify(jobs))
-
-  try {
-    const proc = Bun.spawn(['node', scriptPath, jobsFile], {
-      env: { ...process.env, NODE_PATH: env.nodeModules },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    const code = await proc.exited
-    try { unlinkSync(jobsFile) } catch {}
-    for (const j of jobs) { try { unlinkSync(j.htmlPath) } catch {} }
-    return tables.map(t => code === 0 && existsSync(t.pngPath))
-  } catch {
-    try { unlinkSync(jobsFile) } catch {}
-    for (const j of jobs) { try { unlinkSync(j.htmlPath) } catch {} }
-    return tables.map(() => false)
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export type TableRenderResult = {
-  text: string
-  files: string[]
-  rendered: number
-  degraded: number
-}
-
-export function cleanupTableFiles(files: string[]): void {
-  for (const f of files) {
-    try { unlinkSync(f) } catch {}
-  }
-}
-
-export async function renderTablesForDiscord(text: string): Promise<TableRenderResult> {
+export function renderTablesForDiscord(text: string): string {
   const { tables, cleanedText } = extractTables(text)
-  if (tables.length === 0) return { text, files: [], rendered: 0, degraded: 0 }
+  if (tables.length === 0) return text
 
-  ensureTmpDir()
-
-  if (resolvedEnv === undefined) {
-    resolvePlaywright()
-    if (resolvedEnv) {
-      const testHtml = '<html><body><div class="wrap" style="padding:4px">test</div></body></html>'
-      const testPng = join(TABLE_TMP, '_test.png')
-      const [ok] = await screenshotTables([{ html: testHtml, pngPath: testPng }])
-      if (!ok) resolvedEnv = null
-      try { unlinkSync(testPng) } catch {}
-    }
-    process.stderr.write(resolvedEnv
-      ? 'daemon: table-image: playwright available, tables will render as PNG\n'
-      : 'daemon: table-image: playwright unavailable, tables will degrade to code blocks\n')
-  }
-
-  const files: string[] = []
-  const codeBlocks: string[] = []
-  let rendered = 0
-  let degraded = 0
-
-  if (resolvedEnv) {
-    const jobs = tables.map((table, i) => ({
-      table,
-      html: tableToHtml(table),
-      pngPath: join(TABLE_TMP, `table-${Date.now()}-${i}.png`),
-    }))
-    const results = await screenshotTables(jobs.map(j => ({ html: j.html, pngPath: j.pngPath })))
-    for (let i = 0; i < jobs.length; i++) {
-      if (results[i]) {
-        files.push(jobs[i].pngPath)
-        rendered++
-      } else {
-        codeBlocks.push(tableToCodeBlock(jobs[i].table))
-        degraded++
-      }
-    }
-  } else {
-    for (const table of tables) {
-      codeBlocks.push(tableToCodeBlock(table))
-      degraded++
-    }
-  }
-
-  let finalText = cleanedText
-  if (codeBlocks.length > 0) {
-    finalText = finalText ? finalText + '\n\n' + codeBlocks.join('\n\n') : codeBlocks.join('\n\n')
-  }
-
-  return { text: finalText, files, rendered, degraded }
+  const codeBlocks = tables.map(tableToCodeBlock)
+  return cleanedText
+    ? cleanedText + '\n\n' + codeBlocks.join('\n\n')
+    : codeBlocks.join('\n\n')
 }

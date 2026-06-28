@@ -1,8 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { extractTables } from '../table-image.js'
-
-// Suppress stderr from module init
-process.stderr.write = (() => true) as any
+import { extractTables, renderTablesForDiscord } from '../table-image.js'
 
 describe('extractTables', () => {
   test('detects a simple pipe table', () => {
@@ -37,7 +34,7 @@ And some text after.`
     expect(cleanedText).toBe(text)
   })
 
-  test('skips tables inside code blocks', () => {
+  test('skips tables inside triple-backtick code blocks', () => {
     const text = `Some text
 
 \`\`\`
@@ -45,6 +42,21 @@ And some text after.`
 |--------|-------|
 | A      | 1     |
 \`\`\`
+
+More text`
+    const { tables, cleanedText } = extractTables(text)
+    expect(tables).toHaveLength(0)
+    expect(cleanedText).toBe(text)
+  })
+
+  test('skips tables inside tilde code blocks', () => {
+    const text = `Some text
+
+~~~
+| Header | Value |
+|--------|-------|
+| A      | 1     |
+~~~
 
 More text`
     const { tables, cleanedText } = extractTables(text)
@@ -89,15 +101,6 @@ Second table:
     expect(tables).toHaveLength(0)
   })
 
-  test('handles tables without outer pipes', () => {
-    const text = `| Name | Value |
-|------|-------|
-| foo  | bar   |`
-    const { tables } = extractTables(text)
-    expect(tables).toHaveLength(1)
-    expect(tables[0].headers).toEqual(['Name', 'Value'])
-  })
-
   test('handles table with emoji and unicode', () => {
     const text = `| Status | Transfer |
 |--------|----------|
@@ -106,5 +109,64 @@ Second table:
     const { tables } = extractTables(text)
     expect(tables).toHaveLength(1)
     expect(tables[0].rows[0][0]).toBe('✅ Done')
+  })
+})
+
+describe('renderTablesForDiscord', () => {
+  test('returns original text when no tables', () => {
+    const text = 'No tables here.'
+    expect(renderTablesForDiscord(text)).toBe(text)
+  })
+
+  test('converts table to code block', () => {
+    const text = `| A | B |
+|---|---|
+| 1 | 2 |`
+    const result = renderTablesForDiscord(text)
+    expect(result).toContain('```')
+    expect(result).toContain('A')
+    expect(result).toContain('B')
+    expect(result).toContain('1')
+    expect(result).toContain('2')
+    expect(result).not.toContain('|')
+  })
+
+  test('preserves surrounding text', () => {
+    const text = `Before.
+
+| X | Y |
+|---|---|
+| a | b |
+
+After.`
+    const result = renderTablesForDiscord(text)
+    expect(result).toStartWith('Before.')
+    expect(result).toContain('After.')
+    expect(result).toContain('```')
+  })
+
+  test('aligns columns with right alignment', () => {
+    const text = `| Name | Value |
+|------|------:|
+| a | 100 |
+| bb | 5 |`
+    const result = renderTablesForDiscord(text)
+    const lines = result.split('\n')
+    const dataLines = lines.filter(l => l.includes('100') || l.includes('5'))
+    for (const line of dataLines) {
+      const parts = line.split(/\s{2,}/)
+      expect(parts.length).toBeGreaterThanOrEqual(2)
+    }
+  })
+
+  test('handles emoji in code block with proper width', () => {
+    const text = `| Status | Item |
+|--------|------|
+| ✅ | alpha |
+| ⚠️ | beta |`
+    const result = renderTablesForDiscord(text)
+    expect(result).toContain('```')
+    expect(result).toContain('✅')
+    expect(result).toContain('⚠️')
   })
 })

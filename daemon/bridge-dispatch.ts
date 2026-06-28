@@ -6,7 +6,7 @@ import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
-import { renderTablesForDiscord, cleanupTableFiles } from './table-image.js'
+import { renderTablesForDiscord } from './table-image.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -97,15 +97,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         }
         if (files.length > 10) throw new Error('max 10 attachments per message')
 
-        // Discord: convert markdown pipe-tables to inline PNG images
-        let tableFiles: string[] = []
+        // Discord: convert markdown pipe-tables to aligned code blocks
         if (gateway.platform === 'discord') {
-          const result = await renderTablesForDiscord(text)
-          text = result.text
-          tableFiles = result.files
-          files.push(...tableFiles)
+          text = renderTablesForDiscord(text)
         }
-        if (files.length > 10) throw new Error('max 10 attachments per message')
 
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
@@ -128,8 +123,6 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
-        } finally {
-          cleanupTableFiles(tableFiles)
         }
 
         const result =
@@ -164,7 +157,9 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'edit_message': {
-        const edited = await retrySend(() => gateway.edit(args.chat_id as string, args.message_id as string, args.text as string))
+        let editText = args.text as string
+        if (gateway.platform === 'discord') editText = renderTablesForDiscord(editText)
+        const edited = await retrySend(() => gateway.edit(args.chat_id as string, args.message_id as string, editText))
         return { content: [{ type: 'text', text: `edited (id: ${edited})` }] }
       }
 
@@ -175,10 +170,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 
       case 'create_thread': {
         const threadName = (args.name as string).slice(0, 100)
+        let threadText = args.text as string | undefined
+        if (threadText && gateway.platform === 'discord') threadText = renderTablesForDiscord(threadText)
         const thread = await gateway.createThread(args.chat_id as string, threadName, {
           messageId: args.message_id as string | undefined,
           archiveDuration: (args.auto_archive_minutes as number | undefined) ?? 1440,
-          text: args.text as string | undefined,
+          text: threadText,
           files: (args.files as string[] | undefined),
         })
         return {
