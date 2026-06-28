@@ -24,8 +24,7 @@ threadRegistry.boot(registry)
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
 import { startPrWatcher } from './daemon/pr-watch.js'
-import { getContextPercent } from './daemon/util.js'
-import { isSessionDead } from './daemon/commands/thread.js'
+import { getContextPercent, tmuxHasSession } from './daemon/util.js'
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
@@ -160,7 +159,7 @@ const crashAlerted = new Set<string>()
 setInterval(() => {
   for (const info of registry.values()) {
     // Crash detection
-    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && isSessionDead(info)) {
+    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && (!tmuxHasSession(info.tmuxName) || !transport.has(info.sessionId))) {
       crashAlerted.add(info.sessionId)
       process.stderr.write(`daemon: crash detected: ${info.tmuxName}\n`)
       void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to restore context or \`respawn\` for a fresh start.`).catch(() => {})
