@@ -54,7 +54,7 @@ export type SpawnOpts = {
   handedOffFrom?: string
   artifact?: string
   joinThread?: string                                          // join existing thread as member (skip thread creation)
-  promptBuilder?: (sessionId: string, tmuxName: string, threadId: string) => string
+  promptBuilder?: (sessionId: string, tmuxName: string) => string
   memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
 }
 

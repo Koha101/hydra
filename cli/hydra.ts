@@ -160,9 +160,7 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
       for (const item of items) {
         const status = item.status === 'connected' ? '●' : '○'
         const ctx = item.context ? ` [${item.context}]` : ''
-        const purpose = item.purpose ? ` (${item.purpose})` : ''
-        const timeout = item.timeout_remaining ? ` ⏱${item.timeout_remaining}` : ''
-        console.log(`${status} ${item.name}  ${item.description ?? ''}${purpose}  (${item.running_for}${ctx}${timeout})`)
+        console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx})`)
       }
       return
     }
@@ -189,8 +187,6 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
       if (data.context) console.log(`  context: ${data.context}`)
       if (data.url) console.log(`  url:     ${data.url}`)
       if (data.origin) console.log(`  origin:  ${data.origin}`)
-      if (data.purpose) console.log(`  purpose: ${data.purpose}`)
-      if (data.timeout_remaining) console.log(`  timeout: ${data.timeout_remaining} remaining`)
       return
     case 'clear-key':
       console.log(`cleared: ${data.cleared}`)
@@ -214,11 +210,9 @@ Usage:
   hydra health                         Daemon diagnostics
   hydra clear-key <key>                Clear a stuck idempotency key
 
-Spawn options:
-  --purpose <name>                     Semantic label (visible in session prompt)
+Spawn options (required):
+  --initiator <name>                   Who triggered this spawn
   --idempotency-key <key>              Prevent duplicate spawns
-  --timeout <minutes>                  Auto-kill after timeout
-  --thread <id>                        Target thread (join existing or create in channel)
 
 Global options:
   --daemon <name>                      Target a specific daemon
@@ -252,21 +246,15 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'spawn': {
-      let purpose: string | undefined
       let idempotencyKey: string | undefined
-      let timeoutMinutes: number | undefined
-      let thread: string | undefined
+      let initiator: string | undefined
       const promptParts: string[] = []
 
       for (let i = 1; i < filtered.length; i++) {
-        if (filtered[i] === '--purpose' && i + 1 < filtered.length) {
-          purpose = filtered[++i]
-        } else if (filtered[i] === '--idempotency-key' && i + 1 < filtered.length) {
+        if (filtered[i] === '--idempotency-key' && i + 1 < filtered.length) {
           idempotencyKey = filtered[++i]
-        } else if (filtered[i] === '--timeout' && i + 1 < filtered.length) {
-          timeoutMinutes = parseInt(filtered[++i], 10)
-        } else if (filtered[i] === '--thread' && i + 1 < filtered.length) {
-          thread = filtered[++i]
+        } else if (filtered[i] === '--initiator' && i + 1 < filtered.length) {
+          initiator = filtered[++i]
         } else {
           promptParts.push(filtered[i])
         }
@@ -275,7 +263,14 @@ async function main(): Promise<void> {
       const prompt = promptParts.join(' ')
       if (!prompt) {
         console.error('error: prompt is required')
-        console.error('usage: hydra spawn "your prompt here"')
+        process.exit(1)
+      }
+      if (!idempotencyKey) {
+        console.error('error: --idempotency-key is required')
+        process.exit(1)
+      }
+      if (!initiator) {
+        console.error('error: --initiator is required')
         process.exit(1)
       }
 
@@ -283,7 +278,7 @@ async function main(): Promise<void> {
         type: 'cli',
         command: 'spawn',
         id: randomUUID(),
-        params: { prompt, purpose, idempotencyKey, timeoutMinutes, thread },
+        params: { prompt, idempotencyKey, initiator },
       })
       printResponse(response, json)
       break

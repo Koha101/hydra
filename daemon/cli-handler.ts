@@ -1,4 +1,3 @@
-import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { doSpawnSession, killSession, sessionDeathEmitter } from './session-lifecycle.js'
@@ -6,23 +5,10 @@ import { fallbackDescription, formatDuration, getContextPercent } from './util.j
 import { checkIdempotency, registerIdempotency, updateIdempotency, getBySessionId, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
 
 // ---------------------------------------------------------------------------
-// CLI session state (in-memory, keyed by sessionId)
-// Tracks timeout handles for cancellation. Idempotency completion now uses
-// getBySessionId() as primary lookup — survives daemon restarts because the
-// idempotency registry is persisted, unlike this Map.
+// Idempotency completion on session death
 // ---------------------------------------------------------------------------
 
-type CLISessionState = {
-  timeout?: Timer
-}
-
-const cliSessions = new Map<string, CLISessionState>()
-
 sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
-  const state = cliSessions.get(event.sessionId)
-  if (state?.timeout) clearTimeout(state.timeout)
-  cliSessions.delete(event.sessionId)
-
   const idemEntry = getBySessionId(event.sessionId)
   if (idemEntry) {
     updateIdempotency(idemEntry.key, { status: 'completed' })
@@ -74,93 +60,37 @@ function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?
 // ---------------------------------------------------------------------------
 
 async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
-  const { prompt, purpose, idempotencyKey, timeoutMinutes, thread } = req.params as {
+  const { prompt, initiator, idempotencyKey } = req.params as {
     prompt?: string
-    purpose?: string
+    initiator?: string
     idempotencyKey?: string
-    timeoutMinutes?: number
-    thread?: string
   }
 
   if (!prompt) return respond(req, false, 'prompt is required')
+  if (!idempotencyKey) return respond(req, false, 'idempotency-key is required')
+  if (!initiator) return respond(req, false, 'initiator is required')
 
-  if (idempotencyKey) {
-    const check = checkIdempotency(idempotencyKey)
-    if (check.blocked) {
-      return respond(req, false,
-        `idempotency key "${idempotencyKey}" already exists (status: ${check.entry.status}, session: ${check.entry.sessionId})`,
-        { existing: check.entry },
-        2,
-      )
-    }
-    registerIdempotency(idempotencyKey, '', undefined, 'pending')
+  const check = checkIdempotency(idempotencyKey)
+  if (check.blocked) {
+    return respond(req, false,
+      `idempotency key "${idempotencyKey}" already exists (status: ${check.entry.status}, session: ${check.entry.sessionId})`,
+      { existing: check.entry },
+      2,
+    )
   }
+  registerIdempotency(idempotencyKey, '', undefined, 'pending')
 
-  if (thread) {
-    const existing = registry.getByThread(thread)
-    if (!existing) {
-      try {
-        await gateway.fetchChannel(thread)
-      } catch {
-        if (idempotencyKey) clearIdempotency(idempotencyKey)
-        return respond(req, false, `invalid thread: "${thread}" is not a valid channel or thread`)
-      }
-    }
-  }
-
-  const promptBuilder = (_sessionId: string, tmuxName: string, threadId: string) => {
-    const lines = [
-      `You are ${tmuxName}, a programmatically spawned session.`,
-      purpose ? `Purpose: ${purpose}.` : null,
-      `Task: ${prompt}`,
-      ``,
-      `Your chat thread chat_id is ${threadId}. Your session_id is ${_sessionId}.`,
-      timeoutMinutes ? `Timeout: ${timeoutMinutes} minutes. Execute the task directly — no extended orientation.` : null,
-      `Post a one-line status to your thread using reply(chat_id=${threadId}), then execute the task.`,
-      `Call set_description(session_id="${_sessionId}", description="...") with a ≤10 word summary.`,
-    ].filter(Boolean)
-    return lines.join('\n')
-  }
+  const topic = `${prompt} (initiated by ${initiator})`
 
   let result
   try {
-    result = await doSpawnSession(prompt, thread, undefined, { promptBuilder })
+    result = await doSpawnSession(topic)
   } catch (err) {
-    if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
+    updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err
   }
 
-  if (idempotencyKey) {
-    updateIdempotency(idempotencyKey, { status: 'spawned', sessionId: result.sessionId })
-  }
-
-  const info = registry.get(result.sessionId)
-  if (info) {
-    if (purpose) (info as any).cliPurpose = purpose
-    if (timeoutMinutes) (info as any).cliTimeoutAt = Date.now() + timeoutMinutes * 60 * 1000
-    registry.persist()
-  }
-
-  const sessionState: CLISessionState = {}
-
-  if (timeoutMinutes && timeoutMinutes > 0) {
-    sessionState.timeout = setTimeout(() => {
-      const idemEntry = getBySessionId(result.sessionId)
-      if (idemEntry) {
-        updateIdempotency(idemEntry.key, { status: 'timed_out' })
-        process.stderr.write(`daemon: cli idempotency key "${idemEntry.key}" → timed_out\n`)
-      }
-      cliSessions.delete(result.sessionId)
-      const info = registry.get(result.sessionId)
-      if (info) {
-        void killSession(info, `CLI timeout (${timeoutMinutes}m)`).catch(() => {})
-      }
-    }, timeoutMinutes * 60 * 1000)
-  }
-
-  if (sessionState.timeout) {
-    cliSessions.set(result.sessionId, sessionState)
-  }
+  updateIdempotency(idempotencyKey, { status: 'spawned', sessionId: result.sessionId })
 
   return respond(req, true, {
     sessionId: result.sessionId,
@@ -173,21 +103,15 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
 function handleList(req: CLIRequest): CLIResponse {
   const sorted = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
-  const list = sorted.map(s => {
-    const a = s as any
-    const timeoutAt = a.cliTimeoutAt as number | undefined
-    return {
-      name: s.tmuxName,
-      sessionId: s.sessionId,
-      description: s.description ?? (s.topic ? fallbackDescription(s.topic) : ''),
-      url: s.threadUrl ?? '',
-      context: getContextPercent(s.tmuxName),
-      running_for: formatDuration(Date.now() - s.createdAt),
-      status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-      purpose: a.cliPurpose as string | undefined,
-      timeout_remaining: timeoutAt ? formatDuration(Math.max(0, timeoutAt - Date.now())) : undefined,
-    }
-  })
+  const list = sorted.map(s => ({
+    name: s.tmuxName,
+    sessionId: s.sessionId,
+    description: s.description ?? (s.topic ? fallbackDescription(s.topic) : ''),
+    url: s.threadUrl ?? '',
+    context: getContextPercent(s.tmuxName),
+    running_for: formatDuration(Date.now() - s.createdAt),
+    status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
+  }))
   return respond(req, true, list)
 }
 
@@ -217,8 +141,6 @@ function handleStatus(req: CLIRequest): CLIResponse {
     bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
     tmux: tmuxAlive ? 'alive' : 'dead',
     origin: info.originType,
-    purpose: (info as any).cliPurpose as string | undefined,
-    timeout_remaining: (info as any).cliTimeoutAt ? formatDuration(Math.max(0, (info as any).cliTimeoutAt - Date.now())) : undefined,
   })
 }
 

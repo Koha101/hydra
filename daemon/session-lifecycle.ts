@@ -304,7 +304,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   let prompt: string
   if (opts?.promptBuilder) {
-    prompt = opts.promptBuilder(sessionId, tmuxName, threadId!)
+    prompt = opts.promptBuilder(sessionId, tmuxName)
   } else if (isHandoff) {
     const contextLine = opts!.artifact
       ? `Read your handoff context from \`${opts!.artifact}\`, then read your memory files.`

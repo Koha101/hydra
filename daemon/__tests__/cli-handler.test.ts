@@ -62,15 +62,26 @@ describe('cli-handler', () => {
     expect(res.error).toContain('prompt is required')
   })
 
+  test('spawn with missing idempotency-key returns error', async () => {
+    const res = await handleCLIRequest(makeReq({ command: 'spawn', params: { prompt: 'test', initiator: 'test' } }))
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('idempotency-key is required')
+  })
+
+  test('spawn with missing initiator returns error', async () => {
+    const res = await handleCLIRequest(makeReq({ command: 'spawn', params: { prompt: 'test', idempotencyKey: 'k' } }))
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('initiator is required')
+  })
+
   test('spawn with idempotency key blocks duplicate', async () => {
     const key = `cli-test-idem-${Date.now()}`
-    // Register a key directly
     const { registerIdempotency } = await import('../idempotency.js')
     registerIdempotency(key, 'existing-session')
 
     const res = await handleCLIRequest(makeReq({
       command: 'spawn',
-      params: { prompt: 'test', idempotencyKey: key },
+      params: { prompt: 'test', idempotencyKey: key, initiator: 'test' },
     }))
     expect(res.ok).toBe(false)
     expect(res.error).toContain('idempotency')
