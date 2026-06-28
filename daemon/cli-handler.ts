@@ -25,7 +25,7 @@ sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
 
   const idemEntry = getBySessionId(event.sessionId)
   if (idemEntry) {
-    updateIdempotency(idemEntry.key, 'completed')
+    updateIdempotency(idemEntry.key, { status: 'completed' })
     process.stderr.write(`daemon: cli idempotency key "${idemEntry.key}" → completed (session ${event.sessionId} died)\n`)
   }
 })
@@ -93,6 +93,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
         2,
       )
     }
+    registerIdempotency(idempotencyKey, '', undefined, 'pending')
   }
 
   if (notifyThread) {
@@ -101,16 +102,22 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
       try {
         await gateway.fetchChannel(notifyThread)
       } catch {
+        if (idempotencyKey) clearIdempotency(idempotencyKey)
         return respond(req, false, `invalid notifyThread: "${notifyThread}" is not a valid channel or thread`)
       }
     }
   }
 
-  const topic = purpose ? `[${purpose}] ${prompt}` : prompt
-  const result = await doSpawnSession(topic, notifyThread)
+  let result
+  try {
+    result = await doSpawnSession(prompt, notifyThread)
+  } catch (err) {
+    if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
+    throw err
+  }
 
   if (idempotencyKey) {
-    registerIdempotency(idempotencyKey, result.sessionId)
+    updateIdempotency(idempotencyKey, { status: 'spawned', sessionId: result.sessionId })
   }
 
   const sessionState: CLISessionState = {}
@@ -119,7 +126,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     sessionState.timeout = setTimeout(() => {
       const idemEntry = getBySessionId(result.sessionId)
       if (idemEntry) {
-        updateIdempotency(idemEntry.key, 'timed_out')
+        updateIdempotency(idemEntry.key, { status: 'timed_out' })
         process.stderr.write(`daemon: cli idempotency key "${idemEntry.key}" → timed_out\n`)
       }
       cliSessions.delete(result.sessionId)
@@ -195,7 +202,7 @@ async function handleKill(req: CLIRequest): Promise<CLIResponse> {
 
   const idemEntry = getBySessionId(info.sessionId)
   if (idemEntry) {
-    updateIdempotency(idemEntry.key, 'failed')
+    updateIdempotency(idemEntry.key, { status: 'failed' })
   }
 
   await killSession(info, 'killed via CLI')

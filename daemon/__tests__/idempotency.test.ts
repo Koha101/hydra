@@ -26,7 +26,7 @@ describe('idempotency', () => {
   test('failed status allows re-spawn', () => {
     const key = `${PREFIX}failed-allows-respawn`
     registerIdempotency(key, 'session-2')
-    updateIdempotency(key, 'failed')
+    updateIdempotency(key, { status: 'failed' })
     const result = checkIdempotency(key)
     expect(result.blocked).toBe(false)
   })
@@ -34,7 +34,7 @@ describe('idempotency', () => {
   test('completed status blocks re-spawn', () => {
     const key = `${PREFIX}completed-blocks`
     registerIdempotency(key, 'session-3')
-    updateIdempotency(key, 'completed')
+    updateIdempotency(key, { status: 'completed' })
     const result = checkIdempotency(key)
     expect(result.blocked).toBe(true)
   })
@@ -42,7 +42,7 @@ describe('idempotency', () => {
   test('timed_out status allows re-spawn', () => {
     const key = `${PREFIX}timed-out-allows`
     registerIdempotency(key, 'session-4')
-    updateIdempotency(key, 'timed_out')
+    updateIdempotency(key, { status: 'timed_out' })
     const result = checkIdempotency(key)
     expect(result.blocked).toBe(false)
   })

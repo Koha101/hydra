@@ -6,7 +6,7 @@ import { atomicWriteFileSync } from './util.js'
 export type IdempotencyEntry = {
   key: string
   sessionId: string
-  status: 'spawned' | 'completed' | 'failed' | 'timed_out'
+  status: 'pending' | 'spawned' | 'completed' | 'failed' | 'timed_out'
   createdAt: number
   expiresAt: number
 }
@@ -51,22 +51,23 @@ export function checkIdempotency(key: string): { blocked: true; entry: Idempoten
   return { blocked: true, entry: existing }
 }
 
-export function registerIdempotency(key: string, sessionId: string, ttlMs?: number): void {
+export function registerIdempotency(key: string, sessionId: string, ttlMs?: number, status?: IdempotencyEntry['status']): void {
   const now = Date.now()
   entries.set(key, {
     key,
     sessionId,
-    status: 'spawned',
+    status: status ?? 'spawned',
     createdAt: now,
     expiresAt: now + (ttlMs ?? DEFAULT_TTL_MS),
   })
   persist()
 }
 
-export function updateIdempotency(key: string, status: IdempotencyEntry['status']): void {
+export function updateIdempotency(key: string, update: Partial<Pick<IdempotencyEntry, 'status' | 'sessionId'>>): void {
   const entry = entries.get(key)
   if (entry) {
-    entry.status = status
+    if (update.status) entry.status = update.status
+    if (update.sessionId) entry.sessionId = update.sessionId
     persist()
   }
 }
@@ -77,7 +78,7 @@ export function getIdempotencyEntry(key: string): IdempotencyEntry | undefined {
 
 export function getBySessionId(sessionId: string): IdempotencyEntry | undefined {
   for (const entry of entries.values()) {
-    if (entry.sessionId === sessionId && entry.status === 'spawned') return entry
+    if (entry.sessionId === sessionId && (entry.status === 'spawned' || entry.status === 'pending')) return entry
   }
   return undefined
 }
