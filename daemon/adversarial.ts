@@ -285,11 +285,6 @@ export function onParticipantDisconnect(sessionId: string): void {
       state.timeout = undefined
     }
     state._criticDisconnectTimer = setTimeout(async () => {
-      if (transport.has(sessionId)) {
-        process.stderr.write(`daemon: review critic reconnected, grace period cleared\n`)
-        resetTimeout(state)
-        return
-      }
       process.stderr.write(`daemon: review critic did not reconnect, cancelling review\n`)
       void cancelReview(state.reviewId).catch(e => process.stderr.write(`daemon: cancelReview failed: ${e}\n`))
     }, 30_000)
@@ -307,11 +302,6 @@ export function onParticipantDisconnect(sessionId: string): void {
       })
     }
     state._ownerDisconnectTimer = setTimeout(async () => {
-      if (transport.has(sessionId)) {
-        process.stderr.write(`daemon: review owner reconnected, grace period cleared\n`)
-        resetTimeout(state)
-        return
-      }
       process.stderr.write(`daemon: review owner did not reconnect, cancelling review\n`)
       void cancelReview(state.reviewId).catch(e => process.stderr.write(`daemon: cancelReview failed: ${e}\n`))
     }, 120_000)

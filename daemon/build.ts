@@ -323,11 +323,6 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
       state.timeout = undefined
     }
     state._criticDisconnectTimer = setTimeout(async () => {
-      if (transport.has(sessionId)) {
-        process.stderr.write(`daemon: build critic reconnected, grace period cleared\n`)
-        resetTimeout(state)
-        return
-      }
       process.stderr.write(`daemon: build critic did not reconnect, cancelling build\n`)
       void cancelBuild(state.buildId).catch(e => process.stderr.write(`daemon: cancelBuild failed: ${e}\n`))
     }, 30_000)
@@ -345,11 +340,6 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
       })
     }
     state._ownerDisconnectTimer = setTimeout(async () => {
-      if (transport.has(sessionId)) {
-        process.stderr.write(`daemon: build owner reconnected, grace period cleared\n`)
-        resetTimeout(state)
-        return
-      }
       process.stderr.write(`daemon: build owner did not reconnect, cancelling build\n`)
       void cancelBuild(state.buildId).catch(e => process.stderr.write(`daemon: cancelBuild failed: ${e}\n`))
     }, 120_000)
