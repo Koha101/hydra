@@ -2,7 +2,6 @@ import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { execSync } from 'child_process'
 import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
-import { setSessionVisual } from './anchor-state.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -225,7 +224,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
     try {
       await gateway.send(info.threadId, `💀 **${info.tmuxName}** crashed — use \`resume\` to reconnect or \`respawn\` to start fresh.`)
     } catch {}
-    await setSessionVisual(info.threadId, 'crashed').catch(() => {})
+    refreshSessionVisual(info.threadId, { state: 'crashed' })
   }
 }
 
