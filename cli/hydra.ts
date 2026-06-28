@@ -1,40 +1,24 @@
 #!/usr/bin/env bun
 
 import { connect } from 'net'
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
+import { existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
 
 // ---------------------------------------------------------------------------
-// Config discovery
+// Socket discovery
 // ---------------------------------------------------------------------------
 
-type DaemonEntry = { socket: string; label?: string }
-type HydraConfig = { default_daemon?: string; daemons: Record<string, DaemonEntry> }
-
-function loadConfig(): HydraConfig | null {
-  const paths = [
-    join(homedir(), '.config', 'hydra.json'),
-    join(homedir(), '.claude', 'hydra.json'),
-  ]
-  for (const p of paths) {
-    try {
-      if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8'))
-    } catch {}
-  }
-  return null
-}
-
-function discoverSockets(): Record<string, DaemonEntry> {
+function discoverSockets(): Record<string, string> {
   const channelsDir = join(homedir(), '.claude', 'channels')
-  const found: Record<string, DaemonEntry> = {}
+  const found: Record<string, string> = {}
   try {
     for (const name of readdirSync(channelsDir)) {
       const sockPath = join(channelsDir, name, 'daemon.sock')
       try {
         if (existsSync(sockPath) && statSync(sockPath).isSocket()) {
-          found[name] = { socket: sockPath, label: name }
+          found[name] = sockPath
         }
       } catch {}
     }
@@ -43,41 +27,19 @@ function discoverSockets(): Record<string, DaemonEntry> {
 }
 
 function resolveSocket(daemonName?: string): string {
-  const config = loadConfig()
-
-  if (config && daemonName) {
-    const entry = config.daemons[daemonName]
-    if (!entry) {
-      console.error(`error: daemon "${daemonName}" not found in config`)
-      console.error(`available: ${Object.keys(config.daemons).join(', ')}`)
-      process.exit(1)
-    }
-    return entry.socket.replace('~', homedir())
-  }
-
-  if (config) {
-    const name = daemonName ?? config.default_daemon
-    if (name && config.daemons[name]) {
-      return config.daemons[name].socket.replace('~', homedir())
-    }
-    const keys = Object.keys(config.daemons)
-    if (keys.length === 1) return config.daemons[keys[0]].socket.replace('~', homedir())
-  }
-
   const discovered = discoverSockets()
   const keys = Object.keys(discovered)
 
   if (daemonName) {
-    if (discovered[daemonName]) return discovered[daemonName].socket
+    if (discovered[daemonName]) return discovered[daemonName]
     console.error(`error: daemon "${daemonName}" not found`)
     console.error(`discovered: ${keys.join(', ') || '(none)'}`)
     process.exit(1)
   }
 
-  if (keys.length === 1) return discovered[keys[0]].socket
+  if (keys.length === 1) return discovered[keys[0]]
   if (keys.length === 0) {
     console.error('error: no running daemons found')
-    console.error('start a daemon first, or create ~/.config/hydra.json')
     process.exit(1)
   }
 

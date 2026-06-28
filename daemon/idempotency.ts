@@ -21,6 +21,11 @@ function load(): void {
     if (existsSync(REGISTRY_PATH)) {
       const data = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as IdempotencyEntry[]
       entries = new Map(data.map(e => [e.key, e]))
+      let orphaned = false
+      for (const entry of entries.values()) {
+        if (entry.status === 'pending') { entry.status = 'failed'; orphaned = true }
+      }
+      if (orphaned) persist()
     }
   } catch {
     entries = new Map()
