@@ -6,6 +6,7 @@ import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
+import { refreshSessionVisual } from './anchor-state.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -223,6 +224,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (!info) throw new Error('session not found')
         info.description = description.slice(0, 120)
         registry.persist()
+        refreshSessionVisual(info.threadId)
         return { content: [{ type: 'text', text: `description set for ${info.tmuxName}` }] }
       }
 
