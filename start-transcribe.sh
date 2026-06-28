@@ -19,7 +19,15 @@ STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT
 [ -f "$STATE_DIR/.env" ] && set -a && . "$STATE_DIR/.env" && set +a
 
 # Backend: positional arg wins (e.g. `./start-transcribe.sh mock`), else env, else canary.
-BACKEND="${1:-${HYDRA_TRANSCRIBE_BACKEND:-canary}}"
+# Only `mock`/`canary` are accepted as the arg; anything else (e.g. a comment
+# pasted from docs — zsh doesn't strip `#` in interactive mode) is ignored so a
+# stray token can't silently pick a bogus backend.
+BACKEND="${HYDRA_TRANSCRIBE_BACKEND:-canary}"
+case "${1:-}" in
+  mock|canary) BACKEND="$1" ;;
+  '') ;;
+  *) echo "start-transcribe: ignoring unrecognized arg '$1' (use: canary|mock); using '$BACKEND'" >&2 ;;
+esac
 SESSION="${CHAT_PLATFORM:-discord}-transcribe"
 LOG="${HYDRA_TRANSCRIBE_LOG:-$HOME/hydra-transcribe.log}"
 SRV_DIR="$SCRIPT_DIR/transcribe-server"
