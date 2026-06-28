@@ -12,6 +12,7 @@ import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticip
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
 import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
 import { refreshSessionVisual } from './anchor-state.js'
+import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -183,6 +184,20 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           process.stderr.write(`daemon: permission_request send to ${userId} failed: ${e}\n`)
         })
       }
+      break
+    }
+
+    case 'cli': {
+      void handleCLIRequest(msg as CLIRequest).then(response => {
+        conn.socket.write(JSON.stringify(response) + '\n')
+      }).catch(err => {
+        conn.socket.write(JSON.stringify({
+          type: 'cli-response',
+          id: msg.id ?? '',
+          ok: false,
+          error: `internal error: ${err instanceof Error ? err.message : String(err)}`,
+        }) + '\n')
+      })
       break
     }
 

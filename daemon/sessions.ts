@@ -34,6 +34,7 @@ export type SessionInfo = {
   claudeSessionId?: string
   originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
+  initiator?: string
   capabilities?: SessionCapabilities
   respawnCount?: number
   threadUrl?: string
@@ -93,8 +94,9 @@ export type SpawnOpts = {
   resumeFrom?: string                                          // claude session ID for --resume (no --fork-session)
   resurrectFrom?: string                                       // tmuxName of predecessor (for lineage in respawn)
   joinThread?: string                                          // join existing thread as member (skip thread creation)
-  promptBuilder?: (sessionId: string, tmuxName: string) => string  // override default prompt
+  promptBuilder?: (sessionId: string, tmuxName: string) => string
   memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
+  initiator?: string
 }
 
 // ---------------------------------------------------------------------------
