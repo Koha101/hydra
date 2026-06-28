@@ -35,8 +35,15 @@ const AUDIO_EXTENSIONS = new Set([
 // Config (lazy — env may be populated by config.ts's .env loader at runtime)
 // ---------------------------------------------------------------------------
 
+// On by default ("auto"): transcription is attempted whenever an audio
+// attachment arrives. If no sidecar is running, transcribeFile's fetch fails
+// fast (connection refused) and is skipped — so auto-on is safe even when
+// dictation isn't set up. Set HYDRA_TRANSCRIBE_ENABLED=0 (or false/no/off) to
+// opt out entirely and skip the probe.
 export function transcriptionEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env.HYDRA_TRANSCRIBE_ENABLED ?? '')
+  const v = process.env.HYDRA_TRANSCRIBE_ENABLED
+  if (v === undefined || v.trim() === '') return true
+  return !/^(0|false|no|off)$/i.test(v.trim())
 }
 
 function transcribeUrl(): string {

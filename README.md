@@ -173,21 +173,30 @@ so the daemon transcribes first and merges the text into the message as
 `[voice transcript] ...`; the original audio file stays available in
 `downloaded_files`.
 
-```bash
-# 1. Run the sidecar (real model needs a GPU + ffmpeg; see transcribe-server/README.md)
-cd transcribe-server && pip install -r requirements.txt
-uvicorn server:app --host 127.0.0.1 --port 8123
-#    …or, to test the wiring without a GPU:
-python3 transcribe-server/mock_server.py
+It's **on by default on the daemon side** — whenever a sidecar is reachable, voice
+notes are transcribed; when it isn't, audio just passes through. So the only thing
+to set up is the sidecar.
 
-# 2. Enable it in the daemon's .env, then restart the daemon
-HYDRA_TRANSCRIBE_ENABLED=1
-HYDRA_TRANSCRIBE_URL=http://127.0.0.1:8123/transcribe
+**Try it right now (no GPU):**
+
+```bash
+./start-transcribe.sh mock     # GPU-free stub, returns a canned transcript
 ```
 
-Off by default. If the sidecar is unreachable, the daemon logs it and delivers the
-message without a transcript — dictation never blocks normal messages. Full setup,
-env vars, and tuning: [`transcribe-server/README.md`](transcribe-server/README.md).
+Send a voice note → Claude receives `[voice transcript] This is a mock transcription...`.
+
+**Real transcription (one-time, needs a GPU + ffmpeg):**
+
+```bash
+./transcribe-server/setup.sh   # create venv, install NeMo (one time)
+./start-transcribe.sh          # start Canary-Qwen
+# add HYDRA_TRANSCRIBE_AUTOSTART=1 to .env so the watchdog keeps it running
+```
+
+If the sidecar is unreachable, the daemon logs it and delivers the message without a
+transcript — dictation never blocks normal messages. Disable entirely with
+`HYDRA_TRANSCRIBE_ENABLED=0`. Full setup, env vars, and tuning:
+[`transcribe-server/README.md`](transcribe-server/README.md).
 
 ## Tools
 

@@ -17,29 +17,30 @@ POST /transcribe   multipart/form-data, file field `audio`   ->  { "text": "..."
 GET  /health                                                  ->  { "status": "ok", ... }
 ```
 
-## Quick start (real model)
+## Packaged default
 
-Requires a CUDA GPU and `ffmpeg` on PATH.
+Transcription is **on by default on the daemon side**: whenever a sidecar is
+reachable, voice notes are transcribed; when it isn't, audio just passes through.
+So the only setup is getting the sidecar running. The model needs a one-time
+install (GPU required) — after that the watchdog keeps it alive automatically.
 
 ```sh
-cd transcribe-server
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn server:app --host 127.0.0.1 --port 8123
+# 1. One-time: create the venv and install NeMo (needs a CUDA GPU + ffmpeg)
+./transcribe-server/setup.sh
+
+# 2. Enable auto-start in your daemon's .env (see .env.example)
+HYDRA_TRANSCRIBE_AUTOSTART=1
+
+# 3. Start it now (the watchdog will keep it up from here on)
+./start-transcribe.sh
 ```
 
 First start downloads the model (~5 GB) and loads it into VRAM (~6 GB). When
-`GET /health` reports `"loaded": true`, it's ready.
+`GET /health` reports `"loaded": true`, it's ready. Send a voice note — it
+arrives to Claude as `[voice transcript] ...`. No daemon restart needed; the
+daemon picks up the sidecar on the next audio message.
 
-Then enable it in your daemon's `.env` (see `.env.example`):
-
-```sh
-HYDRA_TRANSCRIBE_ENABLED=1
-HYDRA_TRANSCRIBE_URL=http://127.0.0.1:8123/transcribe
-```
-
-Restart the daemon and send a voice note — it arrives to Claude as
-`[voice transcript] ...`.
+To disable dictation entirely, set `HYDRA_TRANSCRIBE_ENABLED=0`.
 
 ## Local testing without a GPU
 
@@ -66,12 +67,14 @@ curl -s -F audio=@/path/to/clip.ogg localhost:8123/transcribe
 | `CANARY_MAX_NEW_TOKENS`   | `256`                    | Max tokens per transcription         |
 | `HYDRA_MOCK_TRANSCRIPT`   | (canned text)            | mock_server.py response override     |
 
-| Env (Hydra daemon)             | Default                              | Purpose                          |
-| ------------------------------ | ------------------------------------ | -------------------------------- |
-| `HYDRA_TRANSCRIBE_ENABLED`     | unset (off)                          | `1`/`true` to enable dictation   |
-| `HYDRA_TRANSCRIBE_URL`         | `http://127.0.0.1:8123/transcribe`   | sidecar endpoint                 |
-| `HYDRA_TRANSCRIBE_TIMEOUT_MS`  | `60000`                              | per-request timeout              |
-| `HYDRA_TRANSCRIBE_MAX_BYTES`   | `26214400` (25 MB)                   | skip audio larger than this      |
+| Env (Hydra daemon)             | Default                              | Purpose                                  |
+| ------------------------------ | ------------------------------------ | ---------------------------------------- |
+| `HYDRA_TRANSCRIBE_ENABLED`     | unset (**on**)                       | set `0`/`false` to disable dictation     |
+| `HYDRA_TRANSCRIBE_AUTOSTART`   | unset (off)                          | `1` → watchdog auto-starts the sidecar   |
+| `HYDRA_TRANSCRIBE_BACKEND`     | `canary`                             | `canary` \| `mock` (used by start script)|
+| `HYDRA_TRANSCRIBE_URL`         | `http://127.0.0.1:8123/transcribe`   | sidecar endpoint                         |
+| `HYDRA_TRANSCRIBE_TIMEOUT_MS`  | `60000`                              | per-request timeout                      |
+| `HYDRA_TRANSCRIBE_MAX_BYTES`   | `26214400` (25 MB)                   | skip audio larger than this              |
 
 ## Notes
 

@@ -58,17 +58,24 @@ describe('mergeTranscripts', () => {
 describe('transcriptionEnabled', () => {
   const prev = process.env.HYDRA_TRANSCRIBE_ENABLED
 
-  test('off by default / for falsey values', () => {
+  test('on by default (unset or blank)', () => {
     delete process.env.HYDRA_TRANSCRIBE_ENABLED
-    expect(transcriptionEnabled()).toBe(false)
-    process.env.HYDRA_TRANSCRIBE_ENABLED = '0'
-    expect(transcriptionEnabled()).toBe(false)
-    process.env.HYDRA_TRANSCRIBE_ENABLED = 'false'
-    expect(transcriptionEnabled()).toBe(false)
+    expect(transcriptionEnabled()).toBe(true)
+    process.env.HYDRA_TRANSCRIBE_ENABLED = ''
+    expect(transcriptionEnabled()).toBe(true)
+    process.env.HYDRA_TRANSCRIBE_ENABLED = '  '
+    expect(transcriptionEnabled()).toBe(true)
   })
 
-  test('on for truthy values', () => {
-    for (const v of ['1', 'true', 'yes', 'on', 'TRUE']) {
+  test('explicit opt-out values turn it off', () => {
+    for (const v of ['0', 'false', 'no', 'off', 'OFF']) {
+      process.env.HYDRA_TRANSCRIBE_ENABLED = v
+      expect(transcriptionEnabled()).toBe(false)
+    }
+  })
+
+  test('any other value keeps it on', () => {
+    for (const v of ['1', 'true', 'yes', 'on']) {
       process.env.HYDRA_TRANSCRIBE_ENABLED = v
       expect(transcriptionEnabled()).toBe(true)
     }
