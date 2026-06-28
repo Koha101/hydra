@@ -215,7 +215,6 @@ Usage:
 Spawn options:
   --purpose <name>                     Semantic label for the session
   --idempotency-key <key>              Prevent duplicate spawns
-  --auth-source <source>               Auth source (validated by daemon)
   --timeout <minutes>                  Auto-kill after timeout
 
 Global options:
@@ -252,7 +251,6 @@ async function main(): Promise<void> {
     case 'spawn': {
       let purpose: string | undefined
       let idempotencyKey: string | undefined
-      let authSource: string | undefined
       let timeoutMinutes: number | undefined
       const promptParts: string[] = []
 
@@ -261,8 +259,6 @@ async function main(): Promise<void> {
           purpose = filtered[++i]
         } else if (filtered[i] === '--idempotency-key' && i + 1 < filtered.length) {
           idempotencyKey = filtered[++i]
-        } else if (filtered[i] === '--auth-source' && i + 1 < filtered.length) {
-          authSource = filtered[++i]
         } else if (filtered[i] === '--timeout' && i + 1 < filtered.length) {
           timeoutMinutes = parseInt(filtered[++i], 10)
         } else {
@@ -281,7 +277,6 @@ async function main(): Promise<void> {
         type: 'cli',
         command: 'spawn',
         id: randomUUID(),
-        authSource,
         params: { prompt, purpose, idempotencyKey, timeoutMinutes },
       })
       printResponse(response, json)

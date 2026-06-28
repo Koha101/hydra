@@ -1,6 +1,4 @@
-import { readFileSync, existsSync } from 'fs'
-import { join } from 'path'
-import { STATE_DIR, gateway } from './config.js'
+import { gateway } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { doSpawnSession, killSession, sessionDeathEmitter } from './session-lifecycle.js'
@@ -12,16 +10,11 @@ import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempote
 // ---------------------------------------------------------------------------
 
 type CLISessionState = {
-  authSource: string
   idempotencyKey?: string
   timeout?: Timer
 }
 
 const cliSessions = new Map<string, CLISessionState>()
-
-export function getCLIAuthSource(sessionId: string): string | undefined {
-  return cliSessions.get(sessionId)?.authSource
-}
 
 sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
   const state = cliSessions.get(event.sessionId)
@@ -39,32 +32,6 @@ sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
 })
 
 // ---------------------------------------------------------------------------
-// CLI access config
-// ---------------------------------------------------------------------------
-
-export type CLIAccessSource = {
-  allowed_purposes: string[] | '*'
-  max_concurrent: number
-  timeout_default_minutes?: number
-}
-
-export type CLIAccessConfig = {
-  sources: Record<string, CLIAccessSource>
-  require_auth: boolean
-}
-
-const CLI_ACCESS_PATH = join(STATE_DIR, 'cli-access.json')
-
-function loadCLIAccess(): CLIAccessConfig {
-  try {
-    if (existsSync(CLI_ACCESS_PATH)) {
-      return JSON.parse(readFileSync(CLI_ACCESS_PATH, 'utf8'))
-    }
-  } catch {}
-  return { sources: { manual: { allowed_purposes: '*', max_concurrent: 5 } }, require_auth: false }
-}
-
-// ---------------------------------------------------------------------------
 // CLI request/response types
 // ---------------------------------------------------------------------------
 
@@ -72,7 +39,6 @@ export type CLIRequest = {
   type: 'cli'
   command: string
   id: string
-  authSource?: string
   params: Record<string, unknown>
 }
 
@@ -84,32 +50,6 @@ export type CLIResponse = {
   data?: unknown
   error?: string
   exitCode?: number
-}
-
-// ---------------------------------------------------------------------------
-// Auth validation
-// ---------------------------------------------------------------------------
-
-function validateAuth(authSource: string | undefined, purpose: string | undefined): { ok: true } | { ok: false; error: string } {
-  const config = loadCLIAccess()
-  if (!config.require_auth) return { ok: true }
-
-  const source = authSource ?? 'manual'
-  const entry = config.sources[source]
-  if (!entry) return { ok: false, error: `unknown auth source: ${source}` }
-
-  if (purpose && entry.allowed_purposes !== '*') {
-    if (!entry.allowed_purposes.includes(purpose)) {
-      return { ok: false, error: `source "${source}" not authorized for purpose "${purpose}"` }
-    }
-  }
-
-  const activeCount = [...cliSessions.values()].filter(s => s.authSource === source).length
-  if (activeCount >= entry.max_concurrent) {
-    return { ok: false, error: `source "${source}" at max concurrent (${entry.max_concurrent})` }
-  }
-
-  return { ok: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,10 +85,6 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
   if (!prompt) return respond(req, false, 'prompt is required')
 
-  const authSource = req.authSource ?? 'manual'
-  const authResult = validateAuth(req.authSource, purpose)
-  if (!authResult.ok) return respond(req, false, authResult.error)
-
   if (idempotencyKey) {
     const check = checkIdempotency(idempotencyKey)
     if (check.blocked) {
@@ -174,7 +110,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
   const topic = purpose ? `[${purpose}] ${prompt}` : prompt
   const result = await doSpawnSession(topic, notifyThread)
 
-  const sessionState: CLISessionState = { authSource, idempotencyKey }
+  const sessionState: CLISessionState = { idempotencyKey }
 
   if (idempotencyKey) {
     registerIdempotency(idempotencyKey, result.sessionId)
@@ -218,7 +154,6 @@ function handleList(req: CLIRequest): CLIResponse {
     context: getContextPercent(s.tmuxName),
     running_for: formatDuration(Date.now() - s.createdAt),
     status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-    cliSource: cliSessions.get(s.sessionId)?.authSource,
   }))
   return respond(req, true, list)
 }
@@ -249,7 +184,6 @@ function handleStatus(req: CLIRequest): CLIResponse {
     bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
     tmux: tmuxAlive ? 'alive' : 'dead',
     origin: info.originType,
-    cliSource: cliSessions.get(info.sessionId)?.authSource,
   })
 }
 
