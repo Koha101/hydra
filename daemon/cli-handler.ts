@@ -108,15 +108,23 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     }
   }
 
-  const topicParts = [prompt]
-  if (purpose) topicParts.unshift(`[Purpose: ${purpose}]`)
-  if (timeoutMinutes) topicParts.push(`[Timeout: ${timeoutMinutes}m — execute directly, skip extended orientation]`)
-  topicParts.push('[Programmatic spawn — begin task immediately after brief greeting]')
-  const topic = topicParts.join(' ')
+  const promptBuilder = (_sessionId: string, tmuxName: string, threadId: string) => {
+    const lines = [
+      `You are ${tmuxName}, a programmatically spawned session.`,
+      purpose ? `Purpose: ${purpose}.` : null,
+      `Task: ${prompt}`,
+      ``,
+      `Your chat thread chat_id is ${threadId}. Your session_id is ${_sessionId}.`,
+      timeoutMinutes ? `Timeout: ${timeoutMinutes} minutes. Execute the task directly — no extended orientation.` : null,
+      `Post a one-line status to your thread using reply(chat_id=${threadId}), then execute the task.`,
+      `Call set_description(session_id="${_sessionId}", description="...") with a ≤10 word summary.`,
+    ].filter(Boolean)
+    return lines.join('\n')
+  }
 
   let result
   try {
-    result = await doSpawnSession(topic, thread)
+    result = await doSpawnSession(prompt, thread, undefined, { promptBuilder })
   } catch (err) {
     if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err
