@@ -41,7 +41,7 @@ export type ReviewState = {
 // State machine
 // ---------------------------------------------------------------------------
 
-const reviewMachine = createStateMachine<ReviewPhase, ReviewEvent>('review', {
+export const reviewMachine = createStateMachine<ReviewPhase, ReviewEvent>('review', {
   critic_turn: { critic_posted: 'owner_turn', timeout: 'cancelled', cancel: 'cancelled' },
   owner_turn:  { owner_posted: 'critic_turn', final_round: 'cleanup', timeout: 'cancelled', cancel: 'cancelled' },
   cleanup:     { summary_posted: 'complete', timeout: 'complete' },

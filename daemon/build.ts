@@ -82,7 +82,7 @@ function cleanupBuildMaps(state: BuildState): void {
 
 type BuildEvent = 'owner_impl' | 'critic_lgtm' | 'critic_feedback' | 'timeout' | 'cancel'
 
-const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
+export const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
   implementing: { owner_impl: 'reviewing',    timeout: 'cancelled', cancel: 'cancelled' },
   reviewing:    { critic_lgtm: 'complete', critic_feedback: 'implementing', timeout: 'cancelled', cancel: 'cancelled' },
   complete:     {},

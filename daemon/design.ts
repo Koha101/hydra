@@ -60,7 +60,9 @@ export type DesignState = {
   refinementResponses: number
   refinementRespondedIds: Set<string>
   timeout?: ReturnType<typeof setTimeout>
-  _disconnectTimer?: ReturnType<typeof setTimeout>
+  _synthesizerDisconnectTimer?: ReturnType<typeof setTimeout>
+  _auditorDisconnectTimer?: ReturnType<typeof setTimeout>
+  _briefDisconnectTimer?: ReturnType<typeof setTimeout>
 }
 
 // ---------------------------------------------------------------------------
@@ -291,25 +293,25 @@ async function cleanupDesignSessions(state: DesignState, reason: string): Promis
   for (const p of state.personas) {
     const info = registry.get(p.sessionId)
     if (info && !killsInProgress.has(p.sessionId)) {
-      await killSession(info, reason).catch(() => {})
+      await killSession(info, reason).catch(e => process.stderr.write(`daemon: design cleanup killSession failed: ${e}\n`))
     }
   }
   if (state.synthesizerSessionId) {
     const info = registry.get(state.synthesizerSessionId)
     if (info && !killsInProgress.has(state.synthesizerSessionId)) {
-      await killSession(info, reason).catch(() => {})
+      await killSession(info, reason).catch(e => process.stderr.write(`daemon: design cleanup killSession failed: ${e}\n`))
     }
   }
   if (state.auditorSessionId) {
     const info = registry.get(state.auditorSessionId)
     if (info && !killsInProgress.has(state.auditorSessionId)) {
-      await killSession(info, reason).catch(() => {})
+      await killSession(info, reason).catch(e => process.stderr.write(`daemon: design cleanup killSession failed: ${e}\n`))
     }
   }
   if (state.briefSessionId) {
     const info = registry.get(state.briefSessionId)
     if (info && !killsInProgress.has(state.briefSessionId)) {
-      await killSession(info, reason).catch(() => {})
+      await killSession(info, reason).catch(e => process.stderr.write(`daemon: design cleanup killSession failed: ${e}\n`))
     }
   }
   refreshSessionVisual(state.ownerThreadId)
@@ -325,7 +327,9 @@ export async function cancelDesign(threadId: string): Promise<void> {
 
   state.phase = 'cancelled'
   if (state.timeout) clearTimeout(state.timeout)
-  if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+  if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
+  if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
+  if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
 
   await cleanupDesignSessions(state, 'design cancelled')
   designs.delete(threadId)
@@ -404,14 +408,18 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
       if (state.phase !== 'brief') return
       process.stderr.write(`daemon: design: brief writer timeout\n`)
       await gateway.send(state.ownerThreadId, `Brief writer timed out. Design complete without brief.`)
-      if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+      if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
+      if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
+      if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
       await cleanupDesignSessions(state, 'design complete')
       designs.delete(state.ownerThreadId)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: brief writer spawn failed: ${err}\n`)
     await gateway.send(state.ownerThreadId, `Brief writer failed. Design complete without brief.`)
-    if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+    if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
+    if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
+    if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
     await cleanupDesignSessions(state, 'design complete')
     designs.delete(state.ownerThreadId)
   }
@@ -447,7 +455,7 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
       if (state.synthesizerSessionId) {
         const old = registry.get(state.synthesizerSessionId)
         if (old && !killsInProgress.has(state.synthesizerSessionId)) {
-          await killSession(old, 'synthesizer timeout').catch(() => {})
+          await killSession(old, 'synthesizer timeout').catch(e => process.stderr.write(`daemon: design killSession failed: ${e}\n`))
         }
         state.synthesizerSessionId = undefined
       }
@@ -497,7 +505,9 @@ async function spawnAuditor(state: DesignState): Promise<void> {
     // Fall back to complete without audit
     state.phase = 'complete'
     await gateway.send(state.ownerThreadId, `Auditor failed to spawn. Design complete without audit.`)
-    if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+    if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
+    if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
+    if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
     designs.delete(state.ownerThreadId)
   }
 }
@@ -656,14 +666,17 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
       return
     }
 
-    // Singleton roles (synthesizer, auditor, brief) — grace timer before cancel
+    // Singleton roles (synthesizer, auditor, brief) — per-role grace timer before cancel
     process.stderr.write(`daemon: design: ${label} disconnected — 30s grace period\n`)
     if (state.timeout) {
       clearTimeout(state.timeout)
       state.timeout = undefined
     }
-    if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
-    state._disconnectTimer = setTimeout(async () => {
+    const timerField = isSynthesizer ? '_synthesizerDisconnectTimer' as const
+      : isAuditor ? '_auditorDisconnectTimer' as const
+      : '_briefDisconnectTimer' as const
+    if (state[timerField]) clearTimeout(state[timerField])
+    state[timerField] = setTimeout(async () => {
       process.stderr.write(`daemon: design: ${label} did not reconnect, cancelling design\n`)
       void cancelDesign(threadId).catch(e => process.stderr.write(`daemon: cancelDesign failed: ${e}\n`))
     }, 30_000)
@@ -676,16 +689,15 @@ export function onDesignParticipantReconnect(sessionId: string): void {
   for (const [, state] of designs) {
     if (state.phase === 'complete' || state.phase === 'cancelled') continue
 
-    const isParticipant =
-      state.personas.some(p => p.sessionId === sessionId) ||
-      state.synthesizerSessionId === sessionId ||
-      state.auditorSessionId === sessionId ||
-      state.briefSessionId === sessionId
+    const timerField = state.synthesizerSessionId === sessionId ? '_synthesizerDisconnectTimer' as const
+      : state.auditorSessionId === sessionId ? '_auditorDisconnectTimer' as const
+      : state.briefSessionId === sessionId ? '_briefDisconnectTimer' as const
+      : null
 
-    if (!isParticipant || !state._disconnectTimer) continue
+    if (!timerField || !state[timerField]) continue
 
-    clearTimeout(state._disconnectTimer)
-    state._disconnectTimer = undefined
+    clearTimeout(state[timerField])
+    state[timerField] = undefined
     process.stderr.write(`daemon: design participant ${sessionId} reconnected, grace period cleared\n`)
     return
   }
@@ -796,13 +808,15 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       if (!firstLine.startsWith('[brief→thread]')) return
 
       if (state.timeout) clearTimeout(state.timeout)
-      if (state._disconnectTimer) clearTimeout(state._disconnectTimer)
+      if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
+      if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
+      if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
       process.stderr.write(`daemon: design: brief posted\n`)
 
       const result = designMachine.transition(state.phase, 'brief_posted')
       if (result.ok) {
         state.phase = result.to
-        void cleanupDesignSessions(state, 'design complete').catch(() => {})
+        void cleanupDesignSessions(state, 'design complete').catch(e => process.stderr.write(`daemon: design cleanup failed: ${e}\n`))
         designs.delete(threadId)
         void gateway.send(threadId, `_Design session complete._`).catch(() => {})
       }

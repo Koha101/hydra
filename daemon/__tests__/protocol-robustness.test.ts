@@ -1,35 +1,13 @@
 import { describe, test, expect } from 'bun:test'
-import { createStateMachine } from '../state-machine.js'
-import { getReviewByThread, getActiveReviews } from '../adversarial.js'
-import { getBuildByThread, getActiveBuilds } from '../build.js'
-import { getDesignByThread, getActiveDesigns } from '../design.js'
+import { reviewMachine, getReviewByThread, getActiveReviews } from '../adversarial.js'
+import { buildMachine, getBuildByThread, getActiveBuilds } from '../build.js'
+import { designMachine, getDesignByThread, getActiveDesigns } from '../design.js'
 
 process.stderr.write = (() => true) as any
 
 // ---------------------------------------------------------------------------
-// State machine transition tests (these use the real state machine factory)
+// State machine transition tests — uses the REAL machines from production
 // ---------------------------------------------------------------------------
-
-type ReviewPhase = 'critic_turn' | 'owner_turn' | 'cleanup' | 'complete' | 'cancelled'
-type ReviewEvent = 'critic_posted' | 'owner_posted' | 'final_round' | 'summary_posted' | 'timeout' | 'cancel'
-
-type BuildPhase = 'implementing' | 'reviewing' | 'complete' | 'cancelled'
-type BuildEvent = 'owner_impl' | 'critic_lgtm' | 'critic_feedback' | 'timeout' | 'cancel'
-
-const reviewMachine = createStateMachine<ReviewPhase, ReviewEvent>('review', {
-  critic_turn: { critic_posted: 'owner_turn', timeout: 'cancelled', cancel: 'cancelled' },
-  owner_turn:  { owner_posted: 'critic_turn', final_round: 'cleanup', timeout: 'cancelled', cancel: 'cancelled' },
-  cleanup:     { summary_posted: 'complete', timeout: 'complete' },
-  complete:    {},
-  cancelled:   {},
-})
-
-const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
-  implementing: { owner_impl: 'reviewing',    timeout: 'cancelled', cancel: 'cancelled' },
-  reviewing:    { critic_lgtm: 'complete', critic_feedback: 'implementing', timeout: 'cancelled', cancel: 'cancelled' },
-  complete:     {},
-  cancelled:    {},
-})
 
 describe('state machine transitions', () => {
   test('review: critic_turn -> owner_turn -> cleanup -> complete', () => {
@@ -46,8 +24,8 @@ describe('state machine transitions', () => {
     if (r3.ok) expect(r3.to).toBe('complete')
   })
 
-  test('review: cancel from any phase', () => {
-    for (const phase of ['critic_turn', 'owner_turn'] as ReviewPhase[]) {
+  test('review: cancel from any active phase', () => {
+    for (const phase of ['critic_turn', 'owner_turn'] as const) {
       const r = reviewMachine.transition(phase, 'cancel')
       expect(r.ok).toBe(true)
       if (r.ok) expect(r.to).toBe('cancelled')
@@ -70,9 +48,36 @@ describe('state machine transitions', () => {
     if (r.ok) expect(r.to).toBe('implementing')
   })
 
+  test('design: full autonomous flow', () => {
+    const r1 = designMachine.transition('spawning', 'all_spawned')
+    expect(r1.ok).toBe(true)
+    if (r1.ok) expect(r1.to).toBe('questioning')
+
+    const r2 = designMachine.transition('questioning', 'all_questions')
+    expect(r2.ok).toBe(true)
+    if (r2.ok) expect(r2.to).toBe('answering')
+
+    const r3 = designMachine.transition('answering', 'answers_provided')
+    expect(r3.ok).toBe(true)
+    if (r3.ok) expect(r3.to).toBe('independent')
+
+    const r4 = designMachine.transition('independent', 'all_proposed')
+    expect(r4.ok).toBe(true)
+    if (r4.ok) expect(r4.to).toBe('synthesis')
+
+    const r5 = designMachine.transition('synthesis', 'synthesized')
+    expect(r5.ok).toBe(true)
+    if (r5.ok) expect(r5.to).toBe('refinement')
+
+    const r6 = designMachine.transition('refinement', 'refined')
+    expect(r6.ok).toBe(true)
+    if (r6.ok) expect(r6.to).toBe('synthesis')
+  })
+
   test('invalid transitions rejected', () => {
     expect(reviewMachine.transition('complete', 'critic_posted').ok).toBe(false)
     expect(buildMachine.transition('complete', 'owner_impl').ok).toBe(false)
+    expect(designMachine.transition('complete', 'all_spawned').ok).toBe(false)
   })
 })
 
