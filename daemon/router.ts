@@ -8,7 +8,6 @@ import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept } from './commands/global.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleRecoverIntercept } from './commands/thread.js'
-import { handleHandoffIntercept, handleGoIntercept } from './commands/handoff.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
@@ -248,18 +247,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const forksMatch = msg.content.match(/^(?:forks|\/forks)\s*$/i)
       if (forksMatch) {
         void handleForksIntercept(msg)
-        return
-      }
-
-      const handoffMatch = msg.content.match(/^(?:handoff|\/handoff)(?::\s*([\s\S]+))?$/i)
-      if (handoffMatch) {
-        void handleHandoffIntercept(msg, handoffMatch[1]?.trim())
-        return
-      }
-
-      const goMatch = msg.content.match(/^(?:\/go|go!)\s*$/i)
-      if (goMatch) {
-        void handleGoIntercept(msg)
         return
       }
 
