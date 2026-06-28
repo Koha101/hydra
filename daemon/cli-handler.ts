@@ -3,14 +3,16 @@ import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { doSpawnSession, killSession, sessionDeathEmitter } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent } from './util.js'
-import { checkIdempotency, registerIdempotency, updateIdempotency, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
+import { checkIdempotency, registerIdempotency, updateIdempotency, getBySessionId, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
 
 // ---------------------------------------------------------------------------
-// CLI session state (unified, keyed by sessionId)
+// CLI session state (in-memory, keyed by sessionId)
+// Tracks timeout handles for cancellation. Idempotency completion now uses
+// getBySessionId() as primary lookup — survives daemon restarts because the
+// idempotency registry is persisted, unlike this Map.
 // ---------------------------------------------------------------------------
 
 type CLISessionState = {
-  idempotencyKey?: string
   timeout?: Timer
 }
 
@@ -18,17 +20,14 @@ const cliSessions = new Map<string, CLISessionState>()
 
 sessionDeathEmitter.on('death', (event: { sessionId: string }) => {
   const state = cliSessions.get(event.sessionId)
-  if (!state) return
-
-  if (state.idempotencyKey) {
-    updateIdempotency(state.idempotencyKey, 'completed')
-  }
-
-  if (state.timeout) {
-    clearTimeout(state.timeout)
-  }
-
+  if (state?.timeout) clearTimeout(state.timeout)
   cliSessions.delete(event.sessionId)
+
+  const idemEntry = getBySessionId(event.sessionId)
+  if (idemEntry) {
+    updateIdempotency(idemEntry.key, 'completed')
+    process.stderr.write(`daemon: cli idempotency key "${idemEntry.key}" → completed (session ${event.sessionId} died)\n`)
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -110,22 +109,20 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
   const topic = purpose ? `[${purpose}] ${prompt}` : prompt
   const result = await doSpawnSession(topic, notifyThread)
 
-  const sessionState: CLISessionState = { idempotencyKey }
-
   if (idempotencyKey) {
     registerIdempotency(idempotencyKey, result.sessionId)
   }
 
+  const sessionState: CLISessionState = {}
+
   if (timeoutMinutes && timeoutMinutes > 0) {
     sessionState.timeout = setTimeout(() => {
-      const state = cliSessions.get(result.sessionId)
-      if (state) {
-        if (state.idempotencyKey) {
-          updateIdempotency(state.idempotencyKey, 'timed_out')
-          state.idempotencyKey = undefined
-        }
-        state.timeout = undefined
+      const idemEntry = getBySessionId(result.sessionId)
+      if (idemEntry) {
+        updateIdempotency(idemEntry.key, 'timed_out')
+        process.stderr.write(`daemon: cli idempotency key "${idemEntry.key}" → timed_out\n`)
       }
+      cliSessions.delete(result.sessionId)
       const info = registry.get(result.sessionId)
       if (info) {
         void killSession(info, `CLI timeout (${timeoutMinutes}m)`).catch(() => {})
@@ -133,7 +130,9 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     }, timeoutMinutes * 60 * 1000)
   }
 
-  cliSessions.set(result.sessionId, sessionState)
+  if (sessionState.timeout) {
+    cliSessions.set(result.sessionId, sessionState)
+  }
 
   return respond(req, true, {
     sessionId: result.sessionId,
@@ -194,10 +193,9 @@ async function handleKill(req: CLIRequest): Promise<CLIResponse> {
   const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
   if (!info) return respond(req, false, `session "${name}" not found`)
 
-  const state = cliSessions.get(info.sessionId)
-  if (state?.idempotencyKey) {
-    updateIdempotency(state.idempotencyKey, 'failed')
-    state.idempotencyKey = undefined
+  const idemEntry = getBySessionId(info.sessionId)
+  if (idemEntry) {
+    updateIdempotency(idemEntry.key, 'failed')
   }
 
   await killSession(info, 'killed via CLI')
@@ -235,19 +233,26 @@ function handleClearKey(req: CLIRequest): CLIResponse {
 // ---------------------------------------------------------------------------
 
 export async function handleCLIRequest(req: CLIRequest): Promise<CLIResponse> {
+  process.stderr.write(`daemon: cli ${req.command} (id: ${req.id})\n`)
   try {
+    let response: CLIResponse
     switch (req.command) {
-      case 'spawn': return await handleSpawn(req)
-      case 'list': return handleList(req)
-      case 'status': return handleStatus(req)
-      case 'kill': return await handleKill(req)
-      case 'health': return handleHealth(req)
-      case 'clear-key': return handleClearKey(req)
+      case 'spawn': response = await handleSpawn(req); break
+      case 'list': response = handleList(req); break
+      case 'status': response = handleStatus(req); break
+      case 'kill': response = await handleKill(req); break
+      case 'health': response = handleHealth(req); break
+      case 'clear-key': response = handleClearKey(req); break
       default:
-        return respond(req, false, `unknown command: ${req.command}`)
+        response = respond(req, false, `unknown command: ${req.command}`)
     }
+    if (!response.ok) {
+      process.stderr.write(`daemon: cli ${req.command} failed: ${response.error}\n`)
+    }
+    return response
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`daemon: cli ${req.command} error: ${msg}\n`)
     return respond(req, false, msg)
   }
 }

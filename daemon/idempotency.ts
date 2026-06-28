@@ -75,6 +75,13 @@ export function getIdempotencyEntry(key: string): IdempotencyEntry | undefined {
   return entries.get(key)
 }
 
+export function getBySessionId(sessionId: string): IdempotencyEntry | undefined {
+  for (const entry of entries.values()) {
+    if (entry.sessionId === sessionId && entry.status === 'spawned') return entry
+  }
+  return undefined
+}
+
 export function clearIdempotency(key: string): boolean {
   if (!entries.has(key)) return false
   entries.delete(key)
