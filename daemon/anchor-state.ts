@@ -63,7 +63,7 @@ export function refreshSessionVisual(threadId: string, opts?: { state?: AnchorSt
 
   const emoji = info.contentEmoji || sessionEmoji(info.tmuxName)
   const badge = opts?.badge ?? getActiveProtocolBadge(threadId)
-  const state = opts?.state ?? (info.respawnCount ? 'zombie' : 'live')
+  const state = opts?.state ?? (info.deadAt ? 'crashed' : info.respawnCount ? 'zombie' : 'live')
   const anchor = gateway.getThreadAnchor(threadId)
 
   void gateway.updateSessionVisual(threadId, {

@@ -16,8 +16,7 @@ import {
   type Message,
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
-import { sanitizeFilename, COUNT_EMOJI } from './gateway.js'
-import { SUPERSCRIPT } from './gateway.js'
+import { sanitizeFilename, COUNT_EMOJI, SUPERSCRIPT } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -30,6 +29,7 @@ import type {
   ButtonClick,
   AttachmentInfo,
   ReactionEvent,
+  SessionVisualOpts,
 } from './gateway.js'
 import { ThrottledQueue } from './throttled-queue.js'
 
@@ -51,19 +51,6 @@ const RECENT_SENT_CAP = 200
 //   4. Identity:     session emoji         (default — alive and idle)
 // Turn archetypes: ✦ = self/owner/builder, ⚔ = critic/outsider/challenger
 // ---------------------------------------------------------------------------
-
-type SessionVisualOpts = {
-  state: 'live' | 'killed' | 'crashed' | 'zombie'
-  emoji: string
-  sessionName: string
-  description?: string
-  topic?: string
-  badge?: string
-  respawnCount?: number
-  paused?: boolean
-  anchorChannelId?: string
-  anchorMessageId?: string
-}
 
 export function formatThreadName(opts: SessionVisualOpts): { name: string; priority: 'high' | 'normal' } {
   const dead = opts.state === 'killed' || opts.state === 'crashed'

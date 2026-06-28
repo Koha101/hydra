@@ -108,6 +108,19 @@ export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣
 export const SUPERSCRIPT = ['⁰','¹','²','³','⁴','⁵','⁶','⁷','⁸','⁹']
 export const SUBSCRIPT = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉']
 
+export type SessionVisualOpts = {
+  state: 'live' | 'killed' | 'crashed' | 'zombie'
+  emoji: string
+  sessionName: string
+  description?: string
+  topic?: string
+  badge?: string
+  respawnCount?: number
+  paused?: boolean
+  anchorChannelId?: string
+  anchorMessageId?: string
+}
+
 export function sanitizeFilename(raw: string, fallbackId: string, maxLen = 200): string {
   const cleaned = raw.replace(/^\.+/, '').replace(/[^a-zA-Z0-9._-]/g, '_')
   let result: string
@@ -189,18 +202,7 @@ export interface ChatGateway {
   wasSentByUs(id: string): boolean
 
   // Session lifecycle visual — platform-specific rendering of lifecycle state
-  updateSessionVisual?(threadId: string, opts: {
-    state: 'live' | 'killed' | 'crashed' | 'zombie'
-    emoji: string
-    sessionName: string
-    description?: string
-    topic?: string
-    badge?: string
-    respawnCount?: number
-    paused?: boolean
-    anchorChannelId?: string
-    anchorMessageId?: string
-  }): Promise<void>
+  updateSessionVisual?(threadId: string, opts: SessionVisualOpts): Promise<void>
 
   // Thread structure
   getThreadAnchor(threadId: string): { channelId: string; messageId: string } | null

@@ -182,6 +182,20 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       targetChannelId = DEFAULT_SESSION_CHANNEL
     }
 
+    // Clean up dead session in this thread before spawning
+    if (threadId) {
+      const staleId = registry.getByThread(threadId)
+      if (staleId) {
+        const stale = registry.get(staleId)
+        if (stale) {
+          try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+            respawnCount = (stale.respawnCount ?? 0) + 1
+            await killSession(stale, 'replaced by new spawn')
+          }
+        }
+      }
+    }
+
     // Create thread if we don't have one yet
     if (!threadId) {
       if (messageId && targetChannelId === chatId) {
