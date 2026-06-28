@@ -10,7 +10,7 @@ import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
-import { setSessionVisual } from './anchor-state.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
         process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
       }
 
-      await setSessionVisual(info.threadId, 'killed').catch(() => {})
+      refreshSessionVisual(info.threadId, { state: 'killed' })
     }
 
     const tmuxName = info.tmuxName
@@ -180,6 +180,20 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       }
     } else {
       targetChannelId = DEFAULT_SESSION_CHANNEL
+    }
+
+    // Clean up dead session in this thread before spawning
+    if (threadId) {
+      const staleId = registry.getByThread(threadId)
+      if (staleId) {
+        const stale = registry.get(staleId)
+        if (stale) {
+          try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
+            respawnCount = (stale.respawnCount ?? 0) + 1
+            await killSession(stale, 'replaced by new spawn')
+          }
+        }
+      }
     }
 
     // Create thread if we don't have one yet
@@ -447,7 +461,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     })
   }
 
-  void setSessionVisual(threadId!, respawnCount > 0 ? 'zombie' : 'live', respawnCount).catch(() => {})
+  refreshSessionVisual(threadId!, { state: respawnCount > 0 ? 'zombie' : 'live' })
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }

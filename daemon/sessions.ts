@@ -41,6 +41,9 @@ export type SessionInfo = {
   worktreePath?: string
   isJoinMember?: boolean
   deadAt?: number
+  contentEmoji?: string
+  paused?: boolean
+  anchorChannelId?: string
 }
 
 export type ThreadMember = {

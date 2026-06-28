@@ -7,7 +7,7 @@ import { getBuildByThread } from './build.js'
 import { getDesignByThread } from './design.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { createStateMachine } from './state-machine.js'
-import { refreshSessionVisual, registerProtocolBadge } from './anchor-state.js'
+import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,7 +78,12 @@ function cleanupReviewMaps(state: ReviewState): void {
 // Lookups
 // ---------------------------------------------------------------------------
 
-registerProtocolBadge(threadId => getReviewByThread(threadId) ? '⚔️' : undefined)
+registerProtocolBadge(threadId => {
+  const state = getReviewByThread(threadId)
+  if (!state) return undefined
+  const half = state.phase === 'critic_turn' || state.phase === 'cleanup' ? 'top' : 'bottom'
+  return formatRoundBadge('⚔️', half, state.currentRound, state.rounds)
+})
 
 export function getActiveReviews(): ReviewState[] {
   return [...reviews.values()].filter(r => r.phase !== 'complete' && r.phase !== 'cancelled')
@@ -131,7 +136,7 @@ export async function startReview(
   reviews.set(reviewId, state)
   threadToReview.set(ownerThreadId, reviewId)
   ownerToReview.set(ownerSessionId, reviewId)
-  refreshSessionVisual(ownerThreadId, '⚔️')
+  refreshSessionVisual(ownerThreadId, { badge: formatRoundBadge('⚔️', 'top', state.currentRound, state.rounds) })
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
@@ -333,6 +338,7 @@ export function onParticipantReconnect(sessionId: string): void {
 
 function onCriticPosted(state: ReviewState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
+  refreshSessionVisual(state.ownerThreadId)
 
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
   transport.sendOrQueue(state.ownerSessionId, {
@@ -348,6 +354,7 @@ function onOwnerPosted(state: ReviewState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
 
   state.currentRound++
+  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
   transport.sendOrQueue(state.criticSessionId!, {
