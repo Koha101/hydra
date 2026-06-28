@@ -105,6 +105,8 @@ export type ThreadStarterInfo = {
  * - Falls back to fallbackId if the result is empty
  */
 export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export const SUPERSCRIPT = ['⁰','¹','²','³','⁴','⁵','⁶','⁷','⁸','⁹']
+export const SUBSCRIPT = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉']
 
 export function sanitizeFilename(raw: string, fallbackId: string, maxLen = 200): string {
   const cleaned = raw.replace(/^\.+/, '').replace(/[^a-zA-Z0-9._-]/g, '_')

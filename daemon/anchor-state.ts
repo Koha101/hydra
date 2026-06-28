@@ -1,18 +1,10 @@
 import { gateway, DEFAULT_SESSION_CHANNEL } from './config.js'
 import { registry, sessionEmoji } from './sessions.js'
-import { COUNT_EMOJI } from '../gateway.js'
+import { COUNT_EMOJI, SUPERSCRIPT, SUBSCRIPT } from '../gateway.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-export { COUNT_EMOJI }
-
-// ---------------------------------------------------------------------------
-// Round badge formatting — Unicode superscript numerals for compact display
-// ---------------------------------------------------------------------------
-
-export const SUPERSCRIPT = ['⁰','¹','²','³','⁴','⁵','⁶','⁷','⁸','⁹']
-
-const SUBSCRIPT = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉']
+export { COUNT_EMOJI, SUPERSCRIPT }
 
 export function formatRoundBadge(protocol: string, half: 'top' | 'bottom', current: number, total: number): string {
   const inning = half === 'top' ? '▲' : '▼'

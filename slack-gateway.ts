@@ -667,6 +667,9 @@ export class SlackGateway implements ChatGateway {
     topic?: string
     badge?: string
     respawnCount?: number
+    paused?: boolean
+    anchorChannelId?: string
+    anchorMessageId?: string
   }): Promise<void> {
     const anchor = this.getThreadAnchor(threadId)
     if (!anchor) return

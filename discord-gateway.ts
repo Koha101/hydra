@@ -17,7 +17,7 @@ import {
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { sanitizeFilename, COUNT_EMOJI } from './gateway.js'
-import { SUPERSCRIPT } from './daemon/anchor-state.js'
+import { SUPERSCRIPT } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
