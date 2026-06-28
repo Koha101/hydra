@@ -289,3 +289,37 @@ describe('permission reply regex', () => {
     expect(PERMISSION_REPLY_RE.exec('yes')).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Interrupt prefix
+// ---------------------------------------------------------------------------
+
+const INTERRUPT_RE = /^!([\s\S]+)/
+
+describe('interrupt prefix', () => {
+  test('! followed by message matches', () => {
+    const m = '!stop and do this instead'.match(INTERRUPT_RE)
+    expect(m).not.toBeNull()
+    expect(m![1].trim()).toBe('stop and do this instead')
+  })
+
+  test('! alone does not match (no content)', () => {
+    const m = '!'.match(INTERRUPT_RE)
+    expect(m).toBeNull()
+  })
+
+  test('! with only whitespace captures whitespace', () => {
+    const m = '! '.match(INTERRUPT_RE)
+    expect(m).not.toBeNull()
+    expect(m![1].trim()).toBe('')
+  })
+
+  test('message without ! does not match', () => {
+    expect('hello'.match(INTERRUPT_RE)).toBeNull()
+    expect('stop doing that'.match(INTERRUPT_RE)).toBeNull()
+  })
+
+  test('! in middle of message does not match', () => {
+    expect('hey! stop'.match(INTERRUPT_RE)).toBeNull()
+  })
+})
