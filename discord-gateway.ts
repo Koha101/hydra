@@ -31,57 +31,10 @@ import type {
   AttachmentInfo,
   ReactionEvent,
 } from './gateway.js'
+import { ThrottledQueue } from './throttled-queue.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
-
-// ---------------------------------------------------------------------------
-// Rate-limit-aware rename queue — coalesces and drains at a safe rate
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// ThrottledQueue — generic rate-limit-respecting coalescing queue.
-//
-// Discord rate limits for thread renames: standard API bucket (~5/5s for
-// threads, unlike guild channel renames which are 2/10min). We drain at
-// 1/second to stay well within limits and avoid bursts during boot/recovery.
-// ---------------------------------------------------------------------------
-
-class ThrottledQueue<V> {
-  private queue = new Map<string, { value: V; priority: 'high' | 'normal' }>()
-  private draining = false
-
-  constructor(
-    private action: (key: string, value: V) => Promise<void>,
-    private drainMs: number,
-  ) {}
-
-  enqueue(key: string, value: V, priority: 'high' | 'normal' = 'normal'): void {
-    const existing = this.queue.get(key)
-    const effectivePriority = priority === 'high' ? 'high' : (existing?.priority ?? 'normal')
-    this.queue.set(key, { value, priority: effectivePriority })
-    if (!this.draining) this.drain()
-  }
-
-  private drain(): void {
-    if (this.queue.size === 0) { this.draining = false; return }
-    this.draining = true
-
-    let nextKey: string | undefined
-    for (const [key, entry] of this.queue) {
-      if (entry.priority === 'high') { nextKey = key; break }
-    }
-    if (!nextKey) nextKey = this.queue.keys().next().value!
-    const { value } = this.queue.get(nextKey)!
-    this.queue.delete(nextKey)
-
-    this.action(nextKey, value).catch(err => {
-      process.stderr.write(`discord gateway: throttled action failed: ${err instanceof Error ? err.message : String(err)}\n`)
-    }).finally(() => {
-      setTimeout(() => this.drain(), this.drainMs)
-    })
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Visual grammar — the thread name IS the spec.
@@ -546,11 +499,11 @@ export class DiscordGateway implements ChatGateway {
       const msg = await (ch as any).messages.fetch(messageId)
       if (!msg) return
       const removePromises = [...(msg.reactions?.cache?.values() ?? [])].map(
-        (r: any) => r.users.remove(this.client.user?.id).catch(() => {})
+        (r: any) => r.users.remove(this.client.user?.id).catch(e => process.stderr.write(`discord gateway: reaction remove failed: ${e}\n`))
       )
       await Promise.allSettled(removePromises)
-      await msg.react(emoji).catch(() => {})
-      if (countEmoji) await msg.react(countEmoji).catch(() => {})
+      await msg.react(emoji).catch(e => process.stderr.write(`discord gateway: react failed: ${e}\n`))
+      if (countEmoji) await msg.react(countEmoji).catch(e => process.stderr.write(`discord gateway: react countEmoji failed: ${e}\n`))
     }, 500,
   )
 
@@ -565,6 +518,9 @@ export class DiscordGateway implements ChatGateway {
     process.stderr.write(`discord gateway: visual update: state=${opts.state} paused=${opts.paused} priority=${priority}\n`)
     await this.renameThread(threadId, name, priority)
 
+    if (!opts.anchorMessageId) {
+      process.stderr.write(`discord gateway: no anchorMessageId for thread ${threadId} — skipping anchor reactions\n`)
+    }
     if (opts.anchorChannelId && opts.anchorMessageId) {
       const dead = opts.state === 'killed' || opts.state === 'crashed'
       const emoji = dead ? (opts.state === 'killed' ? '☠️' : '💥') : opts.emoji
