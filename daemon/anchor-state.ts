@@ -4,6 +4,8 @@ export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
 export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
 
+export { setAnchorState as setSessionVisual }
+
 export async function setAnchorState(
   threadId: string,
   state: AnchorState,
