@@ -17,6 +17,7 @@ import {
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { sanitizeFilename } from './gateway.js'
+import { renderTablesForDiscord } from './daemon/table-image.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -178,7 +179,7 @@ export class DiscordGateway implements ChatGateway {
     const ch = await this.fetchTextChannel(channelId)
     if (!('send' in ch)) throw new Error('channel is not sendable')
 
-    const payload: Record<string, unknown> = { content: text }
+    const payload: Record<string, unknown> = { content: renderTablesForDiscord(text) }
     if (opts?.files?.length) {
       for (const f of opts.files) {
         const st = statSync(f)
@@ -218,7 +219,7 @@ export class DiscordGateway implements ChatGateway {
   async edit(channelId: string, messageId: string, text: string): Promise<string> {
     const ch = await this.fetchTextChannel(channelId)
     const msg = await ch.messages.fetch(messageId)
-    const edited = await msg.edit(text)
+    const edited = await msg.edit(renderTablesForDiscord(text))
     return edited.id
   }
 
@@ -305,7 +306,7 @@ export class DiscordGateway implements ChatGateway {
         }
       }
       const sent = await thread.send({
-        content: opts.text,
+        content: renderTablesForDiscord(opts.text),
         ...(opts?.files?.length ? { files: opts.files } : {}),
       })
       this.noteSent(sent.id)
