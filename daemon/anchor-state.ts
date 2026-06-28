@@ -31,6 +31,8 @@ export function refreshSessionVisual(_threadId: string, _badge?: string): void {
   // gateway.updateSessionVisual when available (added by #43).
 }
 
+export { setAnchorState as setSessionVisual }
+
 // ---------------------------------------------------------------------------
 // Anchor state — emoji reactions on the spawn message
 // ---------------------------------------------------------------------------
