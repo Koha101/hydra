@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { extractTables, renderTablesForDiscord } from '../table-image.js'
+import { extractTables, formatDiscordTables } from '../discord-table-format.js'
 
 describe('extractTables', () => {
   test('detects a simple pipe table', () => {
@@ -112,17 +112,17 @@ Second table:
   })
 })
 
-describe('renderTablesForDiscord', () => {
+describe('formatDiscordTables', () => {
   test('returns original text when no tables', () => {
     const text = 'No tables here.'
-    expect(renderTablesForDiscord(text)).toBe(text)
+    expect(formatDiscordTables(text)).toBe(text)
   })
 
   test('converts table to code block', () => {
     const text = `| A | B |
 |---|---|
 | 1 | 2 |`
-    const result = renderTablesForDiscord(text)
+    const result = formatDiscordTables(text)
     expect(result).toContain('```')
     expect(result).toContain('A')
     expect(result).toContain('B')
@@ -139,7 +139,7 @@ describe('renderTablesForDiscord', () => {
 | a | b |
 
 After.`
-    const result = renderTablesForDiscord(text)
+    const result = formatDiscordTables(text)
     expect(result).toStartWith('Before.')
     expect(result).toContain('After.')
     expect(result).toContain('```')
@@ -150,7 +150,7 @@ After.`
 |------|------:|
 | a | 100 |
 | bb | 5 |`
-    const result = renderTablesForDiscord(text)
+    const result = formatDiscordTables(text)
     const lines = result.split('\n')
     const dataLines = lines.filter(l => l.includes('100') || l.includes('5'))
     for (const line of dataLines) {
@@ -164,7 +164,7 @@ After.`
 |--------|------|
 | ✅ | alpha |
 | ⚠️ | beta |`
-    const result = renderTablesForDiscord(text)
+    const result = formatDiscordTables(text)
     expect(result).toContain('```')
     expect(result).toContain('✅')
     expect(result).toContain('⚠️')

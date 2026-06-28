@@ -143,7 +143,7 @@ function tableToCodeBlock(table: ParsedTable): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function renderTablesForDiscord(text: string): string {
+export function formatDiscordTables(text: string): string {
   const { tables, cleanedText } = extractTables(text)
   if (tables.length === 0) return text
 
