@@ -174,7 +174,7 @@ setInterval(() => {
     if (num >= CONTEXT_ALERT_THRESHOLD && !contextAlerted.has(info.sessionId)) {
       contextAlerted.add(info.sessionId)
       process.stderr.write(`daemon: context alert: ${info.tmuxName} at ${pct}\n`)
-      void gateway.send(info.threadId, `**${info.tmuxName}** is at **${pct}** context. Consider \`handoff\` to a fresh session before it fills up.`).catch(() => {})
+      void gateway.send(info.threadId, `**${info.tmuxName}** is at **${pct}** context. Consider \`respawn\` to continue in a fresh session.`).catch(() => {})
     }
   }
 }, SESSION_CHECK_INTERVAL_MS)

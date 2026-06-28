@@ -2,7 +2,40 @@ import { gateway } from './config.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+
+// ---------------------------------------------------------------------------
+// Protocol badge registry — protocols register badge resolvers at module load
+// ---------------------------------------------------------------------------
+
+const protocolBadgeCheckers: Array<(threadId: string) => string | undefined> = []
+
+export function registerProtocolBadge(checker: (threadId: string) => string | undefined): void {
+  protocolBadgeCheckers.push(checker)
+}
+
+export function getActiveProtocolBadge(threadId: string): string | undefined {
+  for (const check of protocolBadgeCheckers) {
+    const badge = check(threadId)
+    if (badge) return badge
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Visual refresh — stub until lifecycle visuals land (#43)
+// ---------------------------------------------------------------------------
+
+export function refreshSessionVisual(_threadId: string, _badge?: string): void {
+  // Callers declare visual intent here. Implementation delegates to
+  // gateway.updateSessionVisual when available (added by #43).
+}
+
+export { setAnchorState as setSessionVisual }
+
+// ---------------------------------------------------------------------------
+// Anchor state — emoji reactions on the spawn message
+// ---------------------------------------------------------------------------
 
 export async function setAnchorState(
   threadId: string,

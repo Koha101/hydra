@@ -22,8 +22,6 @@ const USAGE_RE = /^(?:\/usage|usage)\s*$/i
 const LISTEN_RE = /^(listen|pause)\s*$/i
 const FORK_RE = /^(?:fork|\/fork)(?::\s*([\s\S]+))?$/i
 const FORKS_RE = /^(?:forks|\/forks)\s*$/i
-const HANDOFF_RE = /^(?:handoff|\/handoff)(?::\s*([\s\S]+))?$/i
-const GO_RE = /^(?:\/go|go!)\s*$/i
 const REVIEW_RE = /^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i
 const BUILD_RE = /^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i
 const BUILD_WT_RE = /^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i
@@ -198,21 +196,6 @@ describe('thread commands', () => {
     expect('/forks'.match(FORKS_RE)).not.toBeNull()
   })
 
-  test('handoff with and without topic', () => {
-    const plain = 'handoff'.match(HANDOFF_RE)
-    expect(plain).not.toBeNull()
-    expect(plain![1]).toBeUndefined()
-
-    const withTopic = 'handoff: continue with new context'.match(HANDOFF_RE)
-    expect(withTopic).not.toBeNull()
-    expect(withTopic![1]).toBe('continue with new context')
-  })
-
-  test('go command', () => {
-    expect('/go'.match(GO_RE)).not.toBeNull()
-    expect('go!'.match(GO_RE)).not.toBeNull()
-    expect('go'.match(GO_RE)).toBeNull() // must be /go or go!
-  })
 })
 
 // ---------------------------------------------------------------------------
