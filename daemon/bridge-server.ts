@@ -2,7 +2,7 @@ import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { execSync } from 'child_process'
 import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
-import { setSessionVisual } from './anchor-state.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -11,7 +11,7 @@ import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
-import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect } from './design.js'
+import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -77,7 +77,8 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         process.stderr.write(`daemon: circuit breaker: ${info?.tmuxName ?? sessionId} flapping (${FLAP_THRESHOLD}+ registrations in ${FLAP_WINDOW_MS / 1000}s) — killing session\n`)
         try { execSync(`tmux kill-session -t '${info?.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
         if (info) {
-          info.status = 'dead'
+          registry.deleteThread(info.threadId)
+          registry.delete(sessionId)
           registry.persist()
           void gateway.send(info.threadId, `⚠️ **${info.tmuxName}** killed by circuit breaker — bridge was flapping (${FLAP_THRESHOLD}+ reconnects in ${FLAP_WINDOW_MS / 1000}s). Use \`respawn\` to start fresh.`).catch(() => {})
         }
@@ -109,6 +110,8 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       transport.flushQueue(sessionId)
       if (isReviewParticipant(sessionId)) onParticipantReconnect(sessionId)
       if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
+      if (isDesignParticipant(sessionId)) onDesignParticipantReconnect(sessionId)
+      if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
     }
@@ -222,7 +225,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
     try {
       await gateway.send(info.threadId, `💀 **${info.tmuxName}** crashed — use \`resume\` to reconnect or \`respawn\` to start fresh.`)
     } catch {}
-    await setSessionVisual(info.threadId, 'crashed').catch(() => {})
+    refreshSessionVisual(info.threadId, { state: 'crashed' })
   }
 }
 

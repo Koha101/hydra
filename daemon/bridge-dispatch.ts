@@ -1,11 +1,13 @@
 import { statSync } from 'fs'
 import { gateway, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
+import { renderTablesForDiscord, cleanupTableFiles } from './table-image.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -42,7 +44,7 @@ export const BRIDGE_TOOLS = [
   { name: 'download_attachment', description: 'Download attachments from a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
   { name: 'create_thread', description: 'Create a thread in a channel.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, auto_archive_minutes: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } }, required: ['chat_id', 'name'] } },
   { name: 'fetch_messages', description: 'Fetch recent messages from a channel.', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'number' } }, required: ['channel'] } },
-  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only. Pass worktree with a repo directory name (e.g. "options_bot") to spawn in an isolated git worktree.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' }, worktree: { type: 'string', description: 'Git repo subdirectory to create a worktree from (e.g. "options_bot", "anytester"). Session gets an isolated copy.' } }, required: ['topic'] } },
+  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['topic'] } },
   { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
   { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
   { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
@@ -70,7 +72,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     switch (name) {
       case 'reply': {
         const chat_id = args.chat_id as string
-        const text = args.text as string
+        let text = args.text as string
         const reply_to = args.reply_to as string | undefined
         const files = (args.files as string[] | undefined) ?? []
 
@@ -96,6 +98,16 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         }
         if (files.length > 10) throw new Error('max 10 attachments per message')
 
+        // Discord: convert markdown pipe-tables to inline PNG images
+        let tableFiles: string[] = []
+        if (gateway.platform === 'discord') {
+          const result = await renderTablesForDiscord(text)
+          text = result.text
+          tableFiles = result.files
+          files.push(...tableFiles)
+        }
+        if (files.length > 10) throw new Error('max 10 attachments per message')
+
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
@@ -117,6 +129,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
+        } finally {
+          cleanupTableFiles(tableFiles)
         }
 
         const result =
@@ -129,7 +143,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case 'fetch_messages': {
         const channelId = args.channel as string
         const limit = Math.min((args.limit as number) ?? 20, 100)
-        const msgs = await gateway.fetchMessages(channelId, limit)
+        const msgs = await retrySend(() => gateway.fetchMessages(channelId, limit))
         const botId = gateway.botId
         const out =
           msgs.length === 0
@@ -156,18 +170,18 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'delete_message': {
-        await gateway.delete(args.chat_id as string, args.message_id as string)
+        await retrySend(() => gateway.delete(args.chat_id as string, args.message_id as string))
         return { content: [{ type: 'text', text: 'deleted' }] }
       }
 
       case 'create_thread': {
         const threadName = (args.name as string).slice(0, 100)
-        const thread = await gateway.createThread(args.chat_id as string, threadName, {
+        const thread = await retrySend(() => gateway.createThread(args.chat_id as string, threadName, {
           messageId: args.message_id as string | undefined,
           archiveDuration: (args.auto_archive_minutes as number | undefined) ?? 1440,
           text: args.text as string | undefined,
           files: (args.files as string[] | undefined),
-        })
+        }))
         return {
           content: [{
             type: 'text',
@@ -192,20 +206,19 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       }
 
       case 'spawn_session': {
-        const worktree = args.worktree as string | undefined
-        const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
-        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined)
+        const result = await doSpawnSession(args.topic as string, args.chat_id as string | undefined, args.message_id as string | undefined)
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }
 
       case 'list_sessions': {
-        const sorted = [...registry.values()].filter(s => s.status !== 'dead').sort((a, b) => b.lastActive - a.lastActive)
+        const sorted = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
         const list = sorted.map(s => {
-          const desc = s.description ?? fallbackDescription(s.topic)
+          const thread = threadRegistry.get(s.threadId)
+          const desc = s.description ?? fallbackDescription(thread?.topic ?? '')
           return {
             name: s.tmuxName,
             description: desc,
-            url: s.threadUrl ?? '',
+            url: thread?.threadUrl ?? '',
             context: getContextPercent(s.tmuxName),
             messages: s.messageCount ?? 0,
             running_for: formatDuration(Date.now() - s.createdAt),
@@ -218,11 +231,14 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case 'set_description': {
         const sessionId = args.session_id as string | undefined
         const description = args.description as string | undefined
+        const emoji = args.emoji as string | undefined
         if (!sessionId || !description) throw new Error('session_id and description are required')
         const info = registry.get(sessionId)
         if (!info) throw new Error('session not found')
         info.description = description.slice(0, 120)
+        if (emoji) info.contentEmoji = emoji
         registry.persist()
+        refreshSessionVisual(info.threadId)
         return { content: [{ type: 'text', text: `description set for ${info.tmuxName}` }] }
       }
 
@@ -234,7 +250,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (sessionId) {
           targetId = sessionId
         } else if (threadId) {
-          targetId = registry.getByThread(threadId)
+          const thread = threadRegistry.get(threadId)
+          targetId = registry.getByThread(threadId) ?? undefined
         }
 
         if (!targetId || !registry.has(targetId)) {

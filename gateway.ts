@@ -104,6 +104,8 @@ export type ThreadStarterInfo = {
  * - Truncates to maxLen chars (preserving extension when possible)
  * - Falls back to fallbackId if the result is empty
  */
+export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+
 export function sanitizeFilename(raw: string, fallbackId: string, maxLen = 200): string {
   const cleaned = raw.replace(/^\.+/, '').replace(/[^a-zA-Z0-9._-]/g, '_')
   let result: string
@@ -168,6 +170,7 @@ export interface ChatGateway {
     files?: string[]
   }): Promise<ThreadInfo>
   startThreadOnMessage(msg: InboundMessage, preview: string, archiveDuration: number): Promise<string | null>
+  renameThread?(threadId: string, name: string): Promise<void>
   getThreadStarterInfo(channelId: string): Promise<ThreadStarterInfo | null>
 
   // Attachments
@@ -182,6 +185,20 @@ export interface ChatGateway {
   // Sent message tracking (for mention-by-reply detection)
   noteSent(id: string): void
   wasSentByUs(id: string): boolean
+
+  // Session lifecycle visual — platform-specific rendering of lifecycle state
+  updateSessionVisual?(threadId: string, opts: {
+    state: 'live' | 'killed' | 'crashed' | 'zombie'
+    emoji: string
+    sessionName: string
+    description?: string
+    topic?: string
+    badge?: string
+    respawnCount?: number
+    paused?: boolean
+    anchorChannelId?: string
+    anchorMessageId?: string
+  }): Promise<void>
 
   // Thread structure
   getThreadAnchor(threadId: string): { channelId: string; messageId: string } | null

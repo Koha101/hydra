@@ -5,10 +5,15 @@
 _compile_check() {
   local rc=0
   local out=""
-  for entry in daemon.ts bridge.ts; do
-    err=$(cd "$1" && bun build "$entry" --target=bun 2>&1 >/dev/null) || rc=1
-    [ -n "$err" ] && out="${out}[$entry] ${err}"$'\n'
-  done
+  if [ -f "$1/node_modules/.bin/tsc" ] && [ -f "$1/tsconfig.json" ]; then
+    err=$(cd "$1" && ./node_modules/.bin/tsc --noEmit 2>&1) || rc=1
+    [ -n "$err" ] && out="${out}[tsc] ${err}"$'\n'
+  else
+    for entry in daemon.ts bridge.ts; do
+      err=$(cd "$1" && bun build "$entry" --target=bun 2>&1 >/dev/null) || rc=1
+      [ -n "$err" ] && out="${out}[$entry] ${err}"$'\n'
+    done
+  fi
   echo "$out"
   return $rc
 }

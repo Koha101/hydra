@@ -1,47 +1,87 @@
-import { gateway } from './config.js'
+import { gateway, DEFAULT_SESSION_CHANNEL } from './config.js'
+import { registry, sessionEmoji } from './sessions.js'
+import { COUNT_EMOJI } from '../gateway.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export { COUNT_EMOJI }
 
-export { setAnchorState as setSessionVisual }
+// ---------------------------------------------------------------------------
+// Round badge formatting — Unicode superscript numerals for compact display
+// ---------------------------------------------------------------------------
 
-export async function setAnchorState(
-  threadId: string,
-  state: AnchorState,
-  respawnCount?: number,
-): Promise<void> {
-  const anchor = gateway.getThreadAnchor(threadId)
-  if (!anchor) return
+export const SUPERSCRIPT = ['⁰','¹','²','³','⁴','⁵','⁶','⁷','⁸','⁹']
 
-  await Promise.allSettled([
-    gateway.unreact(anchor.channelId, anchor.messageId, '🚀'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '☠️'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '💥'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '🧟'),
-  ])
+const SUBSCRIPT = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉']
 
-  switch (state) {
-    case 'live':
-      await gateway.react(anchor.channelId, anchor.messageId, '🚀')
-      break
-    case 'killed':
-      await gateway.react(anchor.channelId, anchor.messageId, '☠️')
-      break
-    case 'crashed':
-      await gateway.react(anchor.channelId, anchor.messageId, '💥')
-      break
-    case 'zombie':
-      await gateway.react(anchor.channelId, anchor.messageId, '🚀')
-      await gateway.react(anchor.channelId, anchor.messageId, '🧟')
-      if (respawnCount && respawnCount > 0) {
-        const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
-        await gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx])
-        if (respawnCount > 1) {
-          await gateway.unreact(anchor.channelId, anchor.messageId,
-            COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)])
-        }
-      }
-      break
+export function formatRoundBadge(protocol: string, half: 'top' | 'bottom', current: number, total: number): string {
+  const inning = half === 'top' ? '▲' : '▼'
+  const c = current <= 9 ? SUPERSCRIPT[current] : '⁹⁺'
+  const t = total <= 9 ? SUBSCRIPT[total] : '₉⁺'
+  return `${protocol}${c}${inning}${t}`
+}
+
+// ---------------------------------------------------------------------------
+// Protocol badge registry — protocols register at import, avoids circular deps
+// ---------------------------------------------------------------------------
+
+const protocolBadgeCheckers: Array<(threadId: string) => string | undefined> = []
+
+export function registerProtocolBadge(checker: (threadId: string) => string | undefined): void {
+  protocolBadgeCheckers.push(checker)
+}
+
+export function getActiveProtocolBadge(threadId: string): string | undefined {
+  for (const check of protocolBadgeCheckers) {
+    const badge = check(threadId)
+    if (badge) return badge
   }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Design phase indicators
+// ---------------------------------------------------------------------------
+
+const DESIGN_PHASE_INDICATOR: Record<string, string> = {
+  spawning: '↗', questioning: '↗', answering: '↗',
+  independent: '◆',
+  synthesis: '⊕',
+  refinement: '↻',
+  audit: '✓', brief: '✓',
+}
+
+export function formatPhaseBadge(emoji: string, phase: string): string {
+  const indicator = DESIGN_PHASE_INDICATOR[phase]
+  return indicator ? `${emoji}${indicator}` : emoji
+}
+
+// ---------------------------------------------------------------------------
+// Single visual entry point — callers declare intent, this projects state
+// ---------------------------------------------------------------------------
+
+export function refreshSessionVisual(threadId: string, opts?: { state?: AnchorState, badge?: string }): void {
+  if (!gateway.updateSessionVisual) return
+  const sessionId = registry.getByThread(threadId)
+  if (!sessionId) return
+  const info = registry.get(sessionId)
+  if (!info) return
+
+  const emoji = info.contentEmoji || sessionEmoji(info.tmuxName)
+  const badge = opts?.badge ?? getActiveProtocolBadge(threadId)
+  const state = opts?.state ?? 'live'
+  const anchor = gateway.getThreadAnchor(threadId)
+
+  void gateway.updateSessionVisual(threadId, {
+    state,
+    emoji,
+    sessionName: info.tmuxName,
+    description: info.description,
+    topic: info.topic,
+    badge,
+    respawnCount: info.respawnCount,
+    paused: info.paused,
+    anchorChannelId: anchor?.channelId ?? info.anchorChannelId ?? DEFAULT_SESSION_CHANNEL,
+    anchorMessageId: info.anchorMessageId,
+  }).catch(e => process.stderr.write(`daemon: visual update failed: ${e}\n`))
 }
