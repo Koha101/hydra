@@ -10,7 +10,7 @@ import { discoverClaudeSessionId } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
-import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect } from './design.js'
+import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
 import { setAnchorState } from './anchor-state.js'
 import type { ButtonDef } from '../gateway.js'
 
@@ -66,6 +66,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       transport.flushQueue(sessionId)
       if (isReviewParticipant(sessionId)) onParticipantReconnect(sessionId)
       if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
+      if (isDesignParticipant(sessionId)) onDesignParticipantReconnect(sessionId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
     }
@@ -205,6 +206,8 @@ export const socketServer = createServer((socket: Socket) => {
           return // tmux still alive
         } catch {}
         process.stderr.write(`daemon: session ${info.tmuxName} died (bridge + tmux gone)\n`)
+        info.status = 'dead'
+        registry.persist()
         void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
         void setAnchorState(info.threadId, 'crashed').catch(() => {})
       }, 3000)
