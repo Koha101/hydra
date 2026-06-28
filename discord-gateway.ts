@@ -539,6 +539,21 @@ export class DiscordGateway implements ChatGateway {
     if (ch?.isThread()) await ch.setName(name.slice(0, 100))
   }, 1_000)
 
+  private reactionQueue = new ThrottledQueue<{ channelId: string; emoji: string; countEmoji?: string }>(
+    async (messageId, { channelId, emoji, countEmoji }) => {
+      const ch = await this.client.channels.fetch(channelId)
+      if (!ch?.isTextBased() || !('messages' in ch)) return
+      const msg = await (ch as any).messages.fetch(messageId)
+      if (!msg) return
+      const removePromises = [...(msg.reactions?.cache?.values() ?? [])].map(
+        (r: any) => r.users.remove(this.client.user?.id).catch(() => {})
+      )
+      await Promise.allSettled(removePromises)
+      await msg.react(emoji).catch(() => {})
+      if (countEmoji) await msg.react(countEmoji).catch(() => {})
+    }, 500,
+  )
+
   async renameThread(threadId: string, name: string, priority: 'high' | 'normal' = 'normal'): Promise<void> {
     this.renameQueue.enqueue(threadId, name, priority)
   }
@@ -551,31 +566,14 @@ export class DiscordGateway implements ChatGateway {
     await this.renameThread(threadId, name, priority)
 
     if (opts.anchorChannelId && opts.anchorMessageId) {
-      try {
-        const ch = await this.client.channels.fetch(opts.anchorChannelId)
-        if (!ch?.isTextBased() || !('messages' in ch)) return
-        const msg = await (ch as any).messages.fetch(opts.anchorMessageId)
-        if (!msg) return
-
-        const removePromises = [...(msg.reactions?.cache?.values() ?? [])].map(
-          (r: any) => r.users.remove(this.client.user?.id).catch(() => {})
-        )
-        await Promise.allSettled(removePromises)
-
-        const dead = opts.state === 'killed' || opts.state === 'crashed'
-        const reactionEmoji = dead
-          ? (opts.state === 'killed' ? '☠️' : '💥')
-          : opts.emoji
-
-        await msg.react(reactionEmoji).catch(() => {})
-
-        if (opts.state === 'zombie' && opts.respawnCount && opts.respawnCount > 0) {
-          const idx = Math.min(opts.respawnCount - 1, DiscordGateway.COUNT_EMOJI.length - 1)
-          await msg.react(DiscordGateway.COUNT_EMOJI[idx]).catch(() => {})
-        }
-      } catch (err) {
-        process.stderr.write(`discord gateway: anchor reaction failed: ${err instanceof Error ? err.message : String(err)}\n`)
-      }
+      const dead = opts.state === 'killed' || opts.state === 'crashed'
+      const emoji = dead ? (opts.state === 'killed' ? '☠️' : '💥') : opts.emoji
+      const countEmoji = opts.state === 'zombie' && opts.respawnCount && opts.respawnCount > 0
+        ? DiscordGateway.COUNT_EMOJI[Math.min(opts.respawnCount - 1, DiscordGateway.COUNT_EMOJI.length - 1)]
+        : undefined
+      this.reactionQueue.enqueue(opts.anchorMessageId, {
+        channelId: opts.anchorChannelId, emoji, countEmoji,
+      }, priority)
     }
   }
 
