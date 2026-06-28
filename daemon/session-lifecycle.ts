@@ -10,7 +10,7 @@ import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
-import { setSessionVisual } from './anchor-state.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
         process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
       }
 
-      await setSessionVisual(info.threadId, 'killed').catch(() => {})
+      refreshSessionVisual(info.threadId, { state: 'killed' })
     }
 
     const tmuxName = info.tmuxName
@@ -447,7 +447,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     })
   }
 
-  void setSessionVisual(threadId!, respawnCount > 0 ? 'zombie' : 'live', respawnCount).catch(() => {})
+  refreshSessionVisual(threadId!, { state: respawnCount > 0 ? 'zombie' : 'live' })
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }

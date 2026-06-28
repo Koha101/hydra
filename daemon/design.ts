@@ -9,7 +9,7 @@ import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
 import { designAuditorPrompt } from './prompts/design-auditor.js'
 import { designBriefPrompt } from './prompts/design-brief.js'
-import { refreshSessionVisual, registerProtocolBadge } from './anchor-state.js'
+import { refreshSessionVisual, registerProtocolBadge, formatPhaseBadge } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,7 +105,10 @@ export function getActiveDesigns(): DesignState[] {
   return [...designs.values()].filter(d => d.phase !== 'complete' && d.phase !== 'cancelled')
 }
 
-registerProtocolBadge(threadId => getDesignByThread(threadId) ? '🎨' : undefined)
+registerProtocolBadge(threadId => {
+  const state = getDesignByThread(threadId)
+  return state ? formatPhaseBadge('🎨', state.phase) : undefined
+})
 
 export function isDesignParticipant(sessionId: string): boolean {
   for (const design of designs.values()) {
@@ -154,7 +157,7 @@ export async function startDesign(
   }
 
   designs.set(threadId, state)
-  refreshSessionVisual(threadId, '🎨')
+  refreshSessionVisual(threadId, { badge: '🎨' })
 
   await gateway.send(threadId, [
     `**Design Session** — ${PERSONA_NAMES.length} personas`,
@@ -275,6 +278,7 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
 }
 
 async function startProposalPhase(state: DesignState): Promise<void> {
+  refreshSessionVisual(state.ownerThreadId)
   await gateway.send(state.ownerThreadId, `_Waiting for proposals..._`)
 
   state.timeout = setTimeout(async () => {
@@ -346,6 +350,7 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
   if (state.divergences.length === 0) {
     await gateway.send(state.ownerThreadId, `_No divergences found. Proceeding to audit._`)
     state.phase = 'audit'
+    refreshSessionVisual(state.ownerThreadId)
     await spawnAuditor(state)
     return
   }
@@ -360,6 +365,7 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
   if (toRefine.length === 0 || state.refinementRound > MAX_REFINEMENT_ROUNDS) {
     await gateway.send(state.ownerThreadId, `_Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
     state.phase = 'audit'
+    refreshSessionVisual(state.ownerThreadId)
     await spawnAuditor(state)
     return
   }
@@ -368,6 +374,7 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
 
   const result = designMachine.transition(state.phase, 'synthesized')
   if (result.ok) state.phase = result.to
+  refreshSessionVisual(state.ownerThreadId)
   state.currentDivergence = 0
 
   await runRefinement(state, toRefine)
@@ -430,6 +437,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function spawnSynthesizer(state: DesignState): Promise<void> {
+  refreshSessionVisual(state.ownerThreadId)
   await gateway.send(state.ownerThreadId, `_Spawning synthesizer..._`)
 
   try {

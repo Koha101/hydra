@@ -1,11 +1,28 @@
-import { gateway } from './config.js'
+import { gateway, DEFAULT_SESSION_CHANNEL } from './config.js'
+import { registry, sessionEmoji } from './sessions.js'
+import { COUNT_EMOJI } from '../gateway.js'
 
 export type AnchorState = 'live' | 'crashed' | 'killed' | 'zombie'
 
-export const COUNT_EMOJI = ['2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '👨‍👩‍👦‍👦']
+export { COUNT_EMOJI }
 
 // ---------------------------------------------------------------------------
-// Protocol badge registry — protocols register badge resolvers at module load
+// Round badge formatting — Unicode superscript numerals for compact display
+// ---------------------------------------------------------------------------
+
+export const SUPERSCRIPT = ['⁰','¹','²','³','⁴','⁵','⁶','⁷','⁸','⁹']
+
+const SUBSCRIPT = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉']
+
+export function formatRoundBadge(protocol: string, half: 'top' | 'bottom', current: number, total: number): string {
+  const inning = half === 'top' ? '▲' : '▼'
+  const c = current <= 9 ? SUPERSCRIPT[current] : '⁹⁺'
+  const t = total <= 9 ? SUBSCRIPT[total] : '₉⁺'
+  return `${protocol}${c}${inning}${t}`
+}
+
+// ---------------------------------------------------------------------------
+// Protocol badge registry — protocols register at import, avoids circular deps
 // ---------------------------------------------------------------------------
 
 const protocolBadgeCheckers: Array<(threadId: string) => string | undefined> = []
@@ -23,56 +40,50 @@ export function getActiveProtocolBadge(threadId: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Visual refresh — stub until lifecycle visuals land (#43)
+// Design phase indicators
 // ---------------------------------------------------------------------------
 
-export function refreshSessionVisual(_threadId: string, _badge?: string): void {
-  // Callers declare visual intent here. Implementation delegates to
-  // gateway.updateSessionVisual when available (added by #43).
+const DESIGN_PHASE_INDICATOR: Record<string, string> = {
+  spawning: '↗', questioning: '↗', answering: '↗',
+  independent: '◆',
+  synthesis: '⊕',
+  refinement: '↻',
+  audit: '✓', brief: '✓',
+}
+
+export function formatPhaseBadge(emoji: string, phase: string): string {
+  const indicator = DESIGN_PHASE_INDICATOR[phase]
+  return indicator ? `${emoji}${indicator}` : emoji
 }
 
 export { setAnchorState as setSessionVisual }
 
 // ---------------------------------------------------------------------------
-// Anchor state — emoji reactions on the spawn message
+// Single visual entry point — callers declare intent, this projects state
 // ---------------------------------------------------------------------------
 
-export async function setAnchorState(
-  threadId: string,
-  state: AnchorState,
-  respawnCount?: number,
-): Promise<void> {
+export function refreshSessionVisual(threadId: string, opts?: { state?: AnchorState, badge?: string }): void {
+  if (!gateway.updateSessionVisual) return
+  const sessionId = registry.getByThread(threadId)
+  if (!sessionId) return
+  const info = registry.get(sessionId)
+  if (!info) return
+
+  const emoji = info.contentEmoji || sessionEmoji(info.tmuxName)
+  const badge = opts?.badge ?? getActiveProtocolBadge(threadId)
+  const state = opts?.state ?? 'live'
   const anchor = gateway.getThreadAnchor(threadId)
-  if (!anchor) return
 
-  await Promise.allSettled([
-    gateway.unreact(anchor.channelId, anchor.messageId, '🚀'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '☠️'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '💥'),
-    gateway.unreact(anchor.channelId, anchor.messageId, '🧟'),
-  ])
-
-  switch (state) {
-    case 'live':
-      await gateway.react(anchor.channelId, anchor.messageId, '🚀')
-      break
-    case 'killed':
-      await gateway.react(anchor.channelId, anchor.messageId, '☠️')
-      break
-    case 'crashed':
-      await gateway.react(anchor.channelId, anchor.messageId, '💥')
-      break
-    case 'zombie':
-      await gateway.react(anchor.channelId, anchor.messageId, '🚀')
-      await gateway.react(anchor.channelId, anchor.messageId, '🧟')
-      if (respawnCount && respawnCount > 0) {
-        const idx = Math.min(respawnCount - 1, COUNT_EMOJI.length - 1)
-        await gateway.react(anchor.channelId, anchor.messageId, COUNT_EMOJI[idx])
-        if (respawnCount > 1) {
-          await gateway.unreact(anchor.channelId, anchor.messageId,
-            COUNT_EMOJI[Math.min(respawnCount - 2, COUNT_EMOJI.length - 1)])
-        }
-      }
-      break
-  }
+  void gateway.updateSessionVisual(threadId, {
+    state,
+    emoji,
+    sessionName: info.tmuxName,
+    description: info.description,
+    topic: info.topic,
+    badge,
+    respawnCount: info.respawnCount,
+    paused: info.paused,
+    anchorChannelId: anchor?.channelId ?? info.anchorChannelId ?? DEFAULT_SESSION_CHANNEL,
+    anchorMessageId: info.anchorMessageId,
+  }).catch(e => process.stderr.write(`daemon: visual update failed: ${e}\n`))
 }

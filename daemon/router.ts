@@ -12,11 +12,13 @@ import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/r
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { getDesignByThread, handleDesignAnswer } from './design.js'
+import { getReviewByThread } from './adversarial.js'
+import { getBuildByThread } from './build.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
-import { isAlive } from './util.js'
+import { isAlive, reportError } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -346,9 +348,16 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
           const pauseMatch = msg.content.match(/^(pause|unpause)\s*$/i)
           if (pauseMatch) {
+            if (pauseMatch[1].toLowerCase() === 'pause') {
+              const activeProtocol = getReviewByThread(resolvedThreadId) || getBuildByThread(resolvedThreadId) || getDesignByThread(resolvedThreadId)
+              if (activeProtocol) {
+                void reportError(msg.channelId, msg.id, 'pause', 'a protocol is active in this thread', 'Cancel the active review/build/design first.')
+                return
+              }
+            }
             info.paused = pauseMatch[1].toLowerCase() === 'pause'
             registry.persist()
-            void gateway.react(msg.channelId, msg.id, info.paused ? '⏸️' : '▶️').catch(() => {})
+            void gateway.react(msg.channelId, msg.id, info.paused ? '⏸' : '▶️').catch(() => {})
             refreshSessionVisual(resolvedThreadId)
             return
           }

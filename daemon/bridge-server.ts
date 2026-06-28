@@ -12,7 +12,7 @@ import { loadAccess } from './access.js'
 import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
 import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
 import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
-import { setAnchorState } from './anchor-state.js'
+import { refreshSessionVisual } from './anchor-state.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -111,6 +111,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       if (isReviewParticipant(sessionId)) onParticipantReconnect(sessionId)
       if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
       if (isDesignParticipant(sessionId)) onDesignParticipantReconnect(sessionId)
+      if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
       process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
       break
     }
@@ -294,7 +295,7 @@ export const socketServer = createServer((socket: Socket) => {
         info.status = 'dead'
         registry.persist()
         void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
-        void setAnchorState(info.threadId, 'crashed').catch(() => {})
+        refreshSessionVisual(info.threadId, { state: 'crashed' })
       }, 3000)
     }
   })

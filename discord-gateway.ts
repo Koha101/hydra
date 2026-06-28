@@ -16,8 +16,8 @@ import {
   type Message,
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
-import { sanitizeFilename } from './gateway.js'
-import { formatDiscordTables } from './discord-table-format.js'
+import { sanitizeFilename, COUNT_EMOJI } from './gateway.js'
+import { SUPERSCRIPT } from './daemon/anchor-state.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -34,6 +34,113 @@ import type {
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
+
+// ---------------------------------------------------------------------------
+// Rate-limit-aware rename queue — coalesces and drains at a safe rate
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ThrottledQueue — generic rate-limit-respecting coalescing queue.
+//
+// Discord rate limits for thread renames: standard API bucket (~5/5s for
+// threads, unlike guild channel renames which are 2/10min). We drain at
+// 1/second to stay well within limits and avoid bursts during boot/recovery.
+// ---------------------------------------------------------------------------
+
+class ThrottledQueue<V> {
+  private queue = new Map<string, { value: V; priority: 'high' | 'normal' }>()
+  private draining = false
+
+  constructor(
+    private action: (key: string, value: V) => Promise<void>,
+    private drainMs: number,
+  ) {}
+
+  enqueue(key: string, value: V, priority: 'high' | 'normal' = 'normal'): void {
+    const existing = this.queue.get(key)
+    const effectivePriority = priority === 'high' ? 'high' : (existing?.priority ?? 'normal')
+    this.queue.set(key, { value, priority: effectivePriority })
+    if (!this.draining) this.drain()
+  }
+
+  private drain(): void {
+    if (this.queue.size === 0) { this.draining = false; return }
+    this.draining = true
+
+    let nextKey: string | undefined
+    for (const [key, entry] of this.queue) {
+      if (entry.priority === 'high') { nextKey = key; break }
+    }
+    if (!nextKey) nextKey = this.queue.keys().next().value!
+    const { value } = this.queue.get(nextKey)!
+    this.queue.delete(nextKey)
+
+    this.action(nextKey, value).catch(err => {
+      process.stderr.write(`discord gateway: throttled action failed: ${err instanceof Error ? err.message : String(err)}\n`)
+    }).finally(() => {
+      setTimeout(() => this.drain(), this.drainMs)
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Visual grammar — the thread name IS the spec.
+//
+// Position 1 (leftmost):  presence indicator — identity, protocol, or state override
+// Position 2 (middle):    focus — what the session is working on
+// Position 3 (after · ):  identity tag — tmux name (used in commands)
+// Position 4 (suffix):    lineage — respawn count as superscript
+//
+// Precedence for position 1 (highest wins):
+//   1. Dead/crashed: › ☠️ / › 💥         (session is gone — everything else is moot)
+//   2. Paused:       › ⏸                  (alive but not listening)
+//   3. Protocol:     {emoji}{badge}        (identity + protocol as compound: 🔣⚔²⁄³)
+//   4. Identity:     session emoji         (default — alive and idle)
+// Turn archetypes: ✦ = self/owner/builder, ⚔ = critic/outsider/challenger
+// ---------------------------------------------------------------------------
+
+type SessionVisualOpts = {
+  state: 'live' | 'killed' | 'crashed' | 'zombie'
+  emoji: string
+  sessionName: string
+  description?: string
+  topic?: string
+  badge?: string
+  respawnCount?: number
+  paused?: boolean
+  anchorChannelId?: string
+  anchorMessageId?: string
+}
+
+export function formatThreadName(opts: SessionVisualOpts): { name: string; priority: 'high' | 'normal' } {
+  const dead = opts.state === 'killed' || opts.state === 'crashed'
+  const paused = !!opts.paused && !dead
+  const isStateOverride = dead || paused
+
+  // Position 1 — presence indicator (precedence: dead > paused > identity • protocol > identity)
+  let position1: string
+  if (dead) {
+    position1 = opts.state === 'killed' ? '› ☠️' : '› 💥'
+  } else if (paused) {
+    position1 = '› ⏸'
+  } else if (opts.badge) {
+    position1 = `${opts.emoji} ${opts.badge}`
+  } else {
+    position1 = opts.emoji
+  }
+
+  // Position 2 — focus (description > topic > session name)
+  const title = (opts.description || opts.topic || opts.sessionName)
+    .replace(/\*\*/g, '').replace(/\*/g, '').replace(/[\[\]<>]/g, '').replace(/\s+/g, ' ').trim()
+
+  // Position 4 — lineage suffix
+  const countSuffix = opts.respawnCount && opts.respawnCount >= 2
+    ? (opts.respawnCount <= 9 ? SUPERSCRIPT[opts.respawnCount] : '⁹⁺')
+    : ''
+
+  const name = `${position1} ${title} · ${opts.sessionName}${countSuffix}`.slice(0, 100)
+  return { name, priority: isStateOverride ? 'high' : 'normal' }
+}
 
 export class DiscordGateway implements ChatGateway {
   readonly platform = 'discord' as const
@@ -179,7 +286,7 @@ export class DiscordGateway implements ChatGateway {
     const ch = await this.fetchTextChannel(channelId)
     if (!('send' in ch)) throw new Error('channel is not sendable')
 
-    const payload: Record<string, unknown> = { content: formatDiscordTables(text) }
+    const payload: Record<string, unknown> = { content: text }
     if (opts?.files?.length) {
       for (const f of opts.files) {
         const st = statSync(f)
@@ -219,7 +326,7 @@ export class DiscordGateway implements ChatGateway {
   async edit(channelId: string, messageId: string, text: string): Promise<string> {
     const ch = await this.fetchTextChannel(channelId)
     const msg = await ch.messages.fetch(messageId)
-    const edited = await msg.edit(formatDiscordTables(text))
+    const edited = await msg.edit(text)
     return edited.id
   }
 
@@ -306,7 +413,7 @@ export class DiscordGateway implements ChatGateway {
         }
       }
       const sent = await thread.send({
-        content: formatDiscordTables(opts.text),
+        content: opts.text,
         ...(opts?.files?.length ? { files: opts.files } : {}),
       })
       this.noteSent(sent.id)
@@ -352,7 +459,7 @@ export class DiscordGateway implements ChatGateway {
 
   async sendDM(userId: string, text: string, buttons?: ButtonDef[]): Promise<void> {
     const user = await this.client.users.fetch(userId)
-    const payload: Record<string, unknown> = { content: formatDiscordTables(text) }
+    const payload: Record<string, unknown> = { content: text }
     if (buttons?.length) {
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         ...buttons.map(b => {
@@ -425,6 +532,49 @@ export class DiscordGateway implements ChatGateway {
 
   getMessageUrl(_threadId: string, _messageTs: string): string {
     return ''
+  }
+
+  private renameQueue = new ThrottledQueue<string>(async (threadId, name) => {
+    const ch = await this.client.channels.fetch(threadId)
+    if (ch?.isThread()) await ch.setName(name.slice(0, 100))
+  }, 1_000)
+
+  private reactionQueue = new ThrottledQueue<{ channelId: string; emoji: string; countEmoji?: string }>(
+    async (messageId, { channelId, emoji, countEmoji }) => {
+      const ch = await this.client.channels.fetch(channelId)
+      if (!ch?.isTextBased() || !('messages' in ch)) return
+      const msg = await (ch as any).messages.fetch(messageId)
+      if (!msg) return
+      const removePromises = [...(msg.reactions?.cache?.values() ?? [])].map(
+        (r: any) => r.users.remove(this.client.user?.id).catch(() => {})
+      )
+      await Promise.allSettled(removePromises)
+      await msg.react(emoji).catch(() => {})
+      if (countEmoji) await msg.react(countEmoji).catch(() => {})
+    }, 500,
+  )
+
+  async renameThread(threadId: string, name: string, priority: 'high' | 'normal' = 'normal'): Promise<void> {
+    this.renameQueue.enqueue(threadId, name, priority)
+  }
+
+  private static readonly COUNT_EMOJI = COUNT_EMOJI
+
+  async updateSessionVisual(threadId: string, opts: SessionVisualOpts): Promise<void> {
+    const { name, priority } = formatThreadName(opts)
+    process.stderr.write(`discord gateway: visual update: state=${opts.state} paused=${opts.paused} priority=${priority}\n`)
+    await this.renameThread(threadId, name, priority)
+
+    if (opts.anchorChannelId && opts.anchorMessageId) {
+      const dead = opts.state === 'killed' || opts.state === 'crashed'
+      const emoji = dead ? (opts.state === 'killed' ? '☠️' : '💥') : opts.emoji
+      const countEmoji = opts.state === 'zombie' && opts.respawnCount && opts.respawnCount > 0
+        ? DiscordGateway.COUNT_EMOJI[Math.min(opts.respawnCount - 1, DiscordGateway.COUNT_EMOJI.length - 1)]
+        : undefined
+      this.reactionQueue.enqueue(opts.anchorMessageId, {
+        channelId: opts.anchorChannelId, emoji, countEmoji,
+      }, priority)
+    }
   }
 
   /** Start a thread on a message in a guild channel (for threadReply policy). */

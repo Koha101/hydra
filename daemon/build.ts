@@ -8,7 +8,7 @@ import { getReviewByThread } from './adversarial.js'
 import { getDesignByThread } from './design.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
-import { refreshSessionVisual, registerProtocolBadge } from './anchor-state.js'
+import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 import { createStateMachine } from './state-machine.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
@@ -93,7 +93,12 @@ export const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', 
 // Lookups
 // ---------------------------------------------------------------------------
 
-registerProtocolBadge(threadId => getBuildByThread(threadId) ? '🔨' : undefined)
+registerProtocolBadge(threadId => {
+  const state = getBuildByThread(threadId)
+  if (!state) return undefined
+  const half = state.phase === 'implementing' ? 'top' : 'bottom'
+  return formatRoundBadge('🔨', half, state.currentRound, state.rounds)
+})
 
 export function getActiveBuilds(): BuildState[] {
   return [...builds.values()].filter(b => b.phase !== 'complete' && b.phase !== 'cancelled')
@@ -183,7 +188,7 @@ export async function startBuild(
   builds.set(buildId, state)
   threadToBuild.set(ownerThreadId, buildId)
   ownerToBuild.set(ownerSessionId, buildId)
-  refreshSessionVisual(ownerThreadId, '🔨')
+  refreshSessionVisual(ownerThreadId, { badge: formatRoundBadge('🔨', 'top', state.currentRound, state.rounds) })
 
   try {
     const taskLine = task ? `\nTask: **${task}**` : ''
@@ -284,6 +289,7 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
     } else {
       state.phase = result.to
       state.currentRound++
+      refreshSessionVisual(state.ownerThreadId)
       onCriticFeedback(state, bodyText)
     }
     return
@@ -371,6 +377,7 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
+  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
   // Post visible status
@@ -398,6 +405,7 @@ function onOwnerPosted(state: BuildState, text: string): void {
 
 function onCriticFeedback(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
+  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
 
   // Post visible status so the human knows it's the builder's turn
