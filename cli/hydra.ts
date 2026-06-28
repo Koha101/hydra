@@ -160,8 +160,9 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
       for (const item of items) {
         const status = item.status === 'connected' ? '●' : '○'
         const ctx = item.context ? ` [${item.context}]` : ''
-        const src = item.cliSource ? ` via:${item.cliSource}` : ''
-        console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx}${src})`)
+        const purpose = item.purpose ? ` (${item.purpose})` : ''
+        const timeout = item.timeout_remaining ? ` ⏱${item.timeout_remaining}` : ''
+        console.log(`${status} ${item.name}  ${item.description ?? ''}${purpose}  (${item.running_for}${ctx}${timeout})`)
       }
       return
     }
@@ -188,7 +189,8 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
       if (data.context) console.log(`  context: ${data.context}`)
       if (data.url) console.log(`  url:     ${data.url}`)
       if (data.origin) console.log(`  origin:  ${data.origin}`)
-      if (data.cliSource) console.log(`  source:  ${data.cliSource}`)
+      if (data.purpose) console.log(`  purpose: ${data.purpose}`)
+      if (data.timeout_remaining) console.log(`  timeout: ${data.timeout_remaining} remaining`)
       return
     case 'clear-key':
       console.log(`cleared: ${data.cleared}`)

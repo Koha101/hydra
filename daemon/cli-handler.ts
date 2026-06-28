@@ -134,6 +134,13 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     updateIdempotency(idempotencyKey, { status: 'spawned', sessionId: result.sessionId })
   }
 
+  const info = registry.get(result.sessionId)
+  if (info) {
+    if (purpose) (info as any).cliPurpose = purpose
+    if (timeoutMinutes) (info as any).cliTimeoutAt = Date.now() + timeoutMinutes * 60 * 1000
+    registry.persist()
+  }
+
   const sessionState: CLISessionState = {}
 
   if (timeoutMinutes && timeoutMinutes > 0) {
@@ -166,15 +173,21 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
 function handleList(req: CLIRequest): CLIResponse {
   const sorted = [...registry.values()].sort((a, b) => b.lastActive - a.lastActive)
-  const list = sorted.map(s => ({
-    name: s.tmuxName,
-    sessionId: s.sessionId,
-    description: s.description ?? (s.topic ? fallbackDescription(s.topic) : ''),
-    url: s.threadUrl ?? '',
-    context: getContextPercent(s.tmuxName),
-    running_for: formatDuration(Date.now() - s.createdAt),
-    status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-  }))
+  const list = sorted.map(s => {
+    const a = s as any
+    const timeoutAt = a.cliTimeoutAt as number | undefined
+    return {
+      name: s.tmuxName,
+      sessionId: s.sessionId,
+      description: s.description ?? (s.topic ? fallbackDescription(s.topic) : ''),
+      url: s.threadUrl ?? '',
+      context: getContextPercent(s.tmuxName),
+      running_for: formatDuration(Date.now() - s.createdAt),
+      status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
+      purpose: a.cliPurpose as string | undefined,
+      timeout_remaining: timeoutAt ? formatDuration(Math.max(0, timeoutAt - Date.now())) : undefined,
+    }
+  })
   return respond(req, true, list)
 }
 
@@ -204,6 +217,8 @@ function handleStatus(req: CLIRequest): CLIResponse {
     bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
     tmux: tmuxAlive ? 'alive' : 'dead',
     origin: info.originType,
+    purpose: (info as any).cliPurpose as string | undefined,
+    timeout_remaining: (info as any).cliTimeoutAt ? formatDuration(Math.max(0, (info as any).cliTimeoutAt - Date.now())) : undefined,
   })
 }
 
