@@ -308,10 +308,12 @@ export class ThreadRegistry {
 
   set(threadId: string, info: ThreadMetadata): void {
     this.threads.set(threadId, info)
+    this.persist()
   }
 
   delete(threadId: string): void {
     this.threads.delete(threadId)
+    this.persist()
   }
 
   values(): IterableIterator<ThreadMetadata> {
@@ -319,6 +321,54 @@ export class ThreadRegistry {
   }
 
   get size(): number { return this.threads.size }
+
+  recordSpawn(threadId: string, opts: {
+    anchorMessageId?: string, threadUrl?: string, topic: string,
+    respawnCount: number, sessionId: string, tmuxName: string,
+    originType: 'spawn' | 'fork' | 'handoff', originFrom?: string,
+  }): void {
+    const now = Date.now()
+    let thread = this.threads.get(threadId)
+    if (!thread) {
+      thread = {
+        threadId,
+        anchorMessageId: opts.anchorMessageId,
+        threadUrl: opts.threadUrl,
+        topic: opts.topic,
+        respawnCount: opts.respawnCount,
+        createdAt: now,
+        lastActive: now,
+        totalMessages: 0,
+        sessionHistory: [],
+      }
+      this.threads.set(threadId, thread)
+    } else {
+      thread.lastActive = now
+      thread.threadUrl = opts.threadUrl || thread.threadUrl
+      if (opts.respawnCount > 0) thread.respawnCount = opts.respawnCount
+    }
+    thread.sessionHistory.push({
+      sessionId: opts.sessionId,
+      tmuxName: opts.tmuxName,
+      originType: opts.originType,
+      originFrom: opts.originFrom,
+      startedAt: now,
+      messageCount: 0,
+    })
+    this.persist()
+  }
+
+  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string): void {
+    const thread = this.threads.get(threadId)
+    if (!thread) return
+    const entry = thread.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+    if (entry) {
+      entry.endedAt = Date.now()
+      entry.messageCount = messageCount
+      entry.claudeSessionId = claudeSessionId
+    }
+    this.persist()
+  }
 
   persist(): void {
     try {

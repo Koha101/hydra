@@ -398,9 +398,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const preview = msg.content.slice(0, 50).replace(/<@!?\d+>\s*/g, '').trim() || 'Thread'
       const archiveDuration = policy.threadArchiveMinutes ?? 1440
 
-      const existingIsSession = msg.hasExistingThread && msg.existingThreadId
+      const existingSessionId = msg.hasExistingThread && msg.existingThreadId
         && registry.getByThread(msg.existingThreadId)
-      if (msg.hasExistingThread && msg.existingThreadId && !existingIsSession) {
+      if (msg.hasExistingThread && msg.existingThreadId && !existingSessionId) {
         chat_id = msg.existingThreadId
       } else {
         const threadId = await gateway.startThreadOnMessage(msg, preview, archiveDuration)

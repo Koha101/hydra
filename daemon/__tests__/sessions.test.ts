@@ -17,6 +17,19 @@ function makeInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   }
 }
 
+function makeThread(overrides: Partial<ThreadMetadata> = {}): ThreadMetadata {
+  return {
+    threadId: 'thread-1',
+    topic: 'test',
+    respawnCount: 0,
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    totalMessages: 0,
+    sessionHistory: [],
+    ...overrides,
+  }
+}
+
 // Note: SessionRegistry constructor loads from STATE_DIR/sessions.json and checks tmux.
 // Real sessions may exist on the host, so we test behaviors that are additive/relative.
 
@@ -86,15 +99,7 @@ describe('SessionRegistry', () => {
 describe('ThreadRegistry', () => {
   test('set and get', () => {
     const tr = new ThreadRegistry()
-    const info: ThreadMetadata = {
-      threadId: 'thread-tr-1',
-      topic: 'test',
-      respawnCount: 0,
-      createdAt: Date.now(),
-      lastActive: Date.now(),
-      totalMessages: 0,
-      sessionHistory: [],
-    }
+    const info = makeThread({ threadId: 'thread-tr-1' })
     tr.set('thread-tr-1', info)
     expect(tr.get('thread-tr-1')).toBe(info)
     expect(tr.has('thread-tr-1')).toBe(true)
@@ -103,15 +108,7 @@ describe('ThreadRegistry', () => {
 
   test('delete removes thread', () => {
     const tr = new ThreadRegistry()
-    const info: ThreadMetadata = {
-      threadId: 'thread-tr-2',
-      topic: 'test',
-      respawnCount: 0,
-      createdAt: Date.now(),
-      lastActive: Date.now(),
-      totalMessages: 0,
-      sessionHistory: [],
-    }
+    const info = makeThread({ threadId: 'thread-tr-2' })
     tr.set('thread-tr-2', info)
     expect(tr.has('thread-tr-2')).toBe(true)
     tr.delete('thread-tr-2')
@@ -140,15 +137,7 @@ describe('ThreadRegistry', () => {
 
   test('boot does not overwrite existing threads', () => {
     const tr = new ThreadRegistry()
-    const existing: ThreadMetadata = {
-      threadId: 'thread-existing',
-      topic: 'original topic',
-      respawnCount: 3,
-      createdAt: Date.now(),
-      lastActive: Date.now(),
-      totalMessages: 10,
-      sessionHistory: [],
-    }
+    const existing = makeThread({ threadId: 'thread-existing', topic: 'original topic', respawnCount: 3, totalMessages: 10 })
     tr.set('thread-existing', existing)
     const reg = new SessionRegistry()
     reg.set('sid-ex', makeInfo({ sessionId: 'sid-ex', threadId: 'thread-existing', topic: 'new topic' }))
