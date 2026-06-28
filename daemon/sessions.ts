@@ -49,6 +49,35 @@ export type ThreadMember = {
 
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
 
+// ---------------------------------------------------------------------------
+// Thread metadata — observational, not load-bearing for routing
+// ---------------------------------------------------------------------------
+
+export type ThreadSessionEntry = {
+  sessionId: string
+  tmuxName: string
+  originType: 'spawn' | 'fork' | 'handoff' | 'resurrect'
+  originFrom?: string
+  startedAt: number
+  endedAt?: number
+  messageCount: number
+  claudeSessionId?: string
+}
+
+export type ThreadMetadata = {
+  threadId: string
+  anchorMessageId?: string
+  anchorChannelId?: string
+  threadUrl?: string
+  topic: string
+  description?: string
+  respawnCount: number
+  createdAt: number
+  lastActive: number
+  totalMessages: number
+  sessionHistory: ThreadSessionEntry[]
+}
+
 export type SpawnOpts = {
   forkFrom?: { claudeSessionId: string; parentName: string }
   handedOffFrom?: string
@@ -256,3 +285,149 @@ export class SessionRegistry {
 }
 
 export const registry = new SessionRegistry()
+
+// ---------------------------------------------------------------------------
+// ThreadRegistry — lightweight thread metadata (not load-bearing for routing)
+// ---------------------------------------------------------------------------
+
+export class ThreadRegistry {
+  readonly threads = new Map<string, ThreadMetadata>()
+  private readonly threadsFile: string
+
+  constructor() {
+    this.threadsFile = join(STATE_DIR, 'threads.json')
+  }
+
+  get(threadId: string): ThreadMetadata | undefined {
+    return this.threads.get(threadId)
+  }
+
+  has(threadId: string): boolean {
+    return this.threads.has(threadId)
+  }
+
+  set(threadId: string, info: ThreadMetadata): void {
+    this.threads.set(threadId, info)
+    this.persist()
+  }
+
+  delete(threadId: string): void {
+    this.threads.delete(threadId)
+    this.persist()
+  }
+
+  values(): IterableIterator<ThreadMetadata> {
+    return this.threads.values()
+  }
+
+  get size(): number { return this.threads.size }
+
+  recordSpawn(threadId: string, opts: {
+    anchorMessageId?: string, threadUrl?: string, topic: string,
+    respawnCount: number, sessionId: string, tmuxName: string,
+    originType: 'spawn' | 'fork' | 'handoff', originFrom?: string,
+  }): void {
+    const now = Date.now()
+    let thread = this.threads.get(threadId)
+    if (!thread) {
+      thread = {
+        threadId,
+        anchorMessageId: opts.anchorMessageId,
+        threadUrl: opts.threadUrl,
+        topic: opts.topic,
+        respawnCount: opts.respawnCount,
+        createdAt: now,
+        lastActive: now,
+        totalMessages: 0,
+        sessionHistory: [],
+      }
+      this.threads.set(threadId, thread)
+    } else {
+      thread.lastActive = now
+      thread.threadUrl = opts.threadUrl || thread.threadUrl
+      if (opts.respawnCount > 0) thread.respawnCount = opts.respawnCount
+    }
+    thread.sessionHistory.push({
+      sessionId: opts.sessionId,
+      tmuxName: opts.tmuxName,
+      originType: opts.originType,
+      originFrom: opts.originFrom,
+      startedAt: now,
+      messageCount: 0,
+    })
+    this.persist()
+  }
+
+  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string): void {
+    const thread = this.threads.get(threadId)
+    if (!thread) return
+    const entry = thread.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+    if (entry) {
+      entry.endedAt = Date.now()
+      entry.messageCount = messageCount
+      entry.claudeSessionId = claudeSessionId
+    }
+    this.persist()
+  }
+
+  persist(): void {
+    try {
+      const data = [...this.threads.values()]
+      atomicWriteFileSync(this.threadsFile, JSON.stringify(data, null, 2) + '\n')
+    } catch (err) {
+      process.stderr.write(`daemon: failed to persist threads: ${err}\n`)
+    }
+  }
+
+  boot(sessionRegistry: SessionRegistry): void {
+    try {
+      const raw = readFileSync(this.threadsFile, 'utf8')
+      const data = JSON.parse(raw) as ThreadMetadata[]
+      for (const info of data) {
+        this.threads.set(info.threadId, info)
+      }
+      if (data.length > 0) {
+        process.stderr.write(`daemon: restored ${data.length} thread(s)\n`)
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(`daemon: failed to load threads: ${err}\n`)
+      }
+    }
+
+    let created = 0
+    for (const session of sessionRegistry.values()) {
+      if (session.isJoinMember) continue
+      if (this.threads.has(session.threadId)) continue
+      this.threads.set(session.threadId, {
+        threadId: session.threadId,
+        anchorMessageId: session.anchorMessageId,
+        anchorChannelId: session.anchorChannelId,
+        threadUrl: session.threadUrl,
+        topic: session.topic ?? '',
+        description: session.description,
+        respawnCount: session.respawnCount ?? 0,
+        createdAt: session.createdAt,
+        lastActive: session.lastActive,
+        totalMessages: session.messageCount ?? 0,
+        sessionHistory: [{
+          sessionId: session.sessionId,
+          tmuxName: session.tmuxName,
+          originType: session.originType ?? 'spawn',
+          originFrom: session.originFrom,
+          startedAt: session.createdAt,
+          messageCount: session.messageCount ?? 0,
+          claudeSessionId: session.claudeSessionId,
+        }],
+      })
+      created++
+    }
+
+    if (created > 0) {
+      process.stderr.write(`daemon: created ${created} thread(s) from sessions\n`)
+      this.persist()
+    }
+  }
+}
+
+export const threadRegistry = new ThreadRegistry()

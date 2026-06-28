@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { EventEmitter } from 'events'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
-import { registry, sessionEmoji } from './sessions.js'
+import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
@@ -81,8 +81,9 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       } catch {}
     }
 
-    // Don't delete thread mapping for join members — owner keeps it
+    // Update thread metadata before deleting session
     if (!info.isJoinMember) {
+      threadRegistry.recordKill(info.threadId, info.sessionId, info.messageCount ?? 0, info.claudeSessionId)
       registry.deleteThread(info.threadId)
     }
     registry.delete(info.sessionId)
@@ -399,7 +400,21 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   }
   registry.persist()
 
-  void setAnchorState(threadId!, 'live').catch(() => {})
+  // Co-update thread metadata (observational — not load-bearing for routing)
+  if (!isJoin) {
+    threadRegistry.recordSpawn(threadId!, {
+      anchorMessageId,
+      threadUrl: url || undefined,
+      topic,
+      respawnCount,
+      sessionId,
+      tmuxName,
+      originType,
+      originFrom,
+    })
+  }
+
+  void setAnchorState(threadId!, respawnCount > 0 ? 'zombie' : 'live', respawnCount).catch(() => {})
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }

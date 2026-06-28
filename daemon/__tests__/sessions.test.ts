@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { SessionRegistry, sessionEmoji, type SessionInfo } from '../sessions.js'
+import { SessionRegistry, ThreadRegistry, sessionEmoji, type SessionInfo, type ThreadMetadata } from '../sessions.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -13,6 +13,19 @@ function makeInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
     lastActive: Date.now(),
     tmuxName: 'spark',
     listening: false,
+    ...overrides,
+  }
+}
+
+function makeThread(overrides: Partial<ThreadMetadata> = {}): ThreadMetadata {
+  return {
+    threadId: 'thread-1',
+    topic: 'test',
+    respawnCount: 0,
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    totalMessages: 0,
+    sessionHistory: [],
     ...overrides,
   }
 }
@@ -80,6 +93,57 @@ describe('SessionRegistry', () => {
   test('resolveThreadSession returns null when not found', () => {
     const reg = new SessionRegistry()
     expect(reg.resolveThreadSession('nonexistent-thread-xyz')).toBeNull()
+  })
+})
+
+describe('ThreadRegistry', () => {
+  test('set and get', () => {
+    const tr = new ThreadRegistry()
+    const info = makeThread({ threadId: 'thread-tr-1' })
+    tr.set('thread-tr-1', info)
+    expect(tr.get('thread-tr-1')).toBe(info)
+    expect(tr.has('thread-tr-1')).toBe(true)
+    expect(tr.size).toBe(1)
+  })
+
+  test('delete removes thread', () => {
+    const tr = new ThreadRegistry()
+    const info = makeThread({ threadId: 'thread-tr-2' })
+    tr.set('thread-tr-2', info)
+    expect(tr.has('thread-tr-2')).toBe(true)
+    tr.delete('thread-tr-2')
+    expect(tr.has('thread-tr-2')).toBe(false)
+  })
+
+  test('boot creates threads from sessions', () => {
+    const tr = new ThreadRegistry()
+    const reg = new SessionRegistry()
+    reg.set('sid-boot-1', makeInfo({ sessionId: 'sid-boot-1', threadId: 'thread-boot-1', topic: 'boot test' }))
+    tr.boot(reg)
+    const thread = tr.get('thread-boot-1')
+    expect(thread).toBeDefined()
+    expect(thread!.topic).toBe('boot test')
+    expect(thread!.sessionHistory).toHaveLength(1)
+    expect(thread!.sessionHistory[0].sessionId).toBe('sid-boot-1')
+  })
+
+  test('boot skips join members', () => {
+    const tr = new ThreadRegistry()
+    const reg = new SessionRegistry()
+    reg.set('sid-join', makeInfo({ sessionId: 'sid-join', threadId: 'thread-join', isJoinMember: true }))
+    tr.boot(reg)
+    expect(tr.has('thread-join')).toBe(false)
+  })
+
+  test('boot does not overwrite existing threads', () => {
+    const tr = new ThreadRegistry()
+    const existing = makeThread({ threadId: 'thread-existing', topic: 'original topic', respawnCount: 3, totalMessages: 10 })
+    tr.set('thread-existing', existing)
+    const reg = new SessionRegistry()
+    reg.set('sid-ex', makeInfo({ sessionId: 'sid-ex', threadId: 'thread-existing', topic: 'new topic' }))
+    tr.boot(reg)
+    expect(tr.get('thread-existing')!.topic).toBe('original topic')
+    expect(tr.get('thread-existing')!.respawnCount).toBe(3)
   })
 })
 
