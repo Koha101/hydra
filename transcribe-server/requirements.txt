@@ -1,0 +1,10 @@
+# Canary-Qwen transcription sidecar (server.py).
+# Requires a CUDA GPU for real-time transcription. ffmpeg must be on PATH.
+#
+# NeMo pulls in torch + a large dependency tree; install into a dedicated venv.
+# If pip can't resolve nemo_toolkit on your platform, see:
+#   https://github.com/NVIDIA/NeMo  and  https://huggingface.co/nvidia/canary-qwen-2.5b
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+nemo_toolkit[asr]>=2.0.0

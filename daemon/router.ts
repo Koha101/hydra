@@ -5,6 +5,7 @@ import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
+import { transcribeDownloads, mergeTranscripts } from './transcription.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
@@ -68,7 +69,17 @@ async function buildNotificationPayload(
         const kb = (att.size / 1024).toFixed(0)
         return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
       })
-  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+
+  // Voice dictation: transcribe any audio attachments so Claude reads the
+  // spoken prompt as text. The original audio file stays in downloaded_files,
+  // so Claude can still inspect it if needed. No-op unless transcription is
+  // enabled and an audio file is present.
+  const transcripts = await transcribeDownloads(downloadedFiles)
+
+  let content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+  if (transcripts.length > 0) {
+    content = mergeTranscripts(msg.content, transcripts)
+  }
 
   let threadContext: Record<string, string> = {}
   if (msg.isThread) {
@@ -91,6 +102,7 @@ async function buildNotificationPayload(
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
     ...(downloadedFiles.length > 0 ? { downloaded_files: downloadedFiles.map(f => f.path).join('; ') } : {}),
+    ...(transcripts.length > 0 ? { voice_transcript: String(transcripts.length) } : {}),
     ...threadContext,
   }
 

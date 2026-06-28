@@ -161,6 +161,34 @@ hydra up slack
 
 Each platform gets its own daemon, state dir, and watchdog. Use different `CLAUDE_CONFIG_DIR` values for separate logins.
 
+### Voice dictation
+
+Hydra can transcribe inbound audio attachments (Discord voice notes, Slack audio
+clips) to text, so you can **dictate prompts** to Claude alongside text and images.
+
+Transcription runs in a self-hosted sidecar (`transcribe-server/`) so audio never
+leaves your machine. The default backend is **NVIDIA Canary-Qwen 2.5B** (top of the
+Open ASR leaderboard for English accuracy). Claude doesn't accept audio natively,
+so the daemon transcribes first and merges the text into the message as
+`[voice transcript] ...`; the original audio file stays available in
+`downloaded_files`.
+
+```bash
+# 1. Run the sidecar (real model needs a GPU + ffmpeg; see transcribe-server/README.md)
+cd transcribe-server && pip install -r requirements.txt
+uvicorn server:app --host 127.0.0.1 --port 8123
+#    …or, to test the wiring without a GPU:
+python3 transcribe-server/mock_server.py
+
+# 2. Enable it in the daemon's .env, then restart the daemon
+HYDRA_TRANSCRIBE_ENABLED=1
+HYDRA_TRANSCRIBE_URL=http://127.0.0.1:8123/transcribe
+```
+
+Off by default. If the sidecar is unreachable, the daemon logs it and delivers the
+message without a transcript — dictation never blocks normal messages. Full setup,
+env vars, and tuning: [`transcribe-server/README.md`](transcribe-server/README.md).
+
 ## Tools
 
 | Tool | Description |
