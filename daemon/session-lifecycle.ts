@@ -10,6 +10,7 @@ import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
+import { buildSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
 
@@ -327,46 +328,18 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
+  const promptParams = { sessionId, tmuxName, threadId: threadId!, topic }
   let prompt: string
   if (opts?.promptBuilder) {
     prompt = opts.promptBuilder(sessionId, tmuxName)
   } else if (isHandoff) {
-    const contextLine = opts!.artifact
-      ? `Read your handoff context from \`${opts!.artifact}\`, then read your memory files.`
-      : `Read your memory files and workstream canon for context.`
-    prompt = [
-      `You are ${tmuxName}, a session created by handoff from ${originFrom}. Topic: ${topic}`,
-      ``,
-      `Your chat thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
-      `${contextLine}`,
-      `After reading the artifact, append a "### Reception (by ${tmuxName})" section to the artifact file noting what oriented you immediately, what needed code verification, and what was missing.`,
-      `Send a greeting to your thread using reply(chat_id=${threadId}). In your greeting, include one sentence on what the previous session was working on and one sentence on where this session is heading.`,
-      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
-      `After greeting, begin executing the Next action from the artifact immediately. Do not wait for user input unless there are critical questions that need the user's answer.`,
-    ].join('\n')
+    prompt = buildHandoffPrompt({ ...promptParams, originFrom: originFrom!, artifact: opts?.artifact })
   } else if (isFork) {
-    prompt = [
-      `You are ${tmuxName}, forked from ${originFrom}.`,
-      `Topic: ${topic}`,
-      ``,
-      `Your new thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
-      `Greet your new thread using reply(chat_id=${threadId}).`,
-      `Mention you were forked from **${originFrom}** and describe your focus.`,
-      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
-    ].join('\n')
+    prompt = buildForkPrompt({ ...promptParams, originFrom: originFrom! })
   } else if (isResurrect) {
-    prompt = [
-      `You are ${tmuxName}, a resurrected session resuming work in an existing thread.`,
-      ``,
-      `Your chat thread chat_id is ${threadId}. Your session_id is ${sessionId}.`,
-      `Read your memory files for context.`,
-      `Use fetch_messages(channel="${threadId}", limit=50) to read the thread history.`,
-      `Reconstruct context and continue from where the previous session left off.`,
-      `Post a summary of what you found and what you're picking up using reply(chat_id=${threadId}).`,
-      `Then call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary.`,
-    ].join('\n')
+    prompt = buildResurrectPrompt(promptParams)
   } else {
-    prompt = `You are ${tmuxName}, a spawned session. Topic: ${topic}\n\nYour chat thread chat_id is ${threadId}. Your session_id is ${sessionId}. Read your memory files for context. To read prior conversation in your thread, use fetch_messages(channel="${threadId}") — this is your thread's history. Do NOT fetch from the parent channel ID alone, only from your full thread chat_id. Send a greeting to your thread using reply(chat_id=${threadId}). After orienting, call set_description(session_id="${sessionId}", description="...") with a ≤10 word summary of what you're doing. Update it if your focus shifts significantly.`
+    prompt = buildSpawnPrompt(promptParams)
   }
 
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
