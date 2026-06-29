@@ -74,8 +74,16 @@ case "$BACKEND" in
     ;;
 esac
 
+# Forward model-selection env into the tmux process (tmux does not reliably
+# inherit it). Only pass when set, so an empty value can't override the server
+# default. PARAKEET_MODEL lets you pin a smaller model (e.g. the 110M variant)
+# when the 0.6B download is impractical.
+ENVP="HYDRA_MOCK_PORT=$PORT"
+[ -n "$PARAKEET_MODEL" ] && ENVP="$ENVP PARAKEET_MODEL='$PARAKEET_MODEL'"
+[ -n "$CANARY_MODEL" ] && ENVP="$ENVP CANARY_MODEL='$CANARY_MODEL'"
+
 tmux new-session -d -s "$SESSION" \
-  "cd '$SRV_DIR' && HYDRA_MOCK_PORT=$PORT $CMD 2>&1 | tee -a '$LOG'"
+  "cd '$SRV_DIR' && $ENVP $CMD 2>&1 | tee -a '$LOG'"
 
 echo "$(date): Transcribe sidecar started (backend=$BACKEND, port=$PORT, tmux '$SESSION')" >> "$LOG"
 echo "Transcribe sidecar started (backend=$BACKEND, port=$PORT). Attach: tmux attach -t $SESSION"
