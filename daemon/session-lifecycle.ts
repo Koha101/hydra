@@ -411,6 +411,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     ...(respawnCount > 0 ? { respawnCount } : {}),
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
     ...(isJoin ? { isJoinMember: true } : {}),
+    ...(opts?.initiator ? { initiator: opts.initiator } : {}),
   })
   // Don't register in threadToSession for join members — owner keeps that mapping
   if (!isJoin) {
