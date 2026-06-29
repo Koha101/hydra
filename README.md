@@ -167,17 +167,20 @@ Hydra can transcribe inbound audio attachments (Discord voice notes, Slack audio
 clips) to text, so you can **dictate prompts** to Claude alongside text and images.
 
 Transcription runs in a self-hosted sidecar (`transcribe-server/`) so audio never
-leaves your machine. The default backend is **NVIDIA Canary-Qwen 2.5B** (top of the
-Open ASR leaderboard for English accuracy). Claude doesn't accept audio natively,
-so the daemon transcribes first and merges the text into the message as
-`[voice transcript] ...`; the original audio file stays available in
-`downloaded_files`.
+leaves your machine. Claude doesn't accept audio natively, so the daemon
+transcribes first and merges the text into the message as `[voice transcript] ...`;
+the original audio file stays available in `downloaded_files`. Backend by platform:
+
+- **macOS (Apple Silicon)** → **Parakeet-MLX** — NVIDIA Parakeet TDT on Apple's MLX
+  runtime. Native, fast (~50× realtime), no GPU/CUDA. _Default on macOS._
+- **Linux + NVIDIA GPU** → **Canary-Qwen 2.5B** via NeMo (top of the Open ASR
+  leaderboard for English accuracy).
 
 It's **on by default on the daemon side** — whenever a sidecar is reachable, voice
 notes are transcribed; when it isn't, audio just passes through. So the only thing
 to set up is the sidecar.
 
-**Try it right now (no GPU):**
+**Try it right now (no model install):**
 
 ```bash
 ./start-transcribe.sh mock     # GPU-free stub, returns a canned transcript
@@ -185,11 +188,11 @@ to set up is the sidecar.
 
 Send a voice note → Claude receives `[voice transcript] This is a mock transcription...`.
 
-**Real transcription (one-time, needs a GPU + ffmpeg):**
+**Real transcription (one-time; needs ffmpeg — `brew install ffmpeg`):**
 
 ```bash
-./transcribe-server/setup.sh   # create venv, install NeMo (one time)
-./start-transcribe.sh          # start Canary-Qwen
+./transcribe-server/setup.sh   # venv + the right backend for your platform
+./start-transcribe.sh          # macOS: Parakeet-MLX · Linux+GPU: Canary-Qwen
 # add HYDRA_TRANSCRIBE_AUTOSTART=1 to .env so the watchdog keeps it running
 ```
 
