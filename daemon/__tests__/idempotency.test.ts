@@ -81,12 +81,10 @@ describe('idempotency', () => {
     expect(clearIdempotency(`${PREFIX}no-such-key`)).toBe(false)
   })
 
-  test('expired entries are pruned on check', () => {
+  test('expired entries are pruned on check', async () => {
     const key = `${PREFIX}expired`
     registerIdempotency(key, 'session-7', 1) // 1ms TTL
-    // Wait for expiry
-    const start = Date.now()
-    while (Date.now() - start < 5) {} // busy wait 5ms
+    await Bun.sleep(5)
     const result = checkIdempotency(key)
     expect(result.blocked).toBe(false)
   })

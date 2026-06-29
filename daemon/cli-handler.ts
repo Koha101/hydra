@@ -202,6 +202,9 @@ function handleClearKey(req: CLIRequest): CLIResponse {
 // ---------------------------------------------------------------------------
 
 export async function handleCLIRequest(req: CLIRequest): Promise<CLIResponse> {
+  if (typeof req.params !== 'object' || req.params === null) {
+    return respond(req, false, 'params must be an object')
+  }
   process.stderr.write(`daemon: cli ${req.command} (id: ${req.id})\n`)
   try {
     let response: CLIResponse
