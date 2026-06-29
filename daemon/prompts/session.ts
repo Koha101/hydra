@@ -13,7 +13,7 @@ type PromptParams = {
   topic: string
 }
 
-const DESCRIPTION_INSTRUCTION = (sessionId: string) =>
+export const DESCRIPTION_INSTRUCTION = (sessionId: string) =>
   `call set_description(session_id="${sessionId}", description="...") to name this thread. ` +
   `Lead with the domain if one is clear. 5 words max. ` +
   `Rewrite it whenever your focus shifts — the thread name updates live.`
