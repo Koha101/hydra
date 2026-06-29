@@ -169,9 +169,9 @@ function maxId(items: any[] | null): number {
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
-async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[]> {
+async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[] | null> {
   const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
-  if (!data || !Array.isArray(data)) return []
+  if (!data || !Array.isArray(data)) return null
 
   if (data.length >= 100) {
     process.stderr.write(`daemon: pr-watch: ${entry.prUrl} hit 100 review comments in one poll — some may be missed\n`)
@@ -190,10 +190,10 @@ async function fetchNewReviewComments(entry: WatchEntry): Promise<PRComment[]> {
     }))
 }
 
-async function fetchNewReviews(entry: WatchEntry): Promise<PRReview[]> {
+async function fetchNewReviews(entry: WatchEntry): Promise<PRReview[] | null> {
   // Fetch newest-first, small page — most PRs have few reviews
   const data = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}/reviews?per_page=10&sort=created&direction=desc`)
-  if (!data || !Array.isArray(data)) return []
+  if (!data || !Array.isArray(data)) return null
 
   const results: PRReview[] = []
   for (const r of data) {
@@ -210,9 +210,9 @@ async function fetchNewReviews(entry: WatchEntry): Promise<PRReview[]> {
   return results
 }
 
-async function fetchNewIssueComments(entry: WatchEntry): Promise<PRComment[]> {
+async function fetchNewIssueComments(entry: WatchEntry): Promise<PRComment[] | null> {
   const data = await ghApi(`repos/${entry.owner}/${entry.repo}/issues/${entry.prNumber}/comments?since=${entry.lastCheckedAt}&per_page=100`)
-  if (!data || !Array.isArray(data)) return []
+  if (!data || !Array.isArray(data)) return null
 
   if (data.length >= 100) {
     process.stderr.write(`daemon: pr-watch: ${entry.prUrl} hit 100 issue comments in one poll — some may be missed\n`)
@@ -270,15 +270,26 @@ async function fetchCheckStatus(entry: WatchEntry): Promise<CheckResult | null> 
 async function pollPr(entry: WatchEntry): Promise<void> {
   const pollTime = new Date().toISOString()
 
-  const [reviewComments, reviews, issueComments, checkResult] = await Promise.all([
+  const [reviewCommentsRaw, reviewsRaw, issueCommentsRaw, checkResult] = await Promise.all([
     fetchNewReviewComments(entry),
     fetchNewReviews(entry),
     fetchNewIssueComments(entry),
     fetchCheckStatus(entry),
   ])
 
-  // Always advance timestamp to avoid growing payloads on quiet PRs
-  entry.lastCheckedAt = pollTime
+  // Only advance timestamp when all comment fetches succeeded.
+  // null = API failure; [] = success with no new items. If we advance
+  // on failure, the next poll's ?since= skips comments permanently.
+  const commentFetchesOk = reviewCommentsRaw !== null && reviewsRaw !== null && issueCommentsRaw !== null
+  if (commentFetchesOk) {
+    entry.lastCheckedAt = pollTime
+  } else {
+    process.stderr.write(`daemon: pr-watch: ${entry.prUrl} — one or more fetches failed, holding lastCheckedAt\n`)
+  }
+
+  const reviewComments = reviewCommentsRaw ?? []
+  const reviews = reviewsRaw ?? []
+  const issueComments = issueCommentsRaw ?? []
 
   // Detect CI status changes
   let ciChanged = false
