@@ -342,6 +342,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
           if (listenMatch) {
             info.listening = listenMatch[1].toLowerCase() === 'listen'
             registry.persist()
+            const thread = threadRegistry.get(resolvedThreadId)
+            if (thread) {
+              thread.listenOverride = info.listening
+              threadRegistry.persist()
+            }
             void gateway.react(msg.channelId, msg.id, info.listening ? '👂' : '🔇').catch(() => {})
             return
           }
