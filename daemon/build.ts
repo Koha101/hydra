@@ -289,7 +289,6 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
     } else {
       state.phase = result.to
       state.currentRound++
-      refreshSessionVisual(state.ownerThreadId)
       onCriticFeedback(state, bodyText)
     }
     return
@@ -377,11 +376,11 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
-  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+  const badge = formatRoundBadge('🔨', 'bottom', state.currentRound, state.rounds)
 
   // Post visible status
-  void gateway.send(state.ownerThreadId, `_Critic reviewing (${roundLabel})..._`).then(msg => {
+  void gateway.send(state.ownerThreadId, `_${badge} Critic reviewing (${roundLabel})..._`).then(msg => {
     state.messageIds.push(msg.id)
   }).catch(() => {})
 
@@ -405,11 +404,11 @@ function onOwnerPosted(state: BuildState, text: string): void {
 
 function onCriticFeedback(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
-  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+  const badge = formatRoundBadge('🔨', 'top', state.currentRound, state.rounds)
 
   // Post visible status so the human knows it's the builder's turn
-  void gateway.send(state.ownerThreadId, `_Critic found issues. Builder's turn to fix (${roundLabel})._`).catch(() => {})
+  void gateway.send(state.ownerThreadId, `_${badge} Critic found issues. Builder's turn to fix (${roundLabel})._`).catch(() => {})
 
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
