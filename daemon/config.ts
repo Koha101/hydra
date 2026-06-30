@@ -1,6 +1,5 @@
 import {
   readFileSync,
-  writeFileSync,
   chmodSync,
 } from 'fs'
 import { homedir } from 'os'
@@ -99,11 +98,7 @@ if (PLATFORM === 'slack') {
   gateway = new SlackGateway(SLACK_APP_TOKEN!, { heartbeatPath })
 } else {
   const { DiscordGateway } = await import('../discord-gateway.js')
-  gateway = new DiscordGateway()
-}
-
-if (PLATFORM !== 'slack') {
-  const touchHeartbeat = () => writeFileSync(heartbeatPath, String(Date.now()))
-  touchHeartbeat()
-  setInterval(touchHeartbeat, 30_000)
+  // DiscordGateway owns its heartbeat via GatewayHealth — written only while the
+  // socket is actually connected, so a wedged transport goes stale for the watchdog.
+  gateway = new DiscordGateway({ heartbeatPath })
 }

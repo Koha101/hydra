@@ -7,6 +7,7 @@
 import {
   Client,
   Events,
+  Status,
   GatewayIntentBits,
   Partials,
   ChannelType,
@@ -17,6 +18,7 @@ import {
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { sanitizeFilename, COUNT_EMOJI, SUPERSCRIPT } from './gateway.js'
+import { GatewayHealth } from './daemon/gateway-health.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -35,6 +37,7 @@ import { ThrottledQueue } from './throttled-queue.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
+const HEARTBEAT_TICK_MS = 30_000
 
 // ---------------------------------------------------------------------------
 // Visual grammar — the thread name IS the spec.
@@ -94,8 +97,14 @@ export class DiscordGateway implements ChatGateway {
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
   private reactionHandler: ((event: ReactionEvent) => Promise<void>) | null = null
   private recentSentIds = new Set<string>()
+  private readonly health: GatewayHealth
+  private token: string | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
-  constructor() {
+  /** Fired after connectivity returns following an outage longer than the threshold. */
+  onReconnectAfterOutage?: (gapMs: number) => void
+
+  constructor(opts?: { heartbeatPath?: string | null }) {
     this.client = new Client({
       intents: [
         GatewayIntentBits.DirectMessages,
@@ -106,6 +115,10 @@ export class DiscordGateway implements ChatGateway {
       ],
       partials: [Partials.Channel, Partials.Reaction, Partials.Message],
     })
+    this.health = new GatewayHealth({
+      heartbeatPath: opts?.heartbeatPath ?? null,
+      onOutageRecovered: gapMs => this.onReconnectAfterOutage?.(gapMs),
+    })
   }
 
   get botId(): string | null {
@@ -113,7 +126,10 @@ export class DiscordGateway implements ChatGateway {
   }
 
   async start(token: string): Promise<void> {
+    this.token = token
+
     this.client.on('messageCreate', msg => {
+      this.health.markAlive()
       if (msg.author.bot) return
       if (!this.messageHandler) return
       this.messageHandler(this.normalizeMessage(msg)).catch(e =>
@@ -182,6 +198,39 @@ export class DiscordGateway implements ChatGateway {
       process.stderr.write(`discord gateway: client error: ${err}\n`)
     })
 
+    // Connection lifecycle. discord.js owns reconnect/RESUME internally; we
+    // translate the shard events it emits onto the gateway health contract.
+    this.client.on(Events.ShardDisconnect, (event, shardId) => {
+      this.health.markDisconnected()
+      process.stderr.write(`discord gateway: shard ${shardId} disconnected (code ${event?.code ?? '?'})\n`)
+    })
+
+    this.client.on(Events.ShardReconnecting, shardId => {
+      process.stderr.write(`discord gateway: shard ${shardId} reconnecting\n`)
+    })
+
+    // Resume replays the events missed during the gap — nothing was lost, so no
+    // recovery report.
+    this.client.on(Events.ShardResume, (shardId, replayedEvents) => {
+      this.health.markReconnected({ resumed: true })
+      process.stderr.write(`discord gateway: shard ${shardId} resumed (${replayedEvents} events replayed)\n`)
+    })
+
+    // A fresh identify means the session could not be resumed; events in the gap
+    // were lost. The initial connect has no recorded disconnect, so it reports nothing.
+    this.client.on(Events.ShardReady, shardId => {
+      this.health.markReconnected({ resumed: false })
+      process.stderr.write(`discord gateway: shard ${shardId} ready\n`)
+    })
+
+    // The session is dead and discord.js has stopped trying — the real give-up
+    // boundary. Exit for the watchdog to cold-restart (mirrors Slack's exhaustion exit).
+    this.client.on(Events.Invalidated, () => {
+      process.stderr.write('discord gateway: session invalidated, exiting for supervisor restart\n')
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+      process.exit(1)
+    })
+
     await new Promise<void>((resolve) => {
       this.client.once(Events.ClientReady, c => {
         process.stderr.write(`discord gateway: connected as ${c.user.tag}\n`)
@@ -192,9 +241,38 @@ export class DiscordGateway implements ChatGateway {
         process.exit(1)
       })
     })
+
+    this.health.markAlive()
+    this.startHeartbeatTicker()
+  }
+
+  // Connectivity-aware heartbeat: only refresh while the socket is actually Ready,
+  // so a wedged transport goes stale and the watchdog restarts the daemon. This
+  // replaces the blind interval that previously wrote the heartbeat unconditionally.
+  private startHeartbeatTicker(): void {
+    if (this.heartbeatTimer) return
+    this.heartbeatTimer = setInterval(() => {
+      if (this.client.ws.status === Status.Ready) this.health.markAlive()
+    }, HEARTBEAT_TICK_MS)
+  }
+
+  async forceReconnect(): Promise<{ ok: boolean; message: string }> {
+    if (!this.token) return { ok: false, message: 'gateway not started' }
+    try {
+      this.health.markDisconnected()
+      await Promise.resolve(this.client.destroy())
+      await this.client.login(this.token)
+      return { ok: true, message: 'discord gateway reconnecting' }
+    } catch (err) {
+      return { ok: false, message: `reconnect failed: ${err}` }
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
     await Promise.resolve(this.client.destroy())
   }
 
