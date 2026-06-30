@@ -74,6 +74,7 @@ export class SlackGateway implements ChatGateway {
   private reconnecting = false
   private reconnectAttempts = 0
   onReconnectAfterOutage: ((gapMs: number) => void) | undefined = undefined
+  homeTabHandler: ((userId: string) => Promise<void>) | null = null
 
   async forceReconnect(): Promise<{ ok: boolean; message: string }> {
     if (this.reconnecting) return { ok: false, message: 'reconnect already in progress' }
@@ -139,6 +140,16 @@ export class SlackGateway implements ChatGateway {
       this.messageHandler(normalized).catch(e =>
         process.stderr.write(`slack gateway: message handler error: ${e}\n`),
       )
+    })
+
+    // Publish Home tab when user opens it
+    this.app.event('app_home_opened' as any, async ({ event }: any) => {
+      this.touchHeartbeat()
+      if (this.homeTabHandler) {
+        this.homeTabHandler(event.user).catch((e: Error) =>
+          process.stderr.write(`slack gateway: app_home_opened handler error: ${e}\n`),
+        )
+      }
     })
 
     // Handle app_mention events (for @mentions in channels where the bot isn't a member)
@@ -833,6 +844,17 @@ export class SlackGateway implements ChatGateway {
     } finally {
       this.reconnecting = false
     }
+  }
+
+  async publishHomeTab(userId: string, blocks: any[]): Promise<void> {
+    if (!this.app) throw new Error('not connected')
+    await this.app.client.views.publish({
+      user_id: userId,
+      view: {
+        type: 'home',
+        blocks,
+      },
+    })
   }
 
   // --- Internal helpers ---

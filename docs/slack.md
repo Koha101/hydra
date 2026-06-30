@@ -17,7 +17,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) â†’ **Create New App** â†
 {
   "display_information": { "name": "YourBot", "description": "Claude Code chat bridge", "background_color": "#2c2c2c" },
   "features": {
-    "app_home": { "home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false },
+    "app_home": { "home_tab_enabled": true, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false },
     "bot_user": { "display_name": "YourBot", "always_online": true }
   },
   "oauth_config": {
@@ -29,7 +29,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) â†’ **Create New App** â†
     ] }
   },
   "settings": {
-    "event_subscriptions": { "bot_events": ["app_mention", "message.channels", "message.groups", "message.im"] },
+    "event_subscriptions": { "bot_events": ["app_home_opened", "app_mention", "message.channels", "message.groups", "message.im"] },
     "interactivity": { "is_enabled": true },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,

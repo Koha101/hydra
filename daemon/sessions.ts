@@ -214,6 +214,8 @@ export class SessionRegistry {
     return false
   }
 
+  onPersist: (() => void) | null = null
+
   persist(): void {
     try {
       const data = [...this.sessions.values()]
@@ -221,6 +223,7 @@ export class SessionRegistry {
     } catch (err) {
       process.stderr.write(`daemon: failed to persist sessions: ${err}\n`)
     }
+    this.onPersist?.()
   }
 
   pickSessionName(): string {

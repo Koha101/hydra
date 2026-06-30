@@ -67,6 +67,14 @@ if (existsSync(SOCK_PATH)) {
 
 startBridgeServer()
 
+import { refreshDashboard, refreshDashboardNow } from './daemon/dashboard.js'
+registry.onPersist = refreshDashboard
+
+if ('homeTabHandler' in gateway) {
+  (gateway as any).homeTabHandler = async (_userId: string) => {
+    refreshDashboardNow()
+  }
+}
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
 import { startPrWatcher } from './daemon/pr-watch.js'
