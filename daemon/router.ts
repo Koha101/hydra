@@ -362,6 +362,24 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
 
+          if (msg.content.startsWith('!') && msg.content.length > 1) {
+            const stripped = msg.content.slice(1).trim()
+            if (stripped) {
+              void gateway.react(msg.channelId, msg.id, '⚡').catch(() => {})
+              try {
+                Bun.spawn(['tmux', 'send-keys', '-t', info.tmuxName, 'Escape'], { stdio: ['pipe', 'pipe', 'pipe'] })
+                process.stderr.write(`daemon: interrupt sent to ${info.tmuxName} via ! prefix\n`)
+              } catch (err) {
+                process.stderr.write(`daemon: interrupt failed for ${info.tmuxName}: ${err instanceof Error ? err.message : err}\n`)
+              }
+              msg.content = stripped
+              await new Promise(r => setTimeout(r, 50))
+              info.lastActive = Date.now()
+              void deliverToSession(msg, mappedSession, access)
+              return
+            }
+          }
+
           const alwaysRoute = gateway.dmThreadsAreExclusive && msg.isDM
           const shouldRoute =
             alwaysRoute ||

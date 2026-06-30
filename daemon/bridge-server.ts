@@ -306,7 +306,7 @@ export const socketServer = createServer((socket: Socket) => {
           return // tmux still alive
         } catch {}
         process.stderr.write(`daemon: session ${info.tmuxName} died (bridge + tmux gone)\n`)
-        info.status = 'dead'
+        info.deadAt = Date.now()
         registry.persist()
         void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
         refreshSessionVisual(info.threadId, { state: 'crashed' })

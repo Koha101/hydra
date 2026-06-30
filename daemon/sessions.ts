@@ -42,9 +42,6 @@ export type SessionInfo = {
   worktreePath?: string
   isJoinMember?: boolean
   deadAt?: number
-  contentEmoji?: string
-  paused?: boolean
-  anchorChannelId?: string
 }
 
 export type ThreadMember = {
@@ -345,7 +342,7 @@ export class ThreadRegistry {
   recordSpawn(threadId: string, opts: {
     anchorMessageId?: string, threadUrl?: string, topic: string,
     respawnCount: number, sessionId: string, tmuxName: string,
-    originType: 'spawn' | 'fork' | 'handoff', originFrom?: string,
+    originType: 'spawn' | 'fork' | 'handoff' | 'resurrect', originFrom?: string,
   }): void {
     const now = Date.now()
     let thread = this.threads.get(threadId)

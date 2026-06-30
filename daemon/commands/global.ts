@@ -192,6 +192,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• 🔮 `recover` — revive dead sessions from a crash',
     '',
     '**Session control:**',
+    '• ⚡ `! <message>` — interrupt current work, then deliver message',
     '• 👂/🔇 `listen` / `unlisten` — toggle message routing to session',
     '• ⏸️/▶️ `pause` / `unpause` — visual queue state (sidebar indicator)',
     '• 📈 `usage` — context %, messages, runtime, fork count',

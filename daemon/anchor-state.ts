@@ -50,8 +50,6 @@ export function formatPhaseBadge(emoji: string, phase: string): string {
   return indicator ? `${emoji}${indicator}` : emoji
 }
 
-export { setAnchorState as setSessionVisual }
-
 // ---------------------------------------------------------------------------
 // Single visual entry point — callers declare intent, this projects state
 // ---------------------------------------------------------------------------

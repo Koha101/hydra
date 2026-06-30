@@ -564,11 +564,11 @@ export class DiscordGateway implements ChatGateway {
       const msg = await (ch as any).messages.fetch(messageId)
       if (!msg) return
       const removePromises = [...(msg.reactions?.cache?.values() ?? [])].map(
-        (r: any) => r.users.remove(this.client.user?.id).catch(e => process.stderr.write(`discord gateway: reaction remove failed: ${e}\n`))
+        (r: any) => r.users.remove(this.client.user?.id).catch((e: unknown) => process.stderr.write(`discord gateway: reaction remove failed: ${e}\n`))
       )
       await Promise.allSettled(removePromises)
-      await msg.react(emoji).catch(e => process.stderr.write(`discord gateway: react failed: ${e}\n`))
-      if (countEmoji) await msg.react(countEmoji).catch(e => process.stderr.write(`discord gateway: react countEmoji failed: ${e}\n`))
+      await msg.react(emoji).catch((e: unknown) => process.stderr.write(`discord gateway: react failed: ${e}\n`))
+      if (countEmoji) await msg.react(countEmoji).catch((e: unknown) => process.stderr.write(`discord gateway: react countEmoji failed: ${e}\n`))
     }, 500,
   )
 
