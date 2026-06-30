@@ -552,6 +552,13 @@ export class DiscordGateway implements ChatGateway {
     return ''
   }
 
+  // Discord enforces a shared-scope rate limit on thread name changes
+  // (x-ratelimit-scope: shared), separate from the per-route bucket (10/15s).
+  // Under burst conditions, ~2 rapid renames trigger 429 + retry-after: ~600s.
+  // In practice, natural gaps between review turns reduce the effective wait.
+  // Scope (per-channel vs global to the bot) is unconfirmed empirically.
+  // discord.js retries 429s internally. ThrottledQueue coalesces rapid updates
+  // (latest value wins) and retries on non-429 failures (network, deleted thread).
   private renameQueue = new ThrottledQueue<string>(async (threadId, name) => {
     const ch = await this.client.channels.fetch(threadId)
     if (ch?.isThread()) await ch.setName(name.slice(0, 100))

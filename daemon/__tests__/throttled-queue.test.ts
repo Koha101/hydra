@@ -76,13 +76,77 @@ describe('ThrottledQueue', () => {
     const q = new ThrottledQueue<string>(async (key, value) => {
       if (key === 'bad') throw new Error('fail')
       results.push(value)
-    }, 10)
+    }, 10, 1)
 
     q.enqueue('bad', 'will fail')
     q.enqueue('good', 'will succeed')
 
     await new Promise(r => setTimeout(r, 100))
     expect(results).toEqual(['will succeed'])
+  })
+
+  test('retries failed actions up to maxRetries', async () => {
+    const attempts: number[] = []
+    const q = new ThrottledQueue<string>(async (key, value) => {
+      attempts.push(attempts.length + 1)
+      if (attempts.length <= 2) throw new Error('fail')
+    }, 10, 3)
+
+    q.enqueue('flaky', 'value')
+    await new Promise(r => setTimeout(r, 200))
+    expect(attempts.length).toBe(3)
+  })
+
+  test('retry preserves original priority', async () => {
+    const order: string[] = []
+    let failOnce = true
+    const q = new ThrottledQueue<string>(async (key, value) => {
+      if (key === 'death' && failOnce) { failOnce = false; throw new Error('transient') }
+      order.push(key)
+    }, 10, 2)
+
+    q.enqueue('blocker', 'busy')
+    await new Promise(r => setTimeout(r, 5))
+    q.enqueue('death', 'killed', 'high')
+    q.enqueue('badge', 'review badge', 'normal')
+
+    await new Promise(r => setTimeout(r, 300))
+    const deathIdx = order.indexOf('death')
+    const badgeIdx = order.indexOf('badge')
+    expect(deathIdx).toBeLessThan(badgeIdx)
+  })
+
+  test('fresh enqueue supersedes pending retry', async () => {
+    const delivered: string[] = []
+    let callCount = 0
+    const q = new ThrottledQueue<string>(async (key, value) => {
+      callCount++
+      if (value === 'old') throw new Error('fail')
+      delivered.push(value)
+    }, 10, 3)
+
+    q.enqueue('k', 'old')
+    await new Promise(r => setTimeout(r, 30))
+    // 'old' failed once, is queued for retry — now supersede it
+    q.enqueue('k', 'new')
+    await new Promise(r => setTimeout(r, 100))
+    expect(delivered).toEqual(['new'])
+  })
+
+  test('retry counter resets on fresh enqueue', async () => {
+    let callCount = 0
+    const q = new ThrottledQueue<string>(async (key, value) => {
+      callCount++
+      if (value === 'old') throw new Error('fail')
+    }, 10, 2)
+
+    q.enqueue('k', 'old')
+    await new Promise(r => setTimeout(r, 80))
+    const afterRetries = callCount
+    q.enqueue('k', 'new')
+    await new Promise(r => setTimeout(r, 80))
+    expect(afterRetries).toBe(2)
+    expect(callCount).toBe(3)
   })
 
   test('coalescing across drain cycles', async () => {
