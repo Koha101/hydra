@@ -81,6 +81,7 @@ export type ThreadMetadata = {
   lastActive: number
   totalMessages: number
   sessionHistory: ThreadSessionEntry[]
+  listenOverride?: boolean
 }
 
 export type SpawnOpts = {

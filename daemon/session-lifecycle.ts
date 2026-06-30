@@ -13,6 +13,7 @@ import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
 import { buildSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
+import { loadAccess } from './access.js'
 
 // ---------------------------------------------------------------------------
 // Session death events
@@ -28,6 +29,21 @@ export type SessionDeathEvent = {
 export const sessionDeathEmitter = new EventEmitter()
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
+
+// ---------------------------------------------------------------------------
+// Listen state resolution: thread override → channel group → global → false
+// ---------------------------------------------------------------------------
+
+function resolveListenState(threadId: string, channelId?: string): boolean {
+  const thread = threadRegistry.get(threadId)
+  if (thread?.listenOverride !== undefined) return thread.listenOverride
+  const access = loadAccess()
+  if (channelId) {
+    const group = access.groups[channelId]
+    if (group?.defaultListen !== undefined) return group.defaultListen
+  }
+  return access.defaultListen ?? false
+}
 
 // ---------------------------------------------------------------------------
 // Kill guard
@@ -406,7 +422,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
-    tmuxName, listening: false, originType, originFrom, capabilities,
+    tmuxName, listening: resolveListenState(threadId!, chatId), originType, originFrom, capabilities,
     threadUrl: url || undefined,
     ...(respawnCount > 0 ? { respawnCount } : {}),
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
