@@ -279,8 +279,7 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
 }
 
 async function startProposalPhase(state: DesignState): Promise<void> {
-  refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `_Waiting for proposals..._`)
+  await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Waiting for proposals..._`)
 
   state.timeout = setTimeout(async () => {
     if (state.phase !== 'independent') return
@@ -319,7 +318,6 @@ async function cleanupDesignSessions(state: DesignState, reason: string): Promis
       await killSession(info, reason).catch(e => process.stderr.write(`daemon: design cleanup killSession failed: ${e}\n`))
     }
   }
-  refreshSessionVisual(state.ownerThreadId)
 }
 
 // ---------------------------------------------------------------------------
@@ -350,9 +348,8 @@ const MAX_REFINEMENT_ROUNDS = 2
 
 async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
   if (state.divergences.length === 0) {
-    await gateway.send(state.ownerThreadId, `_No divergences found. Proceeding to audit._`)
+    await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} No divergences found. Proceeding to audit._`)
     state.phase = 'audit'
-    refreshSessionVisual(state.ownerThreadId)
     await spawnAuditor(state)
     return
   }
@@ -365,9 +362,8 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
     : state.divergences.filter(d => d.impact === 'high')
 
   if (toRefine.length === 0 || state.refinementRound > MAX_REFINEMENT_ROUNDS) {
-    await gateway.send(state.ownerThreadId, `_Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
+    await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
     state.phase = 'audit'
-    refreshSessionVisual(state.ownerThreadId)
     await spawnAuditor(state)
     return
   }
@@ -376,7 +372,6 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
 
   const result = designMachine.transition(state.phase, 'synthesized')
   if (result.ok) state.phase = result.to
-  refreshSessionVisual(state.ownerThreadId)
   state.currentDivergence = 0
 
   await runRefinement(state, toRefine)
@@ -441,8 +436,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function spawnSynthesizer(state: DesignState): Promise<void> {
-  refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `_Spawning synthesizer..._`)
+  await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Spawning synthesizer..._`)
 
   try {
     const result = await doSpawnSession(`Design synthesizer`, undefined, undefined, {

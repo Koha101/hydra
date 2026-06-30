@@ -35,6 +35,7 @@ export type ReviewState = {
   _ownerDisconnectTimer?: ReturnType<typeof setTimeout>
   _finalizing?: boolean
   _cleanupNudged?: boolean
+  statusMessageId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -338,12 +339,18 @@ export function onParticipantReconnect(sessionId: string): void {
 
 function onCriticPosted(state: ReviewState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
-  refreshSessionVisual(state.ownerThreadId)
 
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+  const badge = formatRoundBadge('⚔️', 'top', state.currentRound, state.rounds)
+  const statusText = `_${badge} Critic posted (${roundLabel}). Owner defending..._`
+  if (state.statusMessageId) {
+    void gateway.edit(state.ownerThreadId, state.statusMessageId, statusText).catch(() => {})
+  } else {
+    void gateway.send(state.ownerThreadId, statusText).then(msg => { state.statusMessageId = msg.id }).catch(() => {})
+  }
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
-    content: `[Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread with \`${OWNER_SENTINEL}\` as the first line.`,
+    content: `${badge} [Adversarial Review — Critic ${roundLabel}]\n\n${text}\n\n---\nDefend your design. Reply to your thread with \`${OWNER_SENTINEL}\` as the first line.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-critic', user_id: 'system', ts: new Date().toISOString() },
   })
 
@@ -354,12 +361,18 @@ function onOwnerPosted(state: ReviewState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
 
   state.currentRound++
-  refreshSessionVisual(state.ownerThreadId)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
+  const badge = formatRoundBadge('⚔️', 'bottom', state.currentRound, state.rounds)
+  const statusText = `_${badge} Owner defended (${roundLabel}). Critic reviewing..._`
+  if (state.statusMessageId) {
+    void gateway.edit(state.ownerThreadId, state.statusMessageId, statusText).catch(() => {})
+  } else {
+    void gateway.send(state.ownerThreadId, statusText).then(msg => { state.statusMessageId = msg.id }).catch(() => {})
+  }
 
   transport.sendOrQueue(state.criticSessionId!, {
     type: 'notification',
-    content: `[Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}. First line must be \`${CRITIC_SENTINEL}\`.`,
+    content: `${badge} [Adversarial Review — Owner Defense]\n\n${text}\n\n---\nPost your counter-argument for ${roundLabel}. First line must be \`${CRITIC_SENTINEL}\`.`,
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'review-owner', user_id: 'system', ts: new Date().toISOString() },
   })
 
