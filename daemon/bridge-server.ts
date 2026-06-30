@@ -13,6 +13,7 @@ import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuild
 import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
+import { shouldHoldIncumbentMain } from './main-guard.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -22,8 +23,33 @@ const DEATH_DETECT_DELAY_MS = 3_000
 // ---------------------------------------------------------------------------
 
 const FLAP_WINDOW_MS = 60_000
+const MAIN_COOLDOWN_MS = 10_000
 const FLAP_THRESHOLD = 10
 const flapTracker = new Map<string, number[]>()
+
+const mainBridge = {
+  cycleCount: 0,
+  lastConnectedAt: 0,
+  lastLoggedAt: 0,
+  connect() {
+    this.cycleCount++
+    this.lastConnectedAt = Date.now()
+    if (this.cycleCount === 1) {
+      process.stderr.write('daemon: main bridge connected\n')
+    } else {
+      const uptime = this.lastConnectedAt - (this._lastDisconnectAt || this.lastConnectedAt)
+      const now = Date.now()
+      if (now - this.lastLoggedAt > 60_000 || this.cycleCount <= 3) {
+        process.stderr.write(`daemon: main bridge reconnected (cycle ${this.cycleCount}, last uptime ${Math.round(uptime / 1000)}s)\n`)
+        this.lastLoggedAt = now
+      }
+    }
+  },
+  disconnect() {
+    this._lastDisconnectAt = Date.now()
+  },
+  _lastDisconnectAt: 0,
+}
 
 function trackRegistration(sessionId: string): boolean {
   const now = Date.now()
@@ -37,6 +63,12 @@ function trackRegistration(sessionId: string): boolean {
   }
   return false
 }
+
+// Refuse newcomer 'main' bridges until this time once a duplicate-'main' flap is
+// detected (see main-guard.ts). 'main' is exempt from the kill path above, so the
+// guard holds the incumbent instead.
+let duplicateMainCooldownUntil = 0
+let duplicateMainIncumbentSocket: import('net').Socket | undefined
 
 // ---------------------------------------------------------------------------
 // Bridge protocol handler
@@ -86,13 +118,52 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         break
       }
 
+      // Duplicate-'main' guard. The circuit breaker above exempts 'main' (never
+      // tmux-kill the control session), but 'main' is the id every bridge defaults
+      // to without HYDRA_SESSION_ID — so two byte processes can both claim it and
+      // evict each other unboundedly via the socket replacement below. When 'main'
+      // flaps, hold the incumbent and refuse the newcomer instead. A single
+      // legitimate byte restart (no recent flap) falls through to normal replace.
+      if (sessionId === 'main') {
+        const incumbent = transport.get('main')
+        const hasOtherIncumbent = !!incumbent && incumbent.socket !== conn.socket
+        const now = Date.now()
+
+        // Cooldown refusal — do NOT track this registration. Refused
+        // registrations must not feed the flap detector, or the guard's own
+        // enforcement generates the signal that perpetuates it.
+        if (hasOtherIncumbent && now < duplicateMainCooldownUntil) {
+          if (duplicateMainIncumbentSocket !== transport.get('main')?.socket) {
+            duplicateMainCooldownUntil = 0
+            duplicateMainIncumbentSocket = undefined
+            process.stderr.write(`daemon: duplicate 'main' cooldown cleared — incumbent died, accepting newcomer\n`)
+          } else {
+            process.stderr.write(`daemon: duplicate 'main' — cooldown active (${Math.ceil((duplicateMainCooldownUntil - now) / 1000)}s remaining), refusing newcomer\n`)
+            try { conn.socket.end() } catch {}
+            break
+          }
+        }
+
+        // Flap detection — only reached by registrations that passed the
+        // cooldown check, so the count reflects real registration attempts.
+        const flapping = trackRegistration('main')
+        if (shouldHoldIncumbentMain({ hasOtherIncumbent, flapping, now, cooldownUntil: duplicateMainCooldownUntil })) {
+          duplicateMainCooldownUntil = now + MAIN_COOLDOWN_MS
+          duplicateMainIncumbentSocket = transport.get('main')?.socket
+          process.stderr.write(`daemon: duplicate 'main' bridge flapping — holding incumbent, refusing newcomer. A second byte/main process is running; kill the extra and keep one.\n`)
+          try { conn.socket.end() } catch {}
+          break
+        }
+      }
+
       const existing = transport.get(sessionId)
       if (existing && existing.socket !== conn.socket) {
-        process.stderr.write(`daemon: replacing bridge for session ${sessionId}\n`)
+        if (sessionId !== 'main') process.stderr.write(`daemon: replacing bridge for session ${sessionId}\n`)
         try { existing.socket.end() } catch {}
       }
 
       transport.set(sessionId, conn)
+      if (sessionId === 'main') flapTracker.delete('main')
       const tools = computeToolsForSession(sessionId)
       transport.sendToBridge(conn, {
         type: 'registered',
@@ -112,7 +183,11 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
       if (isDesignParticipant(sessionId)) onDesignParticipantReconnect(sessionId)
       if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
-      process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
+      if (sessionId === 'main') {
+        mainBridge.connect()
+      } else {
+        process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
+      }
       break
     }
 
@@ -247,14 +322,6 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 // Socket server
 // ---------------------------------------------------------------------------
 
-try {
-  if (existsSync(SOCK_PATH)) {
-    unlinkSync(SOCK_PATH)
-  }
-} catch {}
-
-mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-
 export const socketServer = createServer((socket: Socket) => {
   const conn: BridgeConn = {
     sessionId: '',
@@ -274,7 +341,11 @@ export const socketServer = createServer((socket: Socket) => {
 
   socket.on('end', () => {
     if (conn.sessionId) {
-      process.stderr.write(`daemon: bridge disconnected for session ${conn.sessionId}\n`)
+      if (conn.sessionId === 'main') {
+        mainBridge.disconnect()
+      } else {
+        process.stderr.write(`daemon: bridge disconnected for session ${conn.sessionId}\n`)
+      }
       if (transport.get(conn.sessionId) === conn) {
         transport.delete(conn.sessionId)
       }
@@ -326,7 +397,19 @@ export const socketServer = createServer((socket: Socket) => {
   })
 })
 
-socketServer.listen(SOCK_PATH, () => {
-  try { chmodSync(SOCK_PATH, 0o700) } catch {}
-  process.stderr.write(`daemon: listening on ${SOCK_PATH}\n`)
-})
+export function startBridgeServer(): void {
+  // Clean up stale socket and ensure state dir exists — must happen here
+  // (not at module level) so the socket probe in daemon.ts can test the
+  // incumbent's socket before we delete it.
+  try {
+    if (existsSync(SOCK_PATH)) {
+      unlinkSync(SOCK_PATH)
+    }
+  } catch {}
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+
+  socketServer.listen(SOCK_PATH, () => {
+    try { chmodSync(SOCK_PATH, 0o700) } catch {}
+    process.stderr.write(`daemon: listening on ${SOCK_PATH}\n`)
+  })
+}

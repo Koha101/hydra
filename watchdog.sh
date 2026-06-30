@@ -98,12 +98,18 @@ if [ "$ELAPSED" -gt "$STALE_SECONDS" ]; then
   restart_daemon
 fi
 
-# Bot session health check — revive slack-byte if dead while daemon is alive.
-: "${BOT_TMUX_SESSION:=slack-byte}"
+# Bot session health check — revive the byte if dead while the daemon is alive.
+# Platform-aware: the byte launcher differs per platform (the Slack launcher pins
+# Slack auth + a Slack prompt), so reviving a Discord byte with it would mis-spawn.
+: "${BOT_TMUX_SESSION:=${CHAT_PLATFORM:-discord}-byte}"
 if ! tmux has-session -t "$BOT_TMUX_SESSION" 2>/dev/null; then
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     echo "$(date): Bot session '$BOT_TMUX_SESSION' missing (daemon alive), reviving" >> "$LOG"
     cd "$HYDRA_DIR"
-    BYTE_CWD="${SPAWN_CWD}" ./start-slack-byte.sh
+    if [ "$CHAT_PLATFORM" = "slack" ]; then
+      BYTE_CWD="${SPAWN_CWD}" ./start-slack-byte.sh
+    else
+      BYTE_SESSION_NAME="$BOT_TMUX_SESSION" BYTE_CWD="${SPAWN_CWD}" ./start-byte-v2.sh
+    fi
   fi
 fi

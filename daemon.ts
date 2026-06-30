@@ -9,17 +9,63 @@
  */
 
 import { join } from 'path'
-import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
+import { copyFileSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync } from 'fs'
+import { execSync } from 'child_process'
+import { connect } from 'net'
+
+// ---------------------------------------------------------------------------
+// Singleton enforcement — exactly one daemon per state dir.
+// PID check is best-effort diagnostic — the socket probe (post-import,
+// pre-listen) is the authoritative singleton gate.
+// ---------------------------------------------------------------------------
+
+const STATE_DIR_EARLY = process.env.HYDRA_STATE_DIR ?? join(require('os').homedir(), '.claude', 'channels', process.env.CHAT_PLATFORM ?? 'discord')
+const PID_FILE = join(STATE_DIR_EARLY, 'daemon.pid')
+
+try {
+  if (existsSync(PID_FILE)) {
+    const oldPid = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10)
+    if (oldPid && oldPid !== process.pid) {
+      try {
+        process.kill(oldPid, 0)
+        process.stderr.write(`daemon: another daemon may be running (PID ${oldPid}) — socket probe will decide\n`)
+      } catch {}
+    }
+  }
+} catch {}
+
+writeFileSync(PID_FILE, `${process.pid}\n`)
+process.on('exit', () => { try { unlinkSync(PID_FILE) } catch {} })
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry, threadRegistry } from './daemon/sessions.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
-import { socketServer } from './daemon/bridge-server.js'
+import { socketServer, startBridgeServer } from './daemon/bridge-server.js'
 import { announceRestartComplete } from './daemon/commands/global.js'
 
 threadRegistry.boot(registry)
+
+// ---------------------------------------------------------------------------
+// Singleton enforcement — socket probe (more reliable than PID-only check).
+// Must run AFTER imports but BEFORE startBridgeServer() creates the socket.
+// ---------------------------------------------------------------------------
+
+if (existsSync(SOCK_PATH)) {
+  const alive = await new Promise<boolean>(resolve => {
+    const sock = connect(SOCK_PATH)
+    sock.on('connect', () => { sock.end(); resolve(true) })
+    sock.on('error', () => resolve(false))
+    setTimeout(() => { sock.destroy(); resolve(false) }, 1000)
+  })
+  if (alive) {
+    process.stderr.write(`daemon: another daemon is already listening on ${SOCK_PATH}. Exiting.\n`)
+    process.exit(1)
+  }
+}
+
+startBridgeServer()
 
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
