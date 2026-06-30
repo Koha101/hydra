@@ -16,9 +16,17 @@ if [ ! -S "$SOCK" ]; then
   exit 1
 fi
 
-# Kill existing slack-byte session
+# Kill existing slack-byte session and any orphaned claude processes.
+# Claude survives tmux session death. If a new byte starts while the old claude
+# is still alive, both register as 'main' on the daemon and continuously evict
+# each other — no messages get delivered until one is killed.
+# Assumes Claude Code binary is named 'claude' (Homebrew install).
 tmux kill-session -t "$SESSION" 2>/dev/null
+LOG=~/slack-byte-restarts.log
+source "$SCRIPT_DIR/kill-orphan-bytes.sh"
+_kill_orphan_bytes "killing" ""
 sleep 2
+_kill_orphan_bytes "force-killing surviving" "-9"
 
 # Symlink bridge.ts into the plugin cache so it always runs from source
 SRC="$SCRIPT_DIR/bridge.ts"

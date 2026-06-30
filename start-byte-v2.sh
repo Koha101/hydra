@@ -1,12 +1,12 @@
 #!/bin/bash
 # Start Byte (Claude Code Discord bot) using the daemon+bridge architecture.
 # Requires the daemon to be running first (start-daemon.sh).
-SESSION="${BYTE_SESSION_NAME:-byte}"
+SESSION="${BYTE_SESSION_NAME:-${CHAT_PLATFORM:-discord}-byte}"
 CHANNEL="${BYTE_CHANNEL:-1487715706043629658}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/discord/daemon.sock}"
-CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude-personal}"
-CWD="${BYTE_CWD:-$HOME/trading}"
+SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}/daemon.sock}"
+CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CWD="${BYTE_CWD:-$HOME}"
 
 # Check daemon is running
 if [ ! -S "$SOCK" ]; then
@@ -15,9 +15,17 @@ if [ ! -S "$SOCK" ]; then
   exit 1
 fi
 
-# Kill existing byte session
+# Kill existing byte session and any orphaned claude processes.
+# Claude survives tmux session death. If a new byte starts while the old claude
+# is still alive, both register as 'main' on the daemon and continuously evict
+# each other — no messages get delivered until one is killed.
+# Assumes Claude Code binary is named 'claude' (Homebrew install).
 tmux kill-session -t "$SESSION" 2>/dev/null
+LOG=~/byte-restarts.log
+source "$SCRIPT_DIR/kill-orphan-bytes.sh"
+_kill_orphan_bytes "killing" ""
 sleep 2
+_kill_orphan_bytes "force-killing surviving" "-9"
 
 # Symlink bridge.ts into the plugin cache as server.ts so it always runs from source.
 SRC="$SCRIPT_DIR/bridge.ts"

@@ -24,11 +24,23 @@ _STATE_HINT="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CH
 
 STATE_DIR="$HYDRA_STATE_DIR"
 SOCK="$STATE_DIR/daemon.sock"
-LOG="${HYDRA_LOG:-$HOME/hydra-daemon.log}"
+# Per-platform log file (see start-daemon.sh) — avoids the shared-log false signal.
+LOG="${HYDRA_LOG:-$HOME/hydra-${CHAT_PLATFORM:-discord}-daemon.log}"
 
 echo "$(date): Restart requested" >> "$LOG"
 
-# 1. Kill existing daemon
+# 1. Pre-flight: compile-check BEFORE killing the old daemon
+echo "Pre-flight compile check..."
+source "$SCRIPT_DIR/compile-check.sh"
+COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
+if [ $? -ne 0 ]; then
+  echo "✗ Compile check FAILED — old daemon left running."
+  printf '%s' "$COMPILE_OUT" | sed 's/^/    /'
+  echo "$(date): Restart ABORTED — compile check failed (old daemon untouched)" >> "$LOG"
+  exit 1
+fi
+
+# 2. Kill existing daemon
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   echo "Killing daemon..."
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
@@ -37,10 +49,10 @@ else
   echo "No daemon running."
 fi
 
-# 2. Remove stale socket
+# 3. Remove stale socket
 rm -f "$SOCK"
 
-# 3. Relaunch
+# 4. Relaunch
 echo "Starting daemon..."
 CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" \
   HYDRA_STATE_DIR="$HYDRA_STATE_DIR" \
@@ -48,7 +60,7 @@ CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" \
   SPAWN_CWD="$SPAWN_CWD" \
   "$SCRIPT_DIR/start-daemon.sh"
 
-# 4. Wait for socket to appear (up to 15s)
+# 5. Wait for socket to appear (up to 15s)
 echo -n "Waiting for socket"
 for i in $(seq 1 30); do
   if [ -S "$SOCK" ]; then

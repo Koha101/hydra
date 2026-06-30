@@ -19,7 +19,9 @@ STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT
 [ -f "$STATE_DIR/.env" ] && set -a && . "$STATE_DIR/.env" && set +a
 
 SESSION="${CHAT_PLATFORM:-discord}-daemon"
-LOG="${HYDRA_LOG:-$HOME/hydra-daemon.log}"
+# Per-platform log file — a shared log is tee'd by both daemons and reads as
+# whichever wrote last (false "daemon down" signals when tailing it).
+LOG="${HYDRA_LOG:-$HOME/hydra-${CHAT_PLATFORM:-discord}-daemon.log}"
 
 if [ -z "$SPAWN_CWD" ]; then
   echo "ERROR: SPAWN_CWD is required. Set it to the working directory for spawned sessions."
