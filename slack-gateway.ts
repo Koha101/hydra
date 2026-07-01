@@ -419,33 +419,7 @@ export class SlackGateway implements ChatGateway {
   async delete(channelId: string, messageId: string): Promise<void> {
     if (!this.app) throw new Error('not connected')
     const { channel } = this.parseChannelId(channelId)
-    try {
-      await this.app.client.chat.delete({ channel, ts: messageId })
-    } catch (err: any) {
-      const slackError = err?.data?.error ?? err?.message?.match(/An API error occurred: (\S+)/)?.[1]
-      process.stderr.write(`slack gateway: delete failed, slackError=${slackError} raw=${err}\n`)
-      if (slackError !== 'cant_delete_message') throw err
-      // Thread parents can't be deleted until all replies are removed.
-      // Fetch replies and delete them first, then retry the parent.
-      const replies = await this.app.client.conversations.replies({ channel, ts: messageId })
-      const children = (replies.messages ?? []).filter((m: any) => m.ts !== messageId)
-      if (!children.length) throw err
-      let surviving = 0
-      for (const child of children.reverse()) {
-        try {
-          await this.app.client.chat.delete({ channel, ts: child.ts })
-        } catch (childErr: any) {
-          surviving++
-          process.stderr.write(`slack gateway: failed to delete thread reply ${child.ts}: ${childErr?.data?.error ?? childErr}\n`)
-        }
-      }
-      if (surviving > 0) {
-        process.stderr.write(`slack gateway: ${surviving} thread replies could not be deleted (not ours), skipping parent\n`)
-        try { await this.app.client.reactions.add({ channel, timestamp: messageId, name: 'warning' }) } catch {}
-        return
-      }
-      await this.app.client.chat.delete({ channel, ts: messageId })
-    }
+    await this.app.client.chat.delete({ channel, ts: messageId })
   }
 
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
