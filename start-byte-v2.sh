@@ -43,7 +43,7 @@ echo "$(date): symlinked bridge.ts into plugin cache as server.ts" >> ~/byte-res
 
 # Start byte with --channels (bridge connects to daemon via unix socket)
 tmux new-session -d -s "$SESSION" \
-  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR=$CONFIG_DIR && export CHAT_PLATFORM=${CHAT_PLATFORM:-discord} && caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions \
   \"You just restarted with a fresh context. Read your memory files, then send a message to Discord channel ${CHANNEL} letting them know you're back online.\""
 
 echo "$(date): Byte v2 started (daemon+bridge)" >> ~/byte-restarts.log
