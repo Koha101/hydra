@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
 import { connect } from 'net'
-import { existsSync, readdirSync, statSync } from 'fs'
+import { existsSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { randomUUID } from 'crypto'
+import { execSync, execFileSync } from 'child_process'
 
 // ---------------------------------------------------------------------------
 // Socket discovery
@@ -159,18 +160,195 @@ function printResponse(response: Record<string, unknown>, json: boolean): void {
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle commands — manage daemon/byte processes directly (no socket needed)
+// ---------------------------------------------------------------------------
+
+const HYDRA_DIR = join(import.meta.dir, '..')
+
+function requirePlatform(args: string[]): string {
+  const p = args[0]
+  if (!p) {
+    console.error('error: platform is required (e.g. slack, discord)')
+    process.exit(1)
+  }
+  return p
+}
+
+function runScript(script: string, env: Record<string, string>): boolean {
+  try {
+    execFileSync('bash', [join(HYDRA_DIR, script)], {
+      stdio: 'inherit',
+      env: { ...process.env, ...env },
+      cwd: HYDRA_DIR,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function byteScript(platform: string): string {
+  const conventionName = `start-${platform}-byte.sh`
+  if (existsSync(join(HYDRA_DIR, conventionName))) return conventionName
+  // Legacy: discord's byte script predates the naming convention
+  if (platform === 'discord' && existsSync(join(HYDRA_DIR, 'start-byte-v2.sh'))) return 'start-byte-v2.sh'
+  console.error(`error: no byte script found for platform '${platform}'`)
+  console.error(`expected: ${join(HYDRA_DIR, conventionName)}`)
+  process.exit(1)
+}
+
+function hasOrphanBytes(platform: string): boolean {
+  const sockPath = join(homedir(), '.claude', 'channels', platform, 'daemon.sock')
+  try {
+    const result = execSync(
+      `pgrep -f "claude.*--channels" 2>/dev/null | while read pid; do ps eww -p "$pid" 2>/dev/null | grep -q "DAEMON_SOCK=${sockPath}" && echo found; done`,
+      { encoding: 'utf-8', shell: '/bin/bash' },
+    )
+    return result.includes('found')
+  } catch {
+    return false
+  }
+}
+
+function tmuxSessionExists(name: string): boolean {
+  try {
+    execSync(`tmux has-session -t ${name} 2>/dev/null`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForSocket(platform: string, timeoutMs = 15_000): Promise<boolean> {
+  const sockPath = join(homedir(), '.claude', 'channels', platform, 'daemon.sock')
+  const start = Date.now()
+  process.stdout.write('waiting for socket')
+  while (Date.now() - start < timeoutMs) {
+    if (existsSync(sockPath)) {
+      try {
+        if (statSync(sockPath).isSocket()) {
+          process.stdout.write(' ready\n')
+          return true
+        }
+      } catch {}
+    }
+    process.stdout.write('.')
+    await Bun.sleep(500)
+  }
+  process.stdout.write(' timeout\n')
+  return false
+}
+
+async function lifecycleUp(platform: string): Promise<void> {
+  const daemonTmux = `${platform}-daemon`
+  const byteTmux = `${platform}-byte`
+
+  const aliveSessions = [daemonTmux, byteTmux].filter(tmuxSessionExists)
+  if (aliveSessions.length > 0) {
+    console.error(`error: ${platform} is already running (${aliveSessions.join(', ')})`)
+    console.error(`use 'hydra restart ${platform}' to restart the daemon, or 'hydra down ${platform}' first`)
+    process.exit(1)
+  }
+
+  if (hasOrphanBytes(platform)) {
+    console.error(`error: orphaned claude processes found for ${platform}`)
+    console.error(`run 'hydra down ${platform}' first to clean them up`)
+    process.exit(1)
+  }
+
+  // Validate byte script exists before starting daemon
+  byteScript(platform)
+
+  const stateDir = join(homedir(), '.claude', 'channels', platform)
+  const spawnCwd = process.env.SPAWN_CWD ?? join(homedir(), 'Documents', 'angellist')
+
+  console.log(`starting ${platform} daemon...`)
+  const daemonOk = runScript('start-daemon.sh', {
+    CHAT_PLATFORM: platform,
+    HYDRA_STATE_DIR: stateDir,
+    SPAWN_CWD: spawnCwd,
+  })
+  if (!daemonOk) {
+    console.error(`error: ${platform} daemon failed to start`)
+    process.exit(1)
+  }
+
+  if (!await waitForSocket(platform)) {
+    console.error(`error: ${platform} daemon socket did not appear`)
+    process.exit(1)
+  }
+
+  console.log(`starting ${platform} byte...`)
+  const byteOk = runScript(byteScript(platform), {
+    CHAT_PLATFORM: platform,
+    BYTE_CWD: spawnCwd,
+    DAEMON_SOCK: join(stateDir, 'daemon.sock'),
+  })
+  if (!byteOk) {
+    console.error(`error: ${platform} byte failed to start`)
+    process.exit(1)
+  }
+
+  console.log(`${platform} is up`)
+}
+
+function lifecycleDown(platform: string): void {
+  const daemonTmux = `${platform}-daemon`
+  const stateDir = join(homedir(), '.claude', 'channels', platform)
+
+  console.log(`stopping ${platform}...`)
+  runScript('stop-byte.sh', {
+    CHAT_PLATFORM: platform,
+    DAEMON_SOCK: join(stateDir, 'daemon.sock'),
+  })
+
+  try { execSync(`tmux kill-session -t ${daemonTmux} 2>/dev/null`) } catch {}
+
+  // Clean up state files so discoverSockets() doesn't show a phantom daemon
+  for (const f of ['daemon.sock', 'daemon.pid']) {
+    try { unlinkSync(join(stateDir, f)) } catch {}
+  }
+
+  console.log(`${platform} is down`)
+}
+
+function lifecycleRestart(platform: string): void {
+  const stateDir = join(homedir(), '.claude', 'channels', platform)
+  const spawnCwd = process.env.SPAWN_CWD ?? join(homedir(), 'Documents', 'angellist')
+
+  console.log(`restarting ${platform} daemon...`)
+  const ok = runScript('restart-daemon.sh', {
+    CHAT_PLATFORM: platform,
+    HYDRA_STATE_DIR: stateDir,
+    SPAWN_CWD: spawnCwd,
+    TMUX_SESSION: `${platform}-daemon`,
+  })
+  if (!ok) {
+    console.error(`error: ${platform} daemon restart failed`)
+    process.exit(1)
+  }
+  console.log(`${platform} daemon restarted`)
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 
 const USAGE = `hydra — programmatic interface to hydra daemons
 
 Usage:
+  hydra up <platform>                  Start daemon + byte
+  hydra down <platform>                Stop byte + daemon
+  hydra restart <platform>             Restart daemon (picks up code changes)
+
   hydra spawn <prompt>                 Spawn a new session
   hydra list                           List active sessions
   hydra status <name>                  Session details
   hydra kill <name>                    Kill a session
   hydra health                         Daemon diagnostics
   hydra clear-key <key>                Clear a stuck idempotency key
+
+Platform: slack | discord (required for up/down/restart)
 
 Spawn options (required):
   --initiator <name>                   Who triggered this spawn
@@ -204,6 +382,18 @@ async function main(): Promise<void> {
   }
 
   const command = filtered[0]
+
+  // Lifecycle commands don't need a running daemon
+  if (command === 'up' || command === 'down' || command === 'restart') {
+    const platform = requirePlatform(filtered.slice(1))
+    switch (command) {
+      case 'up': lifecycleUp(platform); break
+      case 'down': lifecycleDown(platform); break
+      case 'restart': lifecycleRestart(platform); break
+    }
+    process.exit(0)
+  }
+
   const socketPath = resolveSocket(daemonName)
 
   switch (command) {
