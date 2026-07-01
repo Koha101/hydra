@@ -77,6 +77,7 @@ export class SlackGateway implements ChatGateway {
   private reconnectAttempts = 0
   onReconnectAfterOutage: ((gapMs: number) => void) | undefined = undefined
   homeTabHandler: ((userId: string) => Promise<void>) | null = null
+  homeSpawnHandler: ((topic: string) => Promise<void>) | null = null
 
   async forceReconnect(): Promise<{ ok: boolean; message: string }> {
     if (this.reconnecting) return { ok: false, message: 'reconnect already in progress' }
@@ -147,12 +148,36 @@ export class SlackGateway implements ChatGateway {
     // Publish Home tab when user opens it
     this.app.event('app_home_opened' as any, async ({ event }: any) => {
       this.touchHeartbeat()
+      const { loadAccess } = await import('./daemon/access.js')
+      const access = loadAccess()
+      if (!access.allowFrom.includes(event.user)) return
       if (this.homeTabHandler) {
         this.homeTabHandler(event.user).catch((e: Error) =>
           process.stderr.write(`slack gateway: app_home_opened handler error: ${e}\n`),
         )
       }
     })
+
+    // Home tab: spawn session on Enter in the text input
+    this.app.action('home:spawn', async ({ action, body, ack }: any) => {
+      this.touchHeartbeat()
+      await ack()
+      const userId = body?.user?.id
+      if (!userId) return
+      const { loadAccess } = await import('./daemon/access.js')
+      const access = loadAccess()
+      if (!access.allowFrom.includes(userId)) {
+        process.stderr.write(`slack gateway: home:spawn rejected — user ${userId} not in allowFrom\n`)
+        return
+      }
+      const topic = (action?.value?.trim() ?? '').slice(0, 500)
+      if (!topic || !this.homeSpawnHandler) return
+      this.homeSpawnHandler(topic).catch((e: Error) =>
+        process.stderr.write(`slack gateway: home:spawn handler error: ${e}\n`),
+      )
+    })
+
+
 
     // Auto-add channel to access groups when bot is invited
     this.app.event('member_joined_channel', async ({ event }) => {

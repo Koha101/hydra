@@ -33,6 +33,7 @@ export type WatchEntry = {
   owner: string
   repo: string
   prNumber: number
+  title?: string
   sessionId: string
   threadId: string
   lastCheckedAt: string
@@ -239,9 +240,8 @@ type CheckResult = {
   failed: Array<{ name: string; conclusion: string; url: string }>
 }
 
-async function fetchCheckStatus(entry: WatchEntry): Promise<CheckResult | null> {
-  // Get current head SHA from the PR
-  const pr = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}`)
+async function fetchCheckStatus(entry: WatchEntry, prData?: any): Promise<CheckResult | null> {
+  const pr = prData ?? await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}`)
   if (!pr?.head?.sha) return null
 
   const headSha = pr.head.sha as string
@@ -270,11 +270,26 @@ async function fetchCheckStatus(entry: WatchEntry): Promise<CheckResult | null> 
 async function pollPr(entry: WatchEntry): Promise<void> {
   const pollTime = new Date().toISOString()
 
+  // Fetch PR state once — reused for merge check and check status
+  let prData: any = null
+  try {
+    prData = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}`)
+    if (prData?.merged || prData?.state === 'closed') {
+      const reason = prData.merged ? 'merged' : 'closed'
+      process.stderr.write(`daemon: pr-watch: #${entry.prNumber} ${reason}, auto-unwatching\n`)
+      watches.delete(entry.prUrl)
+      persist()
+      const { refreshDashboard } = await import('./dashboard.js')
+      refreshDashboard()
+      return
+    }
+  } catch {}
+
   const [reviewCommentsRaw, reviewsRaw, issueCommentsRaw, checkResult] = await Promise.all([
     fetchNewReviewComments(entry),
     fetchNewReviews(entry),
     fetchNewIssueComments(entry),
-    fetchCheckStatus(entry),
+    fetchCheckStatus(entry, prData),
   ])
 
   // Only advance timestamp when all comment fetches succeeded.
@@ -487,15 +502,17 @@ export async function watchPr(prUrl: string, sessionId: string, threadId: string
 
   // Seed watermarks with max IDs so we only report NEW comments/status
   try {
-    const [reviewComments, issueComments, reviews, checkResult] = await Promise.all([
+    const [reviewComments, issueComments, reviews, checkResult, prData] = await Promise.all([
       ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=100`),
       ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=100`),
       ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=100`),
       fetchCheckStatus(entry),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}`),
     ])
     entry.lastReviewCommentId = maxId(reviewComments)
     entry.lastIssueCommentId = maxId(issueComments)
     entry.lastReviewId = maxId(reviews)
+    if (prData?.title) entry.title = prData.title
     if (checkResult) {
       entry.lastHeadSha = checkResult.headSha
       entry.lastCheckStatus = checkResult.status
@@ -549,6 +566,24 @@ export function formatWatchEntry(e: WatchEntry): string {
   const sessionInfo = registry.get(e.sessionId)
   const name = sessionInfo?.tmuxName ?? e.sessionId
   return `[#${e.prNumber}](${e.prUrl}) → **${name}** (${age})`
+}
+
+export async function backfillTitles(): Promise<number> {
+  const missing = [...watches.values()].filter(e => !e.title)
+  let filled = 0
+  for (const entry of missing) {
+    try {
+      const pr = await ghApi(`repos/${entry.owner}/${entry.repo}/pulls/${entry.prNumber}`)
+      if (pr?.title) {
+        entry.title = pr.title
+        filled++
+      }
+    } catch (err) {
+      process.stderr.write(`daemon: pr-watch: backfill title failed for #${entry.prNumber}: ${err}\n`)
+    }
+  }
+  if (filled > 0) persist()
+  return filled
 }
 
 // ---------------------------------------------------------------------------

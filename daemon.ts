@@ -75,9 +75,23 @@ if ('homeTabHandler' in gateway) {
     refreshDashboardNow()
   }
 }
+
+if ('homeSpawnHandler' in gateway) {
+  const { doSpawnSession } = await import('./daemon/session-lifecycle.js')
+  ;(gateway as any).homeSpawnHandler = async (topic: string) => {
+    try {
+      const result = await doSpawnSession(topic)
+      process.stderr.write(`daemon: home:spawn created session ${result.name}\n`)
+      refreshDashboardNow()
+    } catch (err) {
+      process.stderr.write(`daemon: home:spawn failed: ${err}\n`)
+    }
+  }
+}
+
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
-import { startPrWatcher } from './daemon/pr-watch.js'
+import { startPrWatcher, backfillTitles } from './daemon/pr-watch.js'
 import { getContextPercent, tmuxHasSession } from './daemon/util.js'
 
 // ---------------------------------------------------------------------------
@@ -216,6 +230,14 @@ void startGateway().then(async () => {
 // ---------------------------------------------------------------------------
 
 startPrWatcher()
+
+// Backfill PR titles for existing watches (non-blocking)
+backfillTitles().then(n => {
+  if (n > 0) {
+    process.stderr.write(`daemon: backfilled ${n} PR title(s)\n`)
+    refreshDashboardNow()
+  }
+}).catch(err => process.stderr.write(`daemon: PR title backfill failed: ${err}\n`))
 
 // ---------------------------------------------------------------------------
 // Session health — crash detection + context alerts (every 5 min)

@@ -7,20 +7,25 @@ import { registry, sessionEmoji } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { formatDuration, tmuxHasSession } from './util.js'
 import { loadAccess } from './access.js'
+import { getWatchesBySession, type WatchEntry } from './pr-watch.js'
 
 const DEBOUNCE_MS = 2000
 const PERIODIC_REFRESH_MS = 5 * 60 * 1000
-const MAX_SESSION_BLOCKS = 45
+// Each session = up to 3 blocks (section + context + divider). Slack caps views at 100.
+// Fixed blocks: header, divider, spacer, input, timestamp, overflow msg = 6. (100-6)/3 = 31.
+const MAX_SESSION_BLOCKS = 31
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
 type SessionRow = {
   name: string
+  sessionId: string
   emoji: string
   desc: string
   age: string
   connected: boolean
   paused: boolean
   url: string
+  watches: WatchEntry[]
 }
 
 function getActiveSessions(): SessionRow[] {
@@ -32,23 +37,45 @@ function getActiveSessions(): SessionRow[] {
   const rows: SessionRow[] = []
   for (const s of all) {
     if (!tmuxHasSession(s.tmuxName)) continue
-    const desc = s.description || s.topic?.slice(0, 50) || s.tmuxName
+    const rawDesc = s.description || s.topic || s.tmuxName
+    const desc = rawDesc.length > 80 ? rawDesc.slice(0, 77) + '...' : rawDesc
     const url = s.lastReplyId
       ? gateway.getMessageUrl(s.threadId, s.lastReplyId) || s.threadUrl || ''
       : s.threadUrl ?? ''
     rows.push({
       name: s.tmuxName,
+      sessionId: s.sessionId,
       emoji: sessionEmoji(s.tmuxName),
-      desc: desc.length > 45 ? desc.slice(0, 42) + '...' : desc,
+      desc,
       age: formatDuration(now - s.createdAt),
       connected: transport.has(s.sessionId),
       paused: !!s.paused,
       url,
+      watches: getWatchesBySession(s.sessionId),
     })
   }
 
   return rows
 }
+
+function checkStatusEmoji(status: string): string {
+  switch (status) {
+    case 'success': return '✓'
+    case 'failure': return '✗'
+    case 'pending': return '⏳'
+    default: return ''
+  }
+}
+
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[*~`]/g, '')
+}
+
+function buildSessionText(s: SessionRow): string {
+  const link = s.url ? `<${s.url}|${s.name}>` : s.name
+  return `${s.emoji} *${link}* — ${escapeMrkdwn(s.desc)} · _${s.age}_`
+}
+
 
 function buildHomeBlocks(sessions: SessionRow[]): any[] {
   const blocks: any[] = [
@@ -65,20 +92,23 @@ function buildHomeBlocks(sessions: SessionRow[]): any[] {
     })
   } else {
     const shown = sessions.slice(0, MAX_SESSION_BLOCKS)
-    for (const s of shown) {
-      let status: string
-      if (s.paused) status = '⏸️'
-      else if (!s.connected) status = '🔄'
-      else status = '🚀'
-
-      const link = s.url ? `<${s.url}|${s.name}>` : s.name
+    for (let i = 0; i < shown.length; i++) {
+      const s = shown[i]
       blocks.push({
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `${status} *${link}* ${s.emoji} — ${s.desc} · _${s.age}_`,
-        },
+        text: { type: 'mrkdwn', text: buildSessionText(s) },
       })
+      if (s.watches.length > 0) {
+        const prLines = s.watches.slice(0, 5).map(w => {
+          const title = w.title || `#${w.prNumber}`
+          return `• <${w.prUrl}|${title}> ${checkStatusEmoji(w.lastCheckStatus)}`
+        })
+        blocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: prLines.join('\n') }],
+        })
+      }
+      if (i < shown.length - 1) blocks.push({ type: 'divider' })
     }
     if (sessions.length > MAX_SESSION_BLOCKS) {
       blocks.push({
@@ -89,6 +119,19 @@ function buildHomeBlocks(sessions: SessionRow[]): any[] {
   }
 
   blocks.push({ type: 'divider' })
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: ' ' } })
+  blocks.push({
+    type: 'input',
+    dispatch_action: true,
+    element: {
+      type: 'plain_text_input',
+      action_id: 'home:spawn',
+      placeholder: { type: 'plain_text', text: 'describe task... (prefix wt:repo for worktree)' },
+      max_length: 500,
+      dispatch_action_config: { trigger_actions_on: ['on_enter_pressed'] },
+    },
+    label: { type: 'plain_text', text: 'Spawn Session' },
+  })
   blocks.push({
     type: 'context',
     elements: [{
