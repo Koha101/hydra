@@ -210,4 +210,5 @@ export interface ChatGateway {
   // URL building
   getThreadUrl(threadId: string): Promise<string>
   getMessageUrl(threadId: string, messageTs: string): string
+  getLastReplyId?(threadId: string): Promise<string | null>
 }

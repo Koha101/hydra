@@ -33,6 +33,9 @@ function getActiveSessions(): SessionRow[] {
   for (const s of all) {
     if (!tmuxHasSession(s.tmuxName)) continue
     const desc = s.description || s.topic?.slice(0, 50) || s.tmuxName
+    const url = s.lastReplyId
+      ? gateway.getMessageUrl(s.threadId, s.lastReplyId) || s.threadUrl || ''
+      : s.threadUrl ?? ''
     rows.push({
       name: s.tmuxName,
       emoji: sessionEmoji(s.tmuxName),
@@ -40,7 +43,7 @@ function getActiveSessions(): SessionRow[] {
       age: formatDuration(now - s.createdAt),
       connected: transport.has(s.sessionId),
       paused: !!s.paused,
-      url: s.threadUrl ?? '',
+      url,
     })
   }
 

@@ -38,6 +38,7 @@ export type SessionInfo = {
   capabilities?: SessionCapabilities
   respawnCount?: number
   threadUrl?: string
+  lastReplyId?: string
   worktreeRepo?: string
   worktreePath?: string
   isJoinMember?: boolean
@@ -215,6 +216,15 @@ export class SessionRegistry {
   }
 
   onPersist: (() => void) | null = null
+  private _debouncedTimer: ReturnType<typeof setTimeout> | null = null
+
+  debouncedPersist(ms = 2000): void {
+    if (this._debouncedTimer) return
+    this._debouncedTimer = setTimeout(() => {
+      this._debouncedTimer = null
+      this.persist()
+    }, ms)
+  }
 
   persist(): void {
     try {

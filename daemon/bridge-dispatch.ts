@@ -120,6 +120,14 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
         }
 
+        if (callerSessionId && sentIds.length > 0) {
+          const info = registry.get(callerSessionId)
+          if (info) {
+            info.lastReplyId = sentIds[sentIds.length - 1]
+            registry.debouncedPersist()
+          }
+        }
+
         const result =
           sentIds.length === 1
             ? `sent (id: ${sentIds[0]})`

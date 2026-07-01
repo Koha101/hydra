@@ -685,6 +685,23 @@ export class SlackGateway implements ChatGateway {
     return this.buildMessageUrl(anchor.channelId, messageTs, anchor.messageId)
   }
 
+  // Uses Slack's `latest_reply` — may diverge from routed messages in multi-user threads
+  async getLastReplyId(threadId: string): Promise<string | null> {
+    if (!this.app) return null
+    const anchor = this.getThreadAnchor(threadId)
+    if (!anchor) return null
+    try {
+      const result = await this.app.client.conversations.replies({
+        channel: anchor.channelId,
+        ts: anchor.messageId,
+        limit: 1,
+        inclusive: true,
+      })
+      const parent = result.messages?.[0]
+      return (parent as any)?.latest_reply ?? null
+    } catch { return null }
+  }
+
   async getThreadUrl(threadId: string): Promise<string> {
     const anchor = this.getThreadAnchor(threadId)
     if (!anchor) return ''

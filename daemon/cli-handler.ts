@@ -113,7 +113,7 @@ function handleList(req: CLIRequest): CLIResponse {
     name: s.tmuxName,
     sessionId: s.sessionId,
     description: s.description ?? (s.topic ? fallbackDescription(s.topic) : ''),
-    url: s.threadUrl ?? '',
+    url: (s.lastReplyId ? gateway.getMessageUrl(s.threadId, s.lastReplyId) : '') || s.threadUrl || '',
     context: getContextPercent(s.tmuxName),
     running_for: formatDuration(Date.now() - s.createdAt),
     status: transport.has(s.sessionId) ? 'connected' : 'disconnected',

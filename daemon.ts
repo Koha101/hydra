@@ -193,7 +193,23 @@ async function startGateway(attempt = 0): Promise<void> {
   }
 }
 
-void startGateway()
+void startGateway().then(async () => {
+  if (!gateway.getLastReplyId) return
+  let backfilled = 0
+  for (const s of registry.values()) {
+    if (s.lastReplyId) continue
+    try {
+      const lastId = await gateway.getLastReplyId(s.threadId)
+      if (lastId) { s.lastReplyId = lastId; backfilled++ }
+    } catch (err) {
+      process.stderr.write(`daemon: backfill failed for ${s.tmuxName} (${s.threadId}): ${err instanceof Error ? err.message : err}\n`)
+    }
+  }
+  if (backfilled > 0) {
+    registry.persist()
+    process.stderr.write(`daemon: backfilled lastReplyId for ${backfilled} session(s)\n`)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // PR watcher — polls GitHub for new PR comments/reviews
@@ -213,7 +229,7 @@ const crashAlerted = new Set<string>()
 setInterval(() => {
   for (const info of registry.values()) {
     // Crash detection
-    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && (!tmuxHasSession(info.tmuxName) || !transport.has(info.sessionId))) {
+    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && !info.deadAt && (!tmuxHasSession(info.tmuxName) || !transport.has(info.sessionId))) {
       crashAlerted.add(info.sessionId)
       process.stderr.write(`daemon: crash detected: ${info.tmuxName}\n`)
       void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to restore context or \`respawn\` for a fresh start.`).catch(() => {})
@@ -239,6 +255,7 @@ function shutdown(): void {
   shuttingDown = true
   process.stderr.write('daemon: shutting down\n')
 
+  registry.persist()
   transport.persistQueues()
   socketServer.close()
   try { unlinkSync(SOCK_PATH) } catch {}

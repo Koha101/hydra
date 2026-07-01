@@ -117,7 +117,10 @@ gateway.onMessageDelete((messageId, threadId) => {
     process.stderr.write(`daemon: anchor message deleted, killing session ${info.tmuxName}\n`)
     void killSession(info, 'anchor message deleted')
   } else {
-    process.stderr.write(`daemon: message ${messageId} deleted in thread for session ${info.tmuxName} (not anchor, ignoring)\n`)
+    if (info.lastReplyId === messageId) {
+      info.lastReplyId = undefined
+      registry.persist()
+    }
   }
 })
 
@@ -380,6 +383,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
               msg.content = stripped
               await new Promise(r => setTimeout(r, 50))
               info.lastActive = Date.now()
+              info.lastReplyId = msg.id
+              registry.debouncedPersist()
               void deliverToSession(msg, mappedSession, access)
               return
             }
@@ -394,6 +399,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
           if (shouldRoute) {
             info.lastActive = Date.now()
+            info.lastReplyId = msg.id
+            registry.debouncedPersist()
             void deliverToSession(msg, mappedSession, access)
             return
           }
@@ -402,6 +409,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
             const mentioned = await gateway.isMentioned(msg)
             if (mentioned) {
               info.lastActive = Date.now()
+              info.lastReplyId = msg.id
+              registry.debouncedPersist()
               void deliverToSession(msg, mappedSession, access)
               return
             }
@@ -481,6 +490,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
       if (isAlive(info)) {
         targetSessionId = mappedSession
         info.lastActive = Date.now()
+        info.lastReplyId = msg.id
+        registry.debouncedPersist()
         effectiveChatId = info.threadId
       }
     }
