@@ -1,22 +1,19 @@
 #!/bin/bash
+set -euo pipefail
 # Stop a platform's byte session and kill orphaned claude processes.
-# Mirrors the cleanup section from start-byte-v2.sh / start-slack-byte.sh.
+# Mirrors the cleanup section from start-byte.sh.
 #
 # Required env:
 #   CHAT_PLATFORM — discord or slack
-#
-# Optional env:
-#   BYTE_SESSION_NAME — tmux session name (default: ${CHAT_PLATFORM}-byte)
-#   DAEMON_SOCK — daemon socket path (for orphan filtering)
 
-: "${CHAT_PLATFORM:?error: CHAT_PLATFORM is required}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/env-setup.sh"
 
 SESSION="${BYTE_SESSION_NAME:-${CHAT_PLATFORM}-byte}"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOCK="${DAEMON_SOCK:-$HOME/.claude/channels/${CHAT_PLATFORM}/daemon.sock}"
-LOG="${BYTE_LOG:-$HOME/${CHAT_PLATFORM}-byte-restarts.log}"
+SOCK="${DAEMON_SOCK:-$STATE_DIR/daemon.sock}"
+LOG="${HYDRA_BYTE_LOG:-$HOME/hydra-${CHAT_PLATFORM}-byte.log}"
 
-tmux kill-session -t "$SESSION" 2>/dev/null
+tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 source "$SCRIPT_DIR/kill-orphan-bytes.sh"
 _kill_orphan_bytes "killing" ""

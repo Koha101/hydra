@@ -187,13 +187,10 @@ function runScript(script: string, env: Record<string, string>): boolean {
   }
 }
 
-function byteScript(platform: string): string {
-  const conventionName = `start-${platform}-byte.sh`
-  if (existsSync(join(HYDRA_DIR, conventionName))) return conventionName
-  // Legacy: discord's byte script predates the naming convention
-  if (platform === 'discord' && existsSync(join(HYDRA_DIR, 'start-byte-v2.sh'))) return 'start-byte-v2.sh'
-  console.error(`error: no byte script found for platform '${platform}'`)
-  console.error(`expected: ${join(HYDRA_DIR, conventionName)}`)
+function byteScript(_platform: string): string {
+  const script = 'start-byte.sh'
+  if (existsSync(join(HYDRA_DIR, script))) return script
+  console.error(`error: ${script} not found at ${join(HYDRA_DIR, script)}`)
   process.exit(1)
 }
 

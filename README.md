@@ -54,7 +54,7 @@ bun install
 ./start-daemon.sh
 
 # Start Claude session
-./start-byte-v2.sh
+./start-byte.sh
 ```
 
 ## Platform Setup
@@ -112,7 +112,7 @@ Each platform needs its own daemon (separate state dir + socket) and its own Cla
 ```bash
 # Discord daemon (default state dir)
 ./start-daemon.sh
-./start-byte-v2.sh  # uses CLAUDE_CONFIG_DIR=~/.claude-personal
+./start-byte.sh  # uses CLAUDE_CONFIG_DIR=~/.claude-personal
 
 # Slack daemon (separate state dir + socket)
 DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLATFORM=slack \
@@ -168,4 +168,33 @@ Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessio
 | `daemon.ts` | Platform-agnostic message router and session manager |
 | `bridge.ts` | MCP relay between Claude and daemon (unix socket ↔ stdio) |
 | `start-daemon.sh` | Start daemon in tmux |
-| `start-byte-v2.sh` | Start main Claude session in tmux |
+| `start-byte.sh` | Start main Claude session in tmux |
+| `stop-byte.sh` | Stop byte + kill orphaned claudes |
+| `restart-daemon.sh` | Safe restart: compile check → kill → relaunch → wait for socket |
+| `watchdog.sh` | launchd health monitor: heartbeat check + byte revival |
+| `preflight.sh` | Pre-deploy validator: tokens, tools, compile, channels gate |
+| `env-setup.sh` | Shared preamble: PATH, .env, STATE_DIR (sourced, not executed) |
+| `compile-check.sh` | Build gate: bun build entrypoints (sourced by daemon/preflight) |
+| `kill-orphan-bytes.sh` | Orphan reaper: kill claudes by DAEMON_SOCK (sourced by byte scripts) |
+| `cli/hydra.ts` | CLI: `hydra up/down/restart/spawn/list/kill/health` |
+
+## Script Architecture
+
+Every executable script sources `env-setup.sh` as its first action. This guarantees:
+
+- **PATH** — homebrew, asdf shims, npm-global, ~/.local/bin
+- **.env** — platform config sourced from `~/.claude/channels/${CHAT_PLATFORM}/.env`
+- **STATE_DIR** — platform-scoped state directory
+- **CHAT_PLATFORM** — required when multiple platform dirs exist; defaults to discord for single-platform
+- **macOS** — asserted at the top; hydra uses caffeinate, ps eww, stat -f
+
+Scripts fall into two categories:
+
+| Type | Scripts | Convention |
+|------|---------|------------|
+| **Executables** | start-daemon, start-byte, stop-byte, restart-daemon, watchdog, preflight | `set -euo pipefail`, source env-setup.sh |
+| **Libraries** | compile-check, kill-orphan-bytes | Sourced via `source`, define functions only |
+
+Logs land at `~/hydra-${CHAT_PLATFORM}-daemon.log` and `~/hydra-${CHAT_PLATFORM}-byte.log`.
+
+The CLI (`hydra up/down/restart`) orchestrates these scripts — direct invocation also works.
