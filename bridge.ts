@@ -35,6 +35,7 @@ function resolveSocketPath(): string {
   }
 
   const platform = process.env.CHAT_PLATFORM ?? 'discord'
+  const platformExplicit = !!process.env.CHAT_PLATFORM
 
   try {
     const bridgeDir = dirname(fileURLToPath(import.meta.url))
@@ -42,7 +43,16 @@ function resolveSocketPath(): string {
     const platformPath = join(bridgeDir, `daemon-${platform}.json`)
     if (existsSync(platformPath)) {
       const config = JSON.parse(readFileSync(platformPath, 'utf-8'))
+      if (config.platform && config.platform !== platform) {
+        process.stderr.write(`bridge: WARNING: daemon-${platform}.json contains platform=${config.platform} (expected ${platform})\n`)
+      }
       if (config.socket) {
+        if (!platformExplicit) {
+          const otherPlatform = platform === 'discord' ? 'slack' : 'discord'
+          if (existsSync(join(bridgeDir, `daemon-${otherPlatform}.json`))) {
+            process.stderr.write(`bridge: WARNING: CHAT_PLATFORM not set, defaulting to '${platform}' — set CHAT_PLATFORM to route to the correct daemon\n`)
+          }
+        }
         process.stderr.write(`bridge: socket path from daemon-${platform}.json: ${config.socket}\n`)
         return config.socket
       }
