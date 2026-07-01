@@ -153,6 +153,7 @@ try {
   for (const d of versionDirs) {
     const targetDir = join(discordCache, d.name)
     copyFileSync(bridgeSrc, join(targetDir, 'server.ts'))
+    writeFileSync(join(targetDir, `daemon-${PLATFORM}.json`), daemonConfig)
     writeFileSync(join(targetDir, 'daemon.json'), daemonConfig)
     writeFileSync(join(targetDir, '.mcp.json'), mcpJson)
     mkdirSync(join(targetDir, '.claude-plugin'), { recursive: true })

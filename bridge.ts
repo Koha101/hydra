@@ -25,17 +25,29 @@ import { fileURLToPath } from 'url'
 
 // Resolve daemon socket path. Priority:
 // 1. DAEMON_SOCK env var (explicit override — needed when multiple daemons share a plugin cache)
-// 2. daemon.json in the same directory as this bridge (written by daemon during sync)
-// 3. HYDRA_STATE_DIR / CHAT_PLATFORM env var fallback
+// 2. daemon-{platform}.json next to this bridge (platform-keyed — no race when two daemons share a plugin cache)
+// 3. daemon.json next to this bridge (legacy fallback)
+// 4. HYDRA_STATE_DIR / CHAT_PLATFORM env var fallback
 function resolveSocketPath(): string {
   if (process.env.DAEMON_SOCK) {
     process.stderr.write(`bridge: socket path from DAEMON_SOCK env: ${process.env.DAEMON_SOCK}\n`)
     return process.env.DAEMON_SOCK
   }
 
-  // Check for daemon.json next to this script
+  const platform = process.env.CHAT_PLATFORM ?? 'discord'
+
   try {
     const bridgeDir = dirname(fileURLToPath(import.meta.url))
+    // Platform-keyed config takes priority — each daemon writes its own file
+    const platformPath = join(bridgeDir, `daemon-${platform}.json`)
+    if (existsSync(platformPath)) {
+      const config = JSON.parse(readFileSync(platformPath, 'utf-8'))
+      if (config.socket) {
+        process.stderr.write(`bridge: socket path from daemon-${platform}.json: ${config.socket}\n`)
+        return config.socket
+      }
+    }
+    // Legacy fallback — single daemon.json (last-writer-wins when two daemons share cache)
     const configPath = join(bridgeDir, 'daemon.json')
     if (existsSync(configPath)) {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'))
