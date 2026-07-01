@@ -93,6 +93,7 @@ if ('homeSpawnHandler' in gateway) {
 import './daemon/router.js'
 import { startPrWatcher, backfillTitles } from './daemon/pr-watch.js'
 import { getContextPercent, tmuxHasSession } from './daemon/util.js'
+import { refreshSessionVisual } from './daemon/anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Recovery report on reconnect
@@ -247,17 +248,34 @@ backfillTitles().then(n => {
 // ---------------------------------------------------------------------------
 
 const SESSION_CHECK_INTERVAL_MS = 5 * 60 * 1000
+const SPAWN_GRACE_MS = 60_000
 const CONTEXT_ALERT_THRESHOLD = 70
 const contextAlerted = new Set<string>()
 const crashAlerted = new Set<string>()
 
 setInterval(() => {
+  const now = Date.now()
   for (const info of registry.values()) {
-    // Crash detection
-    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && !info.deadAt && (!tmuxHasSession(info.tmuxName) || !transport.has(info.sessionId))) {
+    // Crash detection — both tmux AND bridge must be gone. Bridge-only disconnects are handled
+    // by the bridge-server disconnect handler (3s delay + tmux check). Skip sessions in spawn
+    // grace period (bridge needs time to connect).
+    if (!crashAlerted.has(info.sessionId) && !info.isJoinMember && !info.deadAt && (now - info.createdAt > SPAWN_GRACE_MS) && !tmuxHasSession(info.tmuxName) && !transport.has(info.sessionId)) {
       crashAlerted.add(info.sessionId)
+      info.deadAt = now
+      registry.persist()
+      const thread = threadRegistry.get(info.threadId)
+      if (thread) {
+        const histEntry = thread.sessionHistory.find((h: any) => h.sessionId === info.sessionId && !h.endedAt)
+        if (histEntry) {
+          histEntry.endedAt = now
+          histEntry.messageCount = info.messageCount ?? 0
+          histEntry.claudeSessionId = info.claudeSessionId
+        }
+        threadRegistry.persist()
+      }
       process.stderr.write(`daemon: crash detected: ${info.tmuxName}\n`)
       void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to restore context or \`respawn\` for a fresh start.`).catch(() => {})
+      refreshSessionVisual(info.threadId, { state: 'crashed' })
       continue
     }
 
