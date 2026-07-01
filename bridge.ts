@@ -37,9 +37,9 @@ function resolveSocketPath(): string {
   const platform = process.env.CHAT_PLATFORM ?? 'discord'
   const platformExplicit = !!process.env.CHAT_PLATFORM
 
+  const bridgeDir = dirname(fileURLToPath(import.meta.url))
+
   try {
-    const bridgeDir = dirname(fileURLToPath(import.meta.url))
-    // Platform-keyed config takes priority — each daemon writes its own file
     const platformPath = join(bridgeDir, `daemon-${platform}.json`)
     if (existsSync(platformPath)) {
       const config = JSON.parse(readFileSync(platformPath, 'utf-8'))
@@ -57,7 +57,11 @@ function resolveSocketPath(): string {
         return config.socket
       }
     }
-    // Legacy fallback — single daemon.json (last-writer-wins when two daemons share cache)
+  } catch (err) {
+    process.stderr.write(`bridge: failed to read daemon-${platform}.json, trying legacy fallback: ${err}\n`)
+  }
+
+  try {
     const configPath = join(bridgeDir, 'daemon.json')
     if (existsSync(configPath)) {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'))
