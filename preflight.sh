@@ -1,14 +1,16 @@
 #!/bin/bash
+set -euo pipefail
 # hydra preflight — verify a deployment has everything it needs before you start the daemon/bot.
 # Encodes the non-obvious failure modes (channels gate, bridge-in-config-dir) as checks.
 #
 # Usage:
-#   CHAT_PLATFORM=slack HYDRA_STATE_DIR=~/.claude/channels/slack \
-#     CLAUDE_CONFIG_DIR=~/.claude ./preflight.sh
+#   CHAT_PLATFORM=slack ./preflight.sh
+#   CHAT_PLATFORM=discord ./preflight.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLATFORM="${CHAT_PLATFORM:-discord}"
-STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/$PLATFORM}}"
+source "$SCRIPT_DIR/env-setup.sh"
+
+PLATFORM="$CHAT_PLATFORM"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 fail=0; warn=0
 ok()  { printf "  \033[32m✓\033[0m %s\n" "$1"; }
@@ -28,8 +30,7 @@ done
 # --- code compiles ---
 if command -v bun >/dev/null 2>&1; then
   source "$SCRIPT_DIR/compile-check.sh"
-  COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
-  if [ $? -eq 0 ]; then
+  if COMPILE_OUT=$(_compile_check "$SCRIPT_DIR"); then
     ok "daemon + bridge compile"
   else
     bad "compile FAILED — daemon would crash-loop on boot:"

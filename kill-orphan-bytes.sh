@@ -1,6 +1,6 @@
 #!/bin/bash
 # macOS-specific: ps eww shows process environment
-# Shared orphan-byte reaper — sourced by start-byte-v2.sh and start-slack-byte.sh.
+# Shared orphan-byte reaper — sourced by start-byte.sh and stop-byte.sh.
 # Kills claude processes that are connected to the same daemon socket but have no
 # HYDRA_SESSION_ID (i.e. they registered as 'main' and are likely duplicates).
 #

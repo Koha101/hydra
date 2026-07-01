@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Shared compile check — sourced by start-daemon.sh and preflight.sh.
 # Caller must pass the source directory as $1.
 

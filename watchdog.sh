@@ -8,35 +8,18 @@
 # where the daemon is gone or permanently stuck.
 #
 # Required env (set by the scheduler or source from a config file):
-#   HYDRA_STATE_DIR  — state directory (heartbeat, socket, sessions)
-#   HYDRA_DIR        — path to the hydra repo
+#   CHAT_PLATFORM    — discord or slack
 #   SPAWN_CWD        — working directory for spawned sessions
 
-# launchd runs with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
-# tmux and claude are at /opt/homebrew/bin; bun is via asdf shims.
-export PATH="$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/env-setup.sh"
 
-: "${HYDRA_DIR:=$(cd "$(dirname "$0")" && pwd)}"
+HYDRA_DIR="$SCRIPT_DIR"
+HYDRA_STATE_DIR="$STATE_DIR"
 : "${SPAWN_CWD:=$HOME}"
-
-# Resolve CHAT_PLATFORM: env var → state dir .env → probe both known dirs → default discord
-if [ -z "$CHAT_PLATFORM" ]; then
-  for dir in "${DISCORD_STATE_DIR:-}" "$HOME/.claude/channels/slack" "$HOME/.claude/channels/discord"; do
-    [ -f "$dir/.env" ] && CHAT_PLATFORM=$(grep '^CHAT_PLATFORM=' "$dir/.env" 2>/dev/null | cut -d= -f2) && [ -n "$CHAT_PLATFORM" ] && break
-  done
-fi
-: "${CHAT_PLATFORM:=discord}"
-
-# State dir follows platform if not explicitly set
-if [ "$CHAT_PLATFORM" = "slack" ]; then
-  : "${HYDRA_STATE_DIR:=${DISCORD_STATE_DIR:-$HOME/.claude/channels/slack}}"
-else
-  : "${HYDRA_STATE_DIR:=${DISCORD_STATE_DIR:-$HOME/.claude/channels/discord}}"
-fi
-
 : "${TMUX_SESSION:=${CHAT_PLATFORM}-daemon}"
 
-HEARTBEAT="$HYDRA_STATE_DIR/daemon.alive"
+HEARTBEAT="$STATE_DIR/daemon.alive"
 STALE_SECONDS=300
 LOG="${HYDRA_WATCHDOG_LOG:-$HOME/hydra-watchdog.log}"
 NOW=$(date +%s)
@@ -99,17 +82,11 @@ if [ "$ELAPSED" -gt "$STALE_SECONDS" ]; then
 fi
 
 # Bot session health check — revive the byte if dead while the daemon is alive.
-# Platform-aware: the byte launcher differs per platform (the Slack launcher pins
-# Slack auth + a Slack prompt), so reviving a Discord byte with it would mis-spawn.
-: "${BOT_TMUX_SESSION:=${CHAT_PLATFORM:-discord}-byte}"
+: "${BOT_TMUX_SESSION:=${CHAT_PLATFORM}-byte}"
 if ! tmux has-session -t "$BOT_TMUX_SESSION" 2>/dev/null; then
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     echo "$(date): Bot session '$BOT_TMUX_SESSION' missing (daemon alive), reviving" >> "$LOG"
     cd "$HYDRA_DIR"
-    if [ "$CHAT_PLATFORM" = "slack" ]; then
-      BYTE_CWD="${SPAWN_CWD}" ./start-slack-byte.sh
-    else
-      BYTE_SESSION_NAME="$BOT_TMUX_SESSION" BYTE_CWD="${SPAWN_CWD}" ./start-byte-v2.sh
-    fi
+    BYTE_SESSION_NAME="$BOT_TMUX_SESSION" BYTE_CWD="${SPAWN_CWD}" ./start-byte.sh
   fi
 fi

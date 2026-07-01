@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Start the chat routing daemon in a tmux session.
 # The daemon holds a single gateway connection (Discord or Slack) and routes
 # messages between the chat platform and Claude sessions via unix sockets.
@@ -10,20 +11,14 @@
 #   CHAT_PLATFORM — discord (default) or slack
 #   HYDRA_STATE_DIR — state dir (socket, access.json, sessions)
 #   CLAUDE_CONFIG_DIR — config dir for spawned Claude sessions
-export PATH="$HOME/.npm-global/bin:$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
+source "$SCRIPT_DIR/env-setup.sh"
 
-# Source .env from state dir for persistent config (SPAWN_CWD, CLAUDE_CONFIG_DIR, etc.)
-[ -f "$STATE_DIR/.env" ] && set -a && . "$STATE_DIR/.env" && set +a
+SESSION="${CHAT_PLATFORM}-daemon"
+LOG="${HYDRA_LOG:-$HOME/hydra-${CHAT_PLATFORM}-daemon.log}"
 
-SESSION="${CHAT_PLATFORM:-discord}-daemon"
-# Per-platform log file — a shared log is tee'd by both daemons and reads as
-# whichever wrote last (false "daemon down" signals when tailing it).
-LOG="${HYDRA_LOG:-$HOME/hydra-${CHAT_PLATFORM:-discord}-daemon.log}"
-
-if [ -z "$SPAWN_CWD" ]; then
+if [ -z "${SPAWN_CWD:-}" ]; then
   echo "ERROR: SPAWN_CWD is required. Set it to the working directory for spawned sessions."
   echo "  Example: SPAWN_CWD=~/trading ./start-daemon.sh"
   exit 1
@@ -36,9 +31,7 @@ fi
 # Build the entries first; if it fails, refuse to start and leave any running
 # daemon UNTOUCHED — a broken tree must never replace a working process.
 source "$SCRIPT_DIR/compile-check.sh"
-COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
-COMPILE_RC=$?
-if [ "$COMPILE_RC" -ne 0 ]; then
+if ! COMPILE_OUT=$(_compile_check "$SCRIPT_DIR"); then
   {
     echo "$(date): COMPILE FAILED — refusing to start daemon; leaving any running session untouched."
     echo "----- build error -----"
@@ -48,7 +41,7 @@ if [ "$COMPILE_RC" -ne 0 ]; then
 fi
 
 # Kill existing daemon session
-tmux kill-session -t "$SESSION" 2>/dev/null
+tmux kill-session -t "$SESSION" 2>/dev/null || true
 sleep 1
 
 # Remove stale socket

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Safely restart the hydra daemon.
 #
 # Safe for spawned sessions to run — bridges auto-reconnect (~5s),
@@ -8,21 +9,13 @@
 # Usage:
 #   ./restart-daemon.sh                              # uses env defaults
 #   SPAWN_CWD=~/my-project ./restart-daemon.sh       # explicit
-export PATH="$HOME/.npm-global/bin:$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/env-setup.sh"
 
-# Source .env from state dir for persistent config (SPAWN_CWD, CLAUDE_CONFIG_DIR, etc.)
-_STATE_HINT="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
-[ -f "$_STATE_HINT/.env" ] && set -a && . "$_STATE_HINT/.env" && set +a
-
-: "${TMUX_SESSION:=discord-daemon}"
-: "${HYDRA_STATE_DIR:=${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
+: "${TMUX_SESSION:=${CHAT_PLATFORM}-daemon}"
 : "${SPAWN_CWD:=$HOME}"
-: "${CHAT_PLATFORM:=discord}"
 : "${CLAUDE_CONFIG_DIR:=$HOME/.claude}"
-
-STATE_DIR="$HYDRA_STATE_DIR"
 SOCK="$STATE_DIR/daemon.sock"
 # Per-platform log file (see start-daemon.sh) — avoids the shared-log false signal.
 LOG="${HYDRA_LOG:-$HOME/hydra-${CHAT_PLATFORM:-discord}-daemon.log}"
@@ -32,8 +25,7 @@ echo "$(date): Restart requested" >> "$LOG"
 # 1. Pre-flight: compile-check BEFORE killing the old daemon
 echo "Pre-flight compile check..."
 source "$SCRIPT_DIR/compile-check.sh"
-COMPILE_OUT=$(_compile_check "$SCRIPT_DIR")
-if [ $? -ne 0 ]; then
+if ! COMPILE_OUT=$(_compile_check "$SCRIPT_DIR"); then
   echo "✗ Compile check FAILED — old daemon left running."
   printf '%s' "$COMPILE_OUT" | sed 's/^/    /'
   echo "$(date): Restart ABORTED — compile check failed (old daemon untouched)" >> "$LOG"

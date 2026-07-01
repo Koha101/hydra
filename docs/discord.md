@@ -44,7 +44,7 @@ Or use the plugin's configure skill:
 
 ```bash
 ./start-daemon.sh      # tmux: discord-daemon
-./start-byte-v2.sh     # tmux: byte
+./start-byte.sh        # tmux: discord-byte
 ```
 
 ## 6. Pair

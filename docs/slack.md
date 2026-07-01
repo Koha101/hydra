@@ -110,7 +110,7 @@ CLAUDE_CONFIG_DIR=~/.claude DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLAT
 
 # 2) Bot (after the socket appears). Set BYTE_CHANNEL to greet a DM on launch, or leave it
 #    unset to start silently and just wait for messages.
-./start-slack-byte.sh
+CHAT_PLATFORM=slack ./start-byte.sh
 ```
 
 Healthy = daemon log shows `slack gateway: connected as <bot>` **and** `bridge registered for session main`. Then DM the bot.
@@ -122,7 +122,7 @@ Healthy = daemon log shows `slack gateway: connected as <bot>` **and** `bridge r
 | Bot never responds, no error | `channelsEnabled` gate (step 5) — check managed settings first. |
 | Bot replies as *your username* ("Sent using Runlayer…") | A native Slack connector is intercepting — disable it (step 5). |
 | Spawned session greets but ignores your thread replies | The daemon's `CLAUDE_CONFIG_DIR` lacks the bridge plugin, so the spawn never registered. Start the daemon with `CLAUDE_CONFIG_DIR` pointing at a dir that has it (step 6). |
-| `start-slack-byte.sh`: "socket not found" | Daemon isn't up — run step 6.1 first. |
+| `start-byte.sh`: "socket not found" | Daemon isn't up — run step 6.1 first. |
 | Daemon exits immediately | `SPAWN_CWD` is required. |
 
 ## Message formatting
