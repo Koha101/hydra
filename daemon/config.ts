@@ -21,7 +21,6 @@ export const SOCK_PATH = join(STATE_DIR, 'daemon.sock')
 export const INBOX_DIR = join(STATE_DIR, 'inbox')
 
 export const CLAUDE_CONFIG = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude-personal')
-export const DEFAULT_SESSION_CHANNEL = process.env.DEFAULT_SESSION_CHANNEL ?? '1519822948565778492'
 
 const LOCAL_ENV_FILE = join(import.meta.dir, '..', '.env')
 for (const envFile of [LOCAL_ENV_FILE, ENV_FILE]) {
@@ -33,6 +32,13 @@ for (const envFile of [LOCAL_ENV_FILE, ENV_FILE]) {
     }
   } catch {}
 }
+
+// Read after .env sourcing — .env values must be available
+if (!process.env.DEFAULT_SESSION_CHANNEL) {
+  process.stderr.write(`daemon: DEFAULT_SESSION_CHANNEL not set in .env — spawns will fail.\n` +
+    `  Set it in ${ENV_FILE}\n`)
+}
+export const DEFAULT_SESSION_CHANNEL = process.env.DEFAULT_SESSION_CHANNEL ?? ''
 
 // ---------------------------------------------------------------------------
 // Platform
