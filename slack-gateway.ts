@@ -20,6 +20,7 @@ import type {
   ButtonDef,
   ButtonClick,
   AttachmentInfo,
+  ReactionEvent,
 } from './gateway.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -63,6 +64,7 @@ export class SlackGateway implements ChatGateway {
   private threadDeleteHandler: ((threadId: string) => void) | null = null
   private messageDeleteHandler: ((messageId: string, threadId: string | null) => void) | null = null
   private buttonClickHandler: ((click: ButtonClick) => void) | null = null
+  private reactionHandler: ((event: ReactionEvent) => Promise<void>) | null = null
   private recentSentIds = new Set<string>()
   private appToken: string
   private token: string | null = null
@@ -150,6 +152,31 @@ export class SlackGateway implements ChatGateway {
           process.stderr.write(`slack gateway: app_home_opened handler error: ${e}\n`),
         )
       }
+    })
+
+    // Auto-add channel to access groups when bot is invited
+    this.app.event('member_joined_channel', async ({ event }) => {
+      if (event.user === this._botUserId) {
+        const { autoAddGroup } = await import('./daemon/access.js')
+        autoAddGroup(event.channel)
+        process.stderr.write(`slack gateway: bot invited to channel ${event.channel}, auto-added to groups\n`)
+      }
+    })
+    // Handle reaction_added for :hocho: message deletion
+    this.app.event('reaction_added', async ({ event }) => {
+      this.touchHeartbeat()
+      process.stderr.write(`slack gateway: reaction_added: emoji=${event.reaction} user=${event.user} item=${JSON.stringify(event.item)}\n`)
+      if (!this.reactionHandler) return
+      if (event.item.type !== 'message') return
+      if (event.user === this._botUserId) return
+      this.reactionHandler({
+        channelId: event.item.channel,
+        messageId: event.item.ts,
+        userId: event.user,
+        emoji: event.reaction,
+      }).catch(e =>
+        process.stderr.write(`slack gateway: reaction handler error: ${e}\n`),
+      )
     })
 
     // Handle app_mention events (for @mentions in channels where the bot isn't a member)
@@ -284,6 +311,10 @@ export class SlackGateway implements ChatGateway {
     this.buttonClickHandler = handler
   }
 
+  onReaction(handler: (event: ReactionEvent) => Promise<void>): void {
+    this.reactionHandler = handler
+  }
+
   /** Parse composite thread IDs (channelId:threadTs) into channel + thread_ts */
   private parseChannelId(id: string): { channel: string; threadTs?: string } {
     // Slack timestamps contain a dot (e.g. 1779979488.572029)
@@ -388,7 +419,33 @@ export class SlackGateway implements ChatGateway {
   async delete(channelId: string, messageId: string): Promise<void> {
     if (!this.app) throw new Error('not connected')
     const { channel } = this.parseChannelId(channelId)
-    await this.app.client.chat.delete({ channel, ts: messageId })
+    try {
+      await this.app.client.chat.delete({ channel, ts: messageId })
+    } catch (err: any) {
+      const slackError = err?.data?.error ?? err?.message?.match(/An API error occurred: (\S+)/)?.[1]
+      process.stderr.write(`slack gateway: delete failed, slackError=${slackError} raw=${err}\n`)
+      if (slackError !== 'cant_delete_message') throw err
+      // Thread parents can't be deleted until all replies are removed.
+      // Fetch replies and delete them first, then retry the parent.
+      const replies = await this.app.client.conversations.replies({ channel, ts: messageId })
+      const children = (replies.messages ?? []).filter((m: any) => m.ts !== messageId)
+      if (!children.length) throw err
+      let surviving = 0
+      for (const child of children.reverse()) {
+        try {
+          await this.app.client.chat.delete({ channel, ts: child.ts })
+        } catch (childErr: any) {
+          surviving++
+          process.stderr.write(`slack gateway: failed to delete thread reply ${child.ts}: ${childErr?.data?.error ?? childErr}\n`)
+        }
+      }
+      if (surviving > 0) {
+        process.stderr.write(`slack gateway: ${surviving} thread replies could not be deleted (not ours), skipping parent\n`)
+        try { await this.app.client.reactions.add({ channel, timestamp: messageId, name: 'warning' }) } catch {}
+        return
+      }
+      await this.app.client.chat.delete({ channel, ts: messageId })
+    }
   }
 
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
@@ -428,7 +485,7 @@ export class SlackGateway implements ChatGateway {
       id,
       isDM,
       isThread: !!parsed.threadTs,
-      parentId: null,
+      parentId: parsed.threadTs ? parsed.channel : null,
       recipientId: isDM ? (ch as any).user ?? '' : '',
       sendable: true,
     }
