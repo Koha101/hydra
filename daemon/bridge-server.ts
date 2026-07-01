@@ -365,23 +365,6 @@ export const socketServer = createServer((socket: Socket) => {
       if (isDesignParticipant(conn.sessionId)) {
         onDesignParticipantDisconnect(conn.sessionId)
       }
-
-      // Death detection: if session dies (tmux gone), notify the thread
-      const deadCheckId = conn.sessionId
-      setTimeout(() => {
-        if (transport.has(deadCheckId)) return // reconnected
-        const info = registry.get(deadCheckId)
-        if (!info || info.isJoinMember) return
-        try {
-          execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' })
-          return // tmux still alive
-        } catch {}
-        process.stderr.write(`daemon: session ${info.tmuxName} died (bridge + tmux gone)\n`)
-        info.deadAt = Date.now()
-        registry.persist()
-        void gateway.send(info.threadId, `💀 **${info.tmuxName}** died. Use \`resume\` to reconnect or \`respawn\` for a fresh start.`).catch(() => {})
-        refreshSessionVisual(info.threadId, { state: 'crashed' })
-      }, 3000)
     }
   })
 
