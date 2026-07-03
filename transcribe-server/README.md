@@ -27,21 +27,20 @@ GET  /health                                                  ->  { "status": "o
 
 Transcription is **on by default on the daemon side**: whenever a sidecar is
 reachable, voice notes are transcribed; when it isn't, audio just passes through.
-So the only setup is getting the sidecar running. After a one-time install the
-watchdog keeps it alive automatically.
+So the only setup is getting the sidecar running:
 
 ```sh
-# 1. One-time: create the venv + install the right backend for your platform.
-#    Needs ffmpeg (brew install ffmpeg). Override the backend with an arg:
+# One-time: create the venv + install the right backend for your platform.
+# Needs ffmpeg (brew install ffmpeg). Override the backend with an arg:
 #    ./transcribe-server/setup.sh parakeet|canary
 ./transcribe-server/setup.sh
-
-# 2. Enable auto-start in your daemon's .env (see .env.example)
-HYDRA_TRANSCRIBE_AUTOSTART=1
-
-# 3. Start it now (the watchdog will keep it up from here on)
-./start-transcribe.sh
 ```
+
+From then on the sidecar is **supervised with the daemon**: `hydra up`,
+`start-daemon.sh`, and every watchdog tick call `start-transcribe.sh --auto`,
+which starts it if (and only if) setup has been done, and never restarts a
+running model server. `hydra down` stops it. To start it immediately without
+touching the daemon, run `./start-transcribe.sh` yourself.
 
 First start downloads the model (Parakeet ~0.6 GB; Canary ~5 GB). When
 `GET /health` reports `"loaded": true`, it's ready. Send a voice note — it
@@ -79,7 +78,7 @@ curl -s -F audio=@/path/to/clip.ogg localhost:8123/transcribe
 | Env (Hydra daemon)             | Default                              | Purpose                                  |
 | ------------------------------ | ------------------------------------ | ---------------------------------------- |
 | `HYDRA_TRANSCRIBE_ENABLED`     | unset (**on**)                       | set `0`/`false` to disable dictation     |
-| `HYDRA_TRANSCRIBE_AUTOSTART`   | unset (off)                          | `1` → watchdog auto-starts the sidecar   |
+| `HYDRA_TRANSCRIBE_AUTOSTART`   | unset (auto: start once set up)      | `1` → always autostart · `0` → never     |
 | `HYDRA_TRANSCRIBE_BACKEND`     | `parakeet` (macOS) / `canary`        | `parakeet` \| `canary` \| `mock`         |
 | `HYDRA_TRANSCRIBE_URL`         | `http://127.0.0.1:8123/transcribe`   | sidecar endpoint                         |
 | `HYDRA_TRANSCRIBE_TIMEOUT_MS`  | `60000`                              | per-request timeout                      |

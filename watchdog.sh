@@ -93,19 +93,9 @@ if ! tmux has-session -t "$BOT_TMUX_SESSION" 2>/dev/null; then
   fi
 fi
 
-# Transcription sidecar — keep the voice-dictation sidecar alive when autostart
-# is enabled. start-transcribe.sh is idempotent (no-op if already running) and
-# refuses cleanly when the canary backend isn't set up, so this never restarts a
-# running model server or crash-loops on machines without a GPU.
-if [ -z "$HYDRA_TRANSCRIBE_AUTOSTART" ]; then
-  HYDRA_TRANSCRIBE_AUTOSTART=$(grep '^HYDRA_TRANSCRIBE_AUTOSTART=' "$HYDRA_STATE_DIR/.env" 2>/dev/null | cut -d= -f2)
-fi
-case "$HYDRA_TRANSCRIBE_AUTOSTART" in
-  1|true|yes|on)
-    TRANSCRIBE_SESSION="${CHAT_PLATFORM}-transcribe"
-    if ! tmux has-session -t "$TRANSCRIBE_SESSION" 2>/dev/null; then
-      cd "$HYDRA_DIR"
-      HYDRA_STATE_DIR="$HYDRA_STATE_DIR" CHAT_PLATFORM="$CHAT_PLATFORM" ./start-transcribe.sh >> "$LOG" 2>&1
-    fi
-    ;;
-esac
+# Transcription sidecar — keep the voice-dictation sidecar alive. --auto is a
+# quiet no-op unless the sidecar is set up (or explicitly enabled) and never
+# restarts a running model server, so this can't crash-loop on machines
+# without dictation. The gate lives in start-transcribe.sh (it sources .env).
+cd "$HYDRA_DIR"
+HYDRA_STATE_DIR="$HYDRA_STATE_DIR" CHAT_PLATFORM="$CHAT_PLATFORM" ./start-transcribe.sh --auto >> "$LOG" 2>&1

@@ -61,3 +61,8 @@ tmux new-session -d -s "$SESSION" \
 
 echo "$(date): Daemon started in tmux session '$SESSION' (SPAWN_CWD=$SPAWN_CWD)" >> $LOG
 echo "Daemon started. Attach with: tmux attach -t $SESSION"
+
+# Voice dictation — bring the transcription sidecar up with the daemon.
+# --auto is a quiet no-op unless the sidecar is set up (or explicitly enabled)
+# and is idempotent: it never restarts a running model server.
+HYDRA_STATE_DIR="$STATE_DIR" "$SCRIPT_DIR/start-transcribe.sh" --auto

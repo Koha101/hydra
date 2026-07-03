@@ -17,6 +17,7 @@ export type HydraConfig = {
   hydraDir: string
   daemonTmux: string
   byteTmux: string
+  transcribeTmux: string
   daemonLog: string
   byteLog: string
   watchdogLog: string
@@ -98,6 +99,7 @@ export function resolveConfig(platform?: string): HydraConfig {
     hydraDir,
     daemonTmux: `${platform}-daemon`,
     byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
+    transcribeTmux: `${platform}-transcribe`,
     daemonLog: process.env.HYDRA_LOG ?? join(homedir(), `hydra-${platform}-daemon.log`),
     byteLog: process.env.HYDRA_BYTE_LOG ?? join(homedir(), `hydra-${platform}-byte.log`),
     watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),

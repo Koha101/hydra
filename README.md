@@ -192,9 +192,13 @@ Send a voice note → Claude receives `[voice transcript] This is a mock transcr
 
 ```bash
 ./transcribe-server/setup.sh   # venv + the right backend for your platform
-./start-transcribe.sh          # macOS: Parakeet-MLX · Linux+GPU: Canary-Qwen
-# add HYDRA_TRANSCRIBE_AUTOSTART=1 to .env so the watchdog keeps it running
 ```
+
+That's it. Once set up, the sidecar starts and stays up **with the daemon** —
+`hydra up`, `start-daemon.sh`, and the watchdog all bring it along; `hydra down`
+stops it. Run `./start-transcribe.sh` to start it by hand. Set
+`HYDRA_TRANSCRIBE_AUTOSTART=0` to keep the daemon from managing it, or `=1` to
+force autostart even before setup (loud failure instead of a quiet skip).
 
 If the sidecar is unreachable, the daemon logs it and delivers the message without a
 transcript — dictation never blocks normal messages. Disable entirely with

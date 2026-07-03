@@ -11,7 +11,13 @@
 # Both real backends need a one-time ./transcribe-server/setup.sh (creates .venv).
 #
 # The daemon picks the sidecar up automatically — no daemon restart needed.
+#
+# --auto (used by hydra up / watchdog / start-daemon.sh): start only when the
+# sidecar can actually run — quiet no-op otherwise. See the gate below.
 export PATH="$HOME/.npm-global/bin:$HOME/.asdf/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+AUTO=0
+if [ "${1:-}" = "--auto" ]; then AUTO=1; shift; fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT_PLATFORM:-discord}}}"
@@ -44,20 +50,41 @@ SRV_DIR="$SCRIPT_DIR/transcribe-server"
 PORT=$(printf '%s' "${HYDRA_TRANSCRIBE_URL:-}" | sed -nE 's#.*://[^:/]+:([0-9]+).*#\1#p')
 : "${PORT:=8123}"
 
+# --auto gate: explicit HYDRA_TRANSCRIBE_AUTOSTART wins in both directions;
+# when unset, start only if the backend is ready (venv built, or mock chosen).
+# Quiet exits keep daemon-start output and watchdog logs clean on machines
+# where dictation isn't set up.
+if [ "$AUTO" = 1 ]; then
+  ENABLED=$(printf '%s' "${HYDRA_TRANSCRIBE_ENABLED:-}" | tr '[:upper:]' '[:lower:]')
+  AUTOSTART=$(printf '%s' "${HYDRA_TRANSCRIBE_AUTOSTART:-}" | tr '[:upper:]' '[:lower:]')
+  case "$ENABLED" in 0|false|no|off) exit 0 ;; esac
+  case "$AUTOSTART" in
+    0|false|no|off) exit 0 ;;
+    1|true|yes|on) ;;
+    *) [ "$BACKEND" = mock ] || [ -x "$SRV_DIR/.venv/bin/uvicorn" ] || exit 0 ;;
+  esac
+fi
+
 if ! command -v tmux >/dev/null 2>&1; then
   echo "$(date): ERROR: tmux not found in PATH" | tee -a "$LOG"
   exit 1
 fi
 
-# Already running — leave it alone.
+# Already running — leave it alone. (Quiet under --auto: supervisors call this
+# every cycle.)
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo "Transcribe sidecar already running (tmux '$SESSION')."
+  [ "$AUTO" = 1 ] || echo "Transcribe sidecar already running (tmux '$SESSION')."
   exit 0
 fi
 
 case "$BACKEND" in
   mock)
-    CMD="python3 mock_server.py"
+    # Resolve the interpreter now (tmux runs the command in a fresh shell) and
+    # fall back to the system python: asdf's python3 shim fails when no version
+    # is pinned for this dir, and mock_server.py is pure stdlib anyway.
+    PY=python3
+    if ! "$PY" -c '' 2>/dev/null && [ -x /usr/bin/python3 ]; then PY=/usr/bin/python3; fi
+    CMD="'$PY' mock_server.py"
     ;;
   parakeet|canary)
     [ "$BACKEND" = parakeet ] && APP=server_mlx:app || APP=server:app
