@@ -1,0 +1,358 @@
+import { existsSync, statSync, unlinkSync, readFileSync, symlinkSync, writeFileSync, readdirSync } from 'fs'
+import { join, dirname } from 'path'
+import { homedir } from 'os'
+import { execSync, execFileSync } from 'child_process'
+
+import type { HydraConfig } from './helpers.js'
+import {
+  resolveConfig, tmuxExists, tmuxKill, tmuxSpawn, tmuxSessionAge,
+  compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
+  waitForSocket, buildDaemonEnvs,
+} from './helpers.js'
+
+// ---------------------------------------------------------------------------
+// Start byte (replaces start-byte.sh)
+// ---------------------------------------------------------------------------
+
+export async function startByte(cfg: HydraConfig): Promise<void> {
+  if (!existsSync(cfg.sockPath) || !statSync(cfg.sockPath).isSocket()) {
+    console.error(`error: daemon socket not found at ${cfg.sockPath}`)
+    console.error(`Start the daemon first: hydra up ${cfg.platform}`)
+    process.exit(1)
+  }
+
+  tmuxKill(cfg.byteTmux)
+  killOrphanBytes(cfg.sockPath, cfg.byteLog)
+  await Bun.sleep(2000)
+  killOrphanBytes(cfg.sockPath, cfg.byteLog, '-9')
+
+  // Symlink bridge.ts into plugin cache
+  const bridgeSrc = join(cfg.hydraDir, 'bridge.ts')
+  const bridgeDest = join(cfg.configDir, 'plugins', 'cache', 'claude-plugins-official', 'discord', '0.0.4', 'server.ts')
+  if (!existsSync(bridgeSrc)) {
+    console.error(`error: bridge.ts missing at ${bridgeSrc}`)
+    process.exit(1)
+  }
+  if (!existsSync(dirname(bridgeDest))) {
+    console.error(`error: plugin cache dir missing at ${dirname(bridgeDest)}`)
+    process.exit(1)
+  }
+  try { unlinkSync(bridgeDest) } catch {}
+  symlinkSync(bridgeSrc, bridgeDest)
+  appendLog(cfg.byteLog, 'symlinked bridge.ts into plugin cache')
+
+  // Build prompt
+  const greetChannel = process.env.BYTE_CHANNEL ?? ''
+  let prompt: string
+  if (greetChannel) {
+    prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files, then send a brief greeting to chat ${greetChannel} using reply(chat_id=${greetChannel}).`
+  } else {
+    prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files to orient, then wait silently for incoming messages — do NOT post anything proactively. When a message arrives, reply with the reply tool using the chat_id from the incoming message.`
+  }
+
+  // Auth token setup
+  let authExport = ''
+  const tokenFile = join(cfg.stateDir, '.byte-token')
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  if (oauthToken) {
+    writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
+    authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})" &&`
+  } else {
+    const angellistToken = join(homedir(), '.angellist-claude-token')
+    if (cfg.platform === 'slack' && existsSync(angellistToken)) {
+      authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(angellistToken)})" &&`
+    }
+  }
+
+  const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
+  const inner = [
+    `cd ${shq(byteCwd)}`,
+    `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
+    `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
+    `export CHAT_PLATFORM=${cfg.platform}`,
+    authExport || null,
+    `caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
+  ].filter(Boolean).join(' && ')
+
+  tmuxSpawn(cfg.byteTmux, inner)
+
+  appendLog(cfg.byteLog, `${cfg.platform} byte started (daemon+bridge)`)
+  console.log(`${cfg.platform} byte started. Attach with: tmux attach -t ${cfg.byteTmux}`)
+}
+
+// ---------------------------------------------------------------------------
+// up (replaces start-daemon.sh + start-byte.sh)
+// ---------------------------------------------------------------------------
+
+export async function lifecycleUp(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+
+  const aliveSessions = [cfg.daemonTmux, cfg.byteTmux].filter(tmuxExists)
+  if (aliveSessions.length > 0) {
+    console.error(`error: ${platform} is already running (${aliveSessions.join(', ')})`)
+    console.error(`use 'hydra restart ${platform}' to restart the daemon, or 'hydra down ${platform}' first`)
+    process.exit(1)
+  }
+
+  if (hasOrphanBytes(cfg.sockPath)) {
+    console.error(`error: orphaned claude processes found for ${platform}`)
+    console.error(`run 'hydra down ${platform}' first to clean them up`)
+    process.exit(1)
+  }
+
+  console.log('compile check...')
+  const check = await compileCheck(cfg.hydraDir)
+  if (!check.ok) {
+    console.error('compile check FAILED — refusing to start:')
+    console.error(check.errors)
+    appendLog(cfg.daemonLog, 'COMPILE FAILED — refusing to start daemon')
+    process.exit(1)
+  }
+
+  try { unlinkSync(cfg.sockPath) } catch {}
+
+  console.log(`starting ${platform} daemon...`)
+  tmuxSpawn(cfg.daemonTmux,
+    `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
+  appendLog(cfg.daemonLog, `Daemon started in tmux session '${cfg.daemonTmux}' (SPAWN_CWD=${cfg.spawnCwd})`)
+
+  if (!await waitForSocket(cfg.sockPath)) {
+    console.error(`error: ${platform} daemon socket did not appear`)
+    process.exit(1)
+  }
+
+  console.log(`starting ${platform} byte...`)
+  await startByte(cfg)
+
+  console.log(`${platform} is up`)
+}
+
+// ---------------------------------------------------------------------------
+// down (replaces stop-byte.sh + daemon kill)
+// ---------------------------------------------------------------------------
+
+export async function lifecycleDown(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+
+  console.log(`stopping ${platform}...`)
+
+  tmuxKill(cfg.byteTmux)
+  killOrphanBytes(cfg.sockPath, cfg.byteLog)
+  await Bun.sleep(2000)
+  killOrphanBytes(cfg.sockPath, cfg.byteLog, '-9')
+
+  tmuxKill(cfg.daemonTmux)
+
+  for (const f of ['daemon.sock', 'daemon.pid']) {
+    try { unlinkSync(join(cfg.stateDir, f)) } catch {}
+  }
+
+  console.log(`${platform} is down`)
+}
+
+// ---------------------------------------------------------------------------
+// restart (replaces restart-daemon.sh)
+// ---------------------------------------------------------------------------
+
+export async function lifecycleRestart(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+
+  appendLog(cfg.daemonLog, 'Restart requested')
+
+  console.log('pre-flight compile check...')
+  const check = await compileCheck(cfg.hydraDir)
+  if (!check.ok) {
+    console.error('compile check FAILED — old daemon left running.')
+    console.error(check.errors)
+    appendLog(cfg.daemonLog, 'Restart ABORTED — compile check failed (old daemon untouched)')
+    process.exit(1)
+  }
+
+  if (tmuxExists(cfg.daemonTmux)) {
+    console.log('killing daemon...')
+    tmuxKill(cfg.daemonTmux)
+    await Bun.sleep(500)
+  } else {
+    console.log('no daemon running.')
+  }
+
+  try { unlinkSync(cfg.sockPath) } catch {}
+
+  console.log('starting daemon...')
+  tmuxSpawn(cfg.daemonTmux,
+    `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
+
+  if (await waitForSocket(cfg.sockPath)) {
+    appendLog(cfg.daemonLog, 'Daemon restarted successfully')
+    console.log(`${platform} daemon restarted`)
+  } else {
+    appendLog(cfg.daemonLog, 'Restart FAILED — socket timeout')
+    console.error('TIMEOUT — socket did not appear after 15s')
+    process.exit(1)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// watchdog (replaces watchdog.sh)
+// ---------------------------------------------------------------------------
+
+export async function lifecycleWatchdog(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+  const staleSeconds = 300
+  const now = Math.floor(Date.now() / 1000)
+
+  try {
+    execFileSync('tmux', ['-V'], { stdio: 'pipe', env: process.env as Record<string, string> })
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      appendLog(cfg.watchdogLog, `ERROR: tmux not found in PATH (${process.env.PATH})`)
+      process.exit(1)
+    }
+  }
+
+  let daemonRestartedThisTick = false
+
+  if (!tmuxExists(cfg.daemonTmux)) {
+    appendLog(cfg.watchdogLog, 'Daemon tmux session missing, starting')
+    await restartDaemonForWatchdog(cfg)
+    daemonRestartedThisTick = true
+  }
+
+  if (!daemonRestartedThisTick) {
+    const heartbeat = join(cfg.stateDir, 'daemon.alive')
+    if (!existsSync(heartbeat)) {
+      const age = tmuxSessionAge(cfg.daemonTmux)
+      if (age !== null && age > staleSeconds) {
+        appendLog(cfg.watchdogLog, `No heartbeat after ${age}s, restarting daemon`)
+        await restartDaemonForWatchdog(cfg)
+        daemonRestartedThisTick = true
+      }
+    } else {
+      const mtime = Math.floor(statSync(heartbeat).mtimeMs / 1000)
+      const elapsed = now - mtime
+
+      if (elapsed > staleSeconds) {
+        const healthUrl = platform === 'slack'
+          ? 'https://slack.com/api/api.test'
+          : 'https://discord.com/api/v10/gateway'
+        let networkUp = true
+        try {
+          execFileSync('curl', ['-sS', '--max-time', '5', healthUrl], { stdio: 'pipe', env: process.env as Record<string, string> })
+        } catch {
+          networkUp = false
+        }
+        if (networkUp) {
+          appendLog(cfg.watchdogLog, `Heartbeat stale (${elapsed}s > ${staleSeconds}s), restarting daemon`)
+          await restartDaemonForWatchdog(cfg)
+          daemonRestartedThisTick = true
+        }
+      }
+    }
+  }
+
+  // Skip byte revival if daemon was just restarted — socket won't be ready yet.
+  // Next watchdog tick (120s) will revive the byte once daemon is up.
+  if (!daemonRestartedThisTick && !tmuxExists(cfg.byteTmux) && tmuxExists(cfg.daemonTmux)) {
+    appendLog(cfg.watchdogLog, `Bot session '${cfg.byteTmux}' missing (daemon alive), reviving`)
+    await startByte(cfg)
+  }
+}
+
+async function restartDaemonForWatchdog(cfg: HydraConfig): Promise<void> {
+  const check = await compileCheck(cfg.hydraDir)
+  if (!check.ok) {
+    appendLog(cfg.watchdogLog, 'COMPILE FAILED — refusing to restart daemon')
+    return
+  }
+
+  tmuxKill(cfg.daemonTmux)
+  try { unlinkSync(cfg.sockPath) } catch {}
+  tmuxSpawn(cfg.daemonTmux,
+    `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
+}
+
+// ---------------------------------------------------------------------------
+// preflight (replaces preflight.sh)
+// ---------------------------------------------------------------------------
+
+export async function lifecyclePreflight(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+  let fail = false
+  let warn = false
+
+  const ok = (msg: string) => console.log(`  \x1b[32m✓\x1b[0m ${msg}`)
+  const bad = (msg: string) => { console.log(`  \x1b[31m✗\x1b[0m ${msg}`); fail = true }
+  const wrn = (msg: string) => { console.log(`  \x1b[33m⚠\x1b[0m ${msg}`); warn = true }
+
+  console.log(`hydra preflight — platform=${platform}`)
+  console.log(`  state dir : ${cfg.stateDir}`)
+  console.log(`  config dir: ${cfg.configDir}`)
+  console.log()
+
+  const toolChecks: [string, string[]][] = [['bun', ['--version']], ['tmux', ['-V']], ['claude', ['--version']]]
+  for (const [cmd, args] of toolChecks) {
+    try {
+      execFileSync(cmd, args, { stdio: 'pipe', env: process.env as Record<string, string> })
+      ok(`${cmd} on PATH`)
+    } catch {
+      bad(`${cmd} not found on PATH`)
+    }
+  }
+
+  const check = await compileCheck(cfg.hydraDir)
+  if (check.ok) {
+    ok('daemon + bridge compile')
+  } else {
+    bad('compile FAILED — daemon would crash-loop on boot:')
+    console.log(check.errors.split('\n').map(l => `      ${l}`).join('\n'))
+  }
+
+  const envFile = join(cfg.stateDir, '.env')
+  if (existsSync(envFile)) {
+    ok('.env present')
+    const envContent = readFileSync(envFile, 'utf-8')
+    if (platform === 'slack') {
+      if (/^SLACK_BOT_TOKEN=xoxb-/m.test(envContent)) ok('SLACK_BOT_TOKEN set (xoxb-)'); else bad('SLACK_BOT_TOKEN missing or not xoxb- in .env')
+      if (/^SLACK_APP_TOKEN=xapp-/m.test(envContent)) ok('SLACK_APP_TOKEN set (xapp-)'); else bad('SLACK_APP_TOKEN missing or not xapp- in .env')
+    } else {
+      if (/^DISCORD_BOT_TOKEN=.+/m.test(envContent)) ok('DISCORD_BOT_TOKEN set'); else bad('DISCORD_BOT_TOKEN missing in .env')
+    }
+  } else {
+    bad(`.env missing at ${envFile} (see .env.example)`)
+  }
+
+  if (existsSync(join(cfg.stateDir, 'access.json'))) {
+    ok('access.json present')
+  } else {
+    wrn(`access.json missing — no users are allowlisted yet (${join(cfg.stateDir, 'access.json')})`)
+  }
+
+  const bridgeDir = join(cfg.configDir, 'plugins', 'cache', 'claude-plugins-official', 'discord')
+  try {
+    const versions = readdirSync(bridgeDir)
+    const hasServer = versions.some(v => existsSync(join(bridgeDir, v, 'server.ts')))
+    if (hasServer) ok('bridge plugin present in config dir'); else bad(`bridge plugin NOT in ${cfg.configDir}`)
+  } catch {
+    bad(`bridge plugin NOT in ${cfg.configDir} — sessions can't reach the daemon. Install: claude plugin install discord@claude-plugins-official`)
+  }
+
+  const managedSettings = '/Library/Application Support/ClaudeCode/managed-settings.json'
+  if (existsSync(managedSettings)) {
+    const content = readFileSync(managedSettings, 'utf-8')
+    if (content.includes('"channelsEnabled"') && content.includes('true')) {
+      ok('channelsEnabled=true (managed settings)')
+    } else {
+      wrn(`channelsEnabled not true in managed settings — on Team/Enterprise plans inbound is SILENTLY dropped. Fix: sudo write {"channelsEnabled": true} to ${managedSettings}`)
+    }
+  }
+
+  console.log()
+  if (fail) {
+    console.log('RESULT: NOT READY — fix the ✗ items above.')
+    process.exit(1)
+  } else if (warn) {
+    console.log('RESULT: ready, with warnings (⚠) — review above.')
+  } else {
+    console.log('RESULT: all checks passed.')
+  }
+}

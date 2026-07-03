@@ -1,0 +1,397 @@
+import { connect } from 'net'
+import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
+import { execSync, execFileSync } from 'child_process'
+
+// ---------------------------------------------------------------------------
+// Config resolution (replaces env-setup.sh)
+// ---------------------------------------------------------------------------
+
+export type HydraConfig = {
+  platform: string
+  stateDir: string
+  configDir: string
+  spawnCwd: string
+  hydraDir: string
+  daemonTmux: string
+  byteTmux: string
+  daemonLog: string
+  byteLog: string
+  watchdogLog: string
+  sockPath: string
+}
+
+export function resolveConfig(platform?: string): HydraConfig {
+  // Ensure PATH includes common tool locations (mirrors env-setup.sh).
+  // Critical for launchd context where PATH is minimal.
+  const extraPaths = [
+    join(homedir(), '.npm-global', 'bin'),
+    join(homedir(), '.asdf', 'shims'),
+    join(homedir(), '.local', 'bin'),
+    join(homedir(), '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ]
+  const currentPath = process.env.PATH ?? ''
+  const missing = extraPaths.filter(p => !currentPath.includes(p))
+  if (missing.length > 0) {
+    process.env.PATH = [...missing, currentPath].join(':')
+  }
+
+  const hydraDir = join(import.meta.dir, '..')
+
+  if (!platform) {
+    const channelsDir = join(homedir(), '.claude', 'channels')
+    try {
+      const dirs = readdirSync(channelsDir).filter(d => {
+        try { return statSync(join(channelsDir, d)).isDirectory() } catch { return false }
+      })
+      if (dirs.length === 1) {
+        platform = dirs[0]
+      } else if (dirs.length > 1) {
+        console.error(`error: CHAT_PLATFORM not set and ${dirs.length} platform state dirs exist`)
+        console.error('set platform explicitly (e.g. hydra up discord)')
+        process.exit(1)
+      }
+    } catch {}
+    if (!platform) platform = 'discord'
+  }
+
+  const stateDir = process.env.HYDRA_STATE_DIR ?? process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', platform)
+  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const spawnCwd = process.env.SPAWN_CWD ?? join(homedir(), 'Documents', 'angellist')
+
+  // Source .env from state dir (mirrors env-setup.sh)
+  const envFile = join(stateDir, '.env')
+  if (existsSync(envFile)) {
+    const content = readFileSync(envFile, 'utf-8')
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eq = trimmed.indexOf('=')
+      if (eq === -1) continue
+      const key = trimmed.slice(0, eq)
+      let val = trimmed.slice(eq + 1)
+      // Strip surrounding quotes. Does NOT handle escape sequences (\", \n) or
+      // multiline values — if .env files grow beyond simple key=value, use dotenv.
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1)
+      }
+      if (!(key in process.env)) {
+        process.env[key] = val
+      }
+    }
+  }
+
+  return {
+    platform,
+    stateDir,
+    configDir,
+    spawnCwd: process.env.SPAWN_CWD ?? spawnCwd,
+    hydraDir,
+    daemonTmux: `${platform}-daemon`,
+    byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
+    daemonLog: process.env.HYDRA_LOG ?? join(homedir(), `hydra-${platform}-daemon.log`),
+    byteLog: process.env.HYDRA_BYTE_LOG ?? join(homedir(), `hydra-${platform}-byte.log`),
+    watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),
+    sockPath: join(stateDir, 'daemon.sock'),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// tmux helpers
+// ---------------------------------------------------------------------------
+
+function execEnv(): Record<string, string | undefined> {
+  return process.env as Record<string, string | undefined>
+}
+
+export function tmuxExists(name: string): boolean {
+  try {
+    execFileSync('tmux', ['has-session', '-t', name], { stdio: 'pipe', env: execEnv() })
+    return true
+  } catch { return false }
+}
+
+export function tmuxKill(name: string): void {
+  try { execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'pipe', env: execEnv() }) } catch {}
+}
+
+export function tmuxSpawn(name: string, command: string): void {
+  execFileSync('tmux', ['new-session', '-d', '-s', name, command], { stdio: 'pipe', env: execEnv() })
+}
+
+export function tmuxSessionAge(name: string): number | null {
+  try {
+    const created = execFileSync('tmux', ['display-message', '-t', name, '-p', '#{session_created}'], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8', env: execEnv() }).trim()
+    return Math.floor(Date.now() / 1000) - parseInt(created)
+  } catch { return null }
+}
+
+// ---------------------------------------------------------------------------
+// Compile check (replaces compile-check.sh)
+// ---------------------------------------------------------------------------
+
+export async function compileCheck(hydraDir: string): Promise<{ ok: boolean; errors: string }> {
+  const errors: string[] = []
+  for (const entry of ['daemon.ts', 'bridge.ts']) {
+    const result = await Bun.build({
+      entrypoints: [join(hydraDir, entry)],
+      target: 'bun',
+    })
+    if (!result.success) {
+      const msgs = result.logs.map(l => l.message ?? String(l)).join('\n')
+      errors.push(`[${entry}] ${msgs}`)
+    }
+  }
+  return { ok: errors.length === 0, errors: errors.join('\n') }
+}
+
+// ---------------------------------------------------------------------------
+// Orphan byte killer (replaces kill-orphan-bytes.sh)
+// ---------------------------------------------------------------------------
+
+export function killOrphanBytes(sockPath: string, logPath: string, signal?: string): void {
+  try {
+    const pids = execFileSync('pgrep', ['-f', 'claude.*--channels'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: execEnv() }).trim()
+    if (!pids) return
+    for (const pidStr of pids.split('\n')) {
+      const pid = parseInt(pidStr.trim())
+      if (isNaN(pid)) continue
+      try {
+        const pinfo = execFileSync('ps', ['eww', '-p', String(pid)], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: execEnv() })
+        if (pinfo.includes(`DAEMON_SOCK=${sockPath}`) && !pinfo.includes('HYDRA_SESSION_ID=')) {
+          appendLog(logPath, `killing orphaned byte process ${pid}`)
+          if (signal === '-9') {
+            process.kill(pid, 'SIGKILL')
+          } else {
+            process.kill(pid, 'SIGTERM')
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+export function hasOrphanBytes(sockPath: string): boolean {
+  try {
+    const pids = execFileSync('pgrep', ['-f', 'claude.*--channels'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: execEnv() }).trim()
+    if (!pids) return false
+    for (const pidStr of pids.split('\n')) {
+      const pid = parseInt(pidStr.trim())
+      if (isNaN(pid)) continue
+      try {
+        const pinfo = execFileSync('ps', ['eww', '-p', String(pid)], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], env: execEnv() })
+        if (pinfo.includes(`DAEMON_SOCK=${sockPath}`) && !pinfo.includes('HYDRA_SESSION_ID=')) {
+          return true
+        }
+      } catch {}
+    }
+  } catch {}
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+export function appendLog(logPath: string, msg: string): void {
+  try {
+    const line = `${new Date().toLocaleString()}: ${msg}\n`
+    writeFileSync(logPath, line, { flag: 'a' })
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Shell quoting
+// ---------------------------------------------------------------------------
+
+export function shq(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+// ---------------------------------------------------------------------------
+// Wait for socket
+// ---------------------------------------------------------------------------
+
+export async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<boolean> {
+  const start = Date.now()
+  process.stdout.write('waiting for socket')
+  while (Date.now() - start < timeoutMs) {
+    if (existsSync(sockPath)) {
+      try {
+        if (statSync(sockPath).isSocket()) {
+          process.stdout.write(' ready\n')
+          return true
+        }
+      } catch {}
+    }
+    process.stdout.write('.')
+    await Bun.sleep(500)
+  }
+  process.stdout.write(' timeout\n')
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Socket discovery & communication
+// ---------------------------------------------------------------------------
+
+export function discoverSockets(): Record<string, string> {
+  const channelsDir = join(homedir(), '.claude', 'channels')
+  const found: Record<string, string> = {}
+  try {
+    for (const name of readdirSync(channelsDir)) {
+      const sockPath = join(channelsDir, name, 'daemon.sock')
+      try {
+        if (existsSync(sockPath) && statSync(sockPath).isSocket()) {
+          found[name] = sockPath
+        }
+      } catch {}
+    }
+  } catch {}
+  return found
+}
+
+export function resolveSocket(daemonName?: string): string {
+  const discovered = discoverSockets()
+  const keys = Object.keys(discovered)
+
+  if (daemonName) {
+    if (discovered[daemonName]) return discovered[daemonName]
+    console.error(`error: daemon "${daemonName}" not found`)
+    console.error(`discovered: ${keys.join(', ') || '(none)'}`)
+    process.exit(1)
+  }
+
+  if (keys.length === 1) return discovered[keys[0]]
+  if (keys.length === 0) {
+    console.error('error: no running daemons found')
+    process.exit(1)
+  }
+
+  console.error(`error: multiple daemons found: ${keys.join(', ')}`)
+  console.error('use --daemon <name> to select one')
+  process.exit(1)
+}
+
+export function sendRequest(socketPath: string, request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath)
+    let buf = ''
+    const timeout = setTimeout(() => {
+      socket.destroy()
+      reject(new Error('connection timed out'))
+    }, 10_000)
+
+    socket.on('connect', () => {
+      socket.write(JSON.stringify(request) + '\n')
+    })
+
+    socket.on('data', (data: Buffer) => {
+      buf += data.toString()
+      const nl = buf.indexOf('\n')
+      if (nl !== -1) {
+        clearTimeout(timeout)
+        const line = buf.slice(0, nl)
+        socket.end()
+        try {
+          resolve(JSON.parse(line))
+        } catch {
+          reject(new Error(`invalid response: ${line.slice(0, 200)}`))
+        }
+      }
+    })
+
+    socket.on('error', (err) => {
+      clearTimeout(timeout)
+      reject(new Error(`socket error: ${err.message}`))
+    })
+
+    socket.on('end', () => {
+      clearTimeout(timeout)
+      if (!buf.trim()) reject(new Error('daemon closed connection without response'))
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Output formatting
+// ---------------------------------------------------------------------------
+
+export function printResponse(response: Record<string, unknown>, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(response, null, 2))
+    return
+  }
+
+  if (!response.ok) {
+    console.error(`error: ${response.error}`)
+    process.exit(typeof response.exitCode === 'number' ? response.exitCode : 1)
+  }
+
+  const data = response.data as any
+  const command = response.command as string | undefined
+
+  if (!data) {
+    console.log('ok')
+    return
+  }
+
+  switch (command) {
+    case 'list': {
+      const items = data as any[]
+      if (items.length === 0) { console.log('(none)'); return }
+      for (const item of items) {
+        const status = item.status === 'connected' ? '●' : '○'
+        const ctx = item.context ? ` [${item.context}]` : ''
+        console.log(`${status} ${item.name}  ${item.description ?? ''}  (${item.running_for}${ctx})`)
+      }
+      return
+    }
+    case 'spawn':
+      console.log(`spawned: ${data.name} (${data.sessionId})`)
+      if (data.url) console.log(`thread:  ${data.url}`)
+      if (data.idempotencyKey) console.log(`key:     ${data.idempotencyKey}`)
+      return
+    case 'kill':
+      console.log(`killed: ${data.killed}`)
+      return
+    case 'health':
+      console.log(`sessions: ${data.sessions.total} (${data.sessions.connected} connected, ${data.sessions.disconnected} disconnected)`)
+      console.log(`tmux: ${data.tmux}`)
+      console.log(`idempotency: ${data.idempotency.active} active keys`)
+      return
+    case 'status':
+      console.log(`${data.name} (${data.sessionId})`)
+      console.log(`  topic:   ${data.topic}`)
+      if (data.description) console.log(`  desc:    ${data.description}`)
+      console.log(`  bridge:  ${data.bridge}`)
+      console.log(`  tmux:    ${data.tmux}`)
+      console.log(`  uptime:  ${data.running_for}`)
+      if (data.context) console.log(`  context: ${data.context}`)
+      if (data.url) console.log(`  url:     ${data.url}`)
+      if (data.origin) console.log(`  origin:  ${data.origin}`)
+      return
+    case 'clear-key':
+      console.log(`cleared: ${data.cleared}`)
+      return
+    default:
+      console.log(JSON.stringify(data, null, 2))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon env string builder
+// ---------------------------------------------------------------------------
+
+export function buildDaemonEnvs(cfg: HydraConfig): string {
+  return [
+    `PATH='${process.env.PATH}'`,
+    `HYDRA_STATE_DIR=${shq(cfg.stateDir)}`,
+    `SPAWN_CWD=${shq(cfg.spawnCwd)}`,
+    `CHAT_PLATFORM=${shq(cfg.platform)}`,
+    `CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
+  ].join(' ')
+}
