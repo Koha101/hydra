@@ -56,6 +56,10 @@ Supervision details:
   canned transcripts flowing into real messages.
 - **A remote `HYDRA_TRANSCRIBE_URL` disables local autostart** — nothing to
   supervise on this machine.
+- **Multi-platform machines: keep dictation config identical** across the
+  platform `.env` files (or set it in only one). The session is shared, so the
+  effective backend/model/port is whichever platform's supervisor starts it
+  first.
 
 First start downloads the model (Parakeet ~0.6 GB; Canary ~5 GB). When
 `GET /health` reports `"loaded": true`, it's ready. Send a voice note — it

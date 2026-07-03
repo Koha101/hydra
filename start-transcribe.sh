@@ -30,13 +30,19 @@ STATE_DIR="${HYDRA_STATE_DIR:-${DISCORD_STATE_DIR:-$HOME/.claude/channels/${CHAT
 # Sourcing the whole file (set -a) would export the bot tokens into this
 # process — and, when this script is what creates the tmux server, into the
 # sidecar's environment. The model server has no business holding chat tokens.
+# Parsing matches shell sourcing: optional `export`, quoted values kept
+# verbatim, unquoted values lose trailing inline comments and whitespace.
 if [ -f "$STATE_DIR/.env" ]; then
   for _key in HYDRA_TRANSCRIBE_ENABLED HYDRA_TRANSCRIBE_AUTOSTART HYDRA_TRANSCRIBE_BACKEND \
               HYDRA_TRANSCRIBE_URL HYDRA_TRANSCRIBE_LOG PARAKEET_MODEL CANARY_MODEL \
               CANARY_MAX_NEW_TOKENS HYDRA_MOCK_TRANSCRIPT; do
     if [ -z "${!_key}" ]; then
-      _val=$(grep "^${_key}=" "$STATE_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2-)
-      _val="${_val%\"}"; _val="${_val#\"}"; _val="${_val%\'}"; _val="${_val#\'}"
+      _val=$(sed -nE "s/^(export[[:space:]]+)?${_key}=//p" "$STATE_DIR/.env" 2>/dev/null | tail -1)
+      case "$_val" in
+        \"*) _val="${_val#\"}"; _val="${_val%%\"*}" ;;
+        \'*) _val="${_val#\'}"; _val="${_val%%\'*}" ;;
+        *) _val=$(printf '%s' "$_val" | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//') ;;
+      esac
       [ -n "$_val" ] && export "$_key=$_val"
     fi
   done
@@ -95,7 +101,7 @@ if [ "$AUTO" = 1 ]; then
   case "$AUTOSTART" in
     0|false|no|off) exit 0 ;;
     1|true|yes|on) ;;
-    *) [ -x "$SRV_DIR/.venv/bin/uvicorn" ] || exit 0 ;;
+    *) { [ "$BACKEND" != mock ] && [ -x "$SRV_DIR/.venv/bin/uvicorn" ]; } || exit 0 ;;
   esac
 fi
 
