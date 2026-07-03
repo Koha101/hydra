@@ -66,6 +66,140 @@ describe('chunk', () => {
 })
 
 // ---------------------------------------------------------------------------
+// chunk() — markdown mode
+// ---------------------------------------------------------------------------
+
+describe('chunk markdown mode', () => {
+  test('short text returns single chunk', () => {
+    expect(chunk('hello', 100, 'markdown')).toEqual(['hello'])
+  })
+
+  test('plain prose splits at paragraph boundaries', () => {
+    const text = 'First paragraph here.\n\nSecond paragraph that continues on and on.'
+    const result = chunk(text, 40, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+    expect(result[0]).toContain('First paragraph')
+  })
+
+  test('fence spanning a split is closed and reopened', () => {
+    const code = 'x = 1\n'.repeat(30)
+    const text = 'Before code:\n\n```python\n' + code + '```\n\nAfter code.'
+    const result = chunk(text, 100, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+
+    for (const part of result) {
+      const fences = (part.match(/^`{3,}/gm) ?? [])
+      expect(fences.length % 2).toBe(0)
+    }
+  })
+
+  test('fence language tag is preserved on reopen', () => {
+    const code = 'line\n'.repeat(40)
+    const text = '```typescript\n' + code + '```'
+    const result = chunk(text, 100, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+
+    expect(result[0]).toMatch(/^```typescript/)
+    expect(result[0]).toMatch(/```$/)
+
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i]).toMatch(/^```typescript/)
+      const fences = (result[i].match(/^`{3,}/gm) ?? [])
+      expect(fences.length % 2).toBe(0)
+    }
+  })
+
+  test('single code block exceeding limit is split with fence close/reopen', () => {
+    const bigLine = 'x'.repeat(80)
+    const code = (bigLine + '\n').repeat(40)
+    const text = '```js\n' + code + '```'
+    const result = chunk(text, 200, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+
+    for (const part of result) {
+      const fences = (part.match(/^`{3,}/gm) ?? [])
+      expect(fences.length % 2).toBe(0)
+    }
+  })
+
+  test('table near boundary avoids mid-row splits when possible', () => {
+    const header = '| Col A | Col B |\n|-------|-------|\n'
+    const rows = '| data  | value |\n'.repeat(15)
+    const text = 'Some intro text.\n\n' + header + rows + '\nAfter the table.'
+    const result = chunk(text, 250, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+    expect(result[0]).toContain('Some intro text.')
+    const firstChunkTableLines = result[0].split('\n').filter(l => l.startsWith('|'))
+    for (const line of firstChunkTableLines) {
+      expect(line).toMatch(/\|$/)
+    }
+  })
+
+  test('plain prose unchanged when under limit', () => {
+    const text = 'Just a simple message.'
+    expect(chunk(text, 100, 'markdown')).toEqual([text])
+  })
+
+  test('content round-trips minus injected fence markers', () => {
+    const code = 'const a = 1\nconst b = 2\n'.repeat(20)
+    const text = 'Intro.\n\n```ts\n' + code + '```\n\nOutro paragraph.'
+    const result = chunk(text, 150, 'markdown')
+    const reassembled = result.join('\n')
+    expect(reassembled).toContain('Intro.')
+    expect(reassembled).toContain('Outro paragraph.')
+    expect(reassembled).toContain('const a = 1')
+    expect(reassembled).toContain('const b = 2')
+  })
+
+  test('multiple code blocks both handled', () => {
+    const block1 = '```python\n' + 'print("hi")\n'.repeat(15) + '```'
+    const block2 = '```ruby\n' + 'puts "hello"\n'.repeat(15) + '```'
+    const text = block1 + '\n\nSome text.\n\n' + block2
+    const result = chunk(text, 100, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+
+    for (const part of result) {
+      const fences = (part.match(/^`{3,}/gm) ?? [])
+      expect(fences.length % 2).toBe(0)
+    }
+  })
+
+  test('does not infinite loop on long line inside fence', () => {
+    const longLine = 'x'.repeat(2500)
+    const text = '```python\n' + longLine + '\n```'
+    const result = chunk(text, 2000, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+    const allXs = result.join('').replace(/[^x]/g, '')
+    expect(allXs.length).toBe(2500)
+  })
+
+  test('chunks do not exceed the limit', () => {
+    const code = 'line of code here\n'.repeat(150)
+    const text = '```ts\n' + code + '```'
+    const result = chunk(text, 200, 'markdown')
+    for (const part of result) {
+      expect(part.length).toBeLessThanOrEqual(200)
+    }
+  })
+
+  test('does not hang with very small limit', () => {
+    const text = '```python\nhello world\n```'
+    const result = chunk(text, 15, 'markdown')
+    expect(result.length).toBeGreaterThan(1)
+    expect(result.join('')).toContain('hello world')
+  })
+
+  test('legacy modes still work', () => {
+    const text = 'a'.repeat(250)
+    expect(chunk(text, 100, 'length').length).toBe(3)
+
+    const text2 = 'word '.repeat(50)
+    const result = chunk(text2, 30, 'newline')
+    expect(result.length).toBeGreaterThan(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // formatDuration()
 // ---------------------------------------------------------------------------
 

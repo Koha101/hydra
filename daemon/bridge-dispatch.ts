@@ -98,7 +98,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (files.length > 10) throw new Error('max 10 attachments per message')
 
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
-        const mode = access.chunkMode ?? 'length'
+        const mode = access.chunkMode ?? 'markdown'
         const replyMode = access.replyToMode ?? 'first'
         const chunks = chunk(text, limit, mode)
         const sentIds: string[] = []

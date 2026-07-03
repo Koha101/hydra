@@ -33,7 +33,7 @@ export type Access = {
   ackReaction?: string
   replyToMode?: 'off' | 'first' | 'all'
   textChunkLimit?: number
-  chunkMode?: 'length' | 'newline'
+  chunkMode?: 'length' | 'newline' | 'markdown'
   defaultListen?: boolean
 }
 
