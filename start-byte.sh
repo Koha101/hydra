@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "DEPRECATED: use 'hydra up <platform>' instead (bun cli/hydra.ts up discord)" >&2
 set -euo pipefail
 # Start the byte (Claude Code bot) using the daemon+bridge architecture.
 # Requires the daemon to be running first (start-daemon.sh).

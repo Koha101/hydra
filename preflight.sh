@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "DEPRECATED: use 'hydra preflight <platform>' instead (bun cli/hydra.ts preflight discord)" >&2
 set -euo pipefail
 # hydra preflight — verify a deployment has everything it needs before you start the daemon/bot.
 # Encodes the non-obvious failure modes (channels gate, bridge-in-config-dir) as checks.

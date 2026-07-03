@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "DEPRECATED: use 'hydra watchdog <platform>' instead (bun cli/hydra.ts watchdog discord)" >&2
+echo "Run 'hydra install <platform>' to update your launchd plist." >&2
 # Hydra daemon watchdog — checks heartbeat freshness and restarts if stale.
 # Run via a system scheduler (e.g. launchd) every ~120s.
 #

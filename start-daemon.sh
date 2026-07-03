@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "DEPRECATED: use 'hydra up <platform>' instead (bun cli/hydra.ts up discord)" >&2
 set -euo pipefail
 # Start the chat routing daemon in a tmux session.
 # The daemon holds a single gateway connection (Discord or Slack) and routes

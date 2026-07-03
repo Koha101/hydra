@@ -6,6 +6,7 @@ import {
   lifecycleUp, lifecycleDown, lifecycleRestart,
   lifecycleWatchdog, lifecyclePreflight,
   lifecycleInstall, lifecycleUninstall,
+  type InstallOpts,
 } from './lifecycle.js'
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,8 @@ const USAGE = `hydra — manage hydra daemons and sessions
 
 Setup:
   hydra install <platform>             Generate launchd watchdog + run preflight
+    --cwd <path>                       Working directory for spawned sessions
+    --config-dir <path>                Claude config dir (default: ~/.claude)
   hydra uninstall <platform>           Remove launchd watchdog
 
 Lifecycle:
@@ -76,7 +79,18 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     switch (command) {
-      case 'install': await lifecycleInstall(platform); break
+      case 'install': {
+        const installOpts: InstallOpts = {}
+        for (let i = 2; i < filtered.length; i++) {
+          if (filtered[i] === '--cwd' && i + 1 < filtered.length) {
+            installOpts.cwd = filtered[++i]
+          } else if (filtered[i] === '--config-dir' && i + 1 < filtered.length) {
+            installOpts.configDir = filtered[++i]
+          }
+        }
+        await lifecycleInstall(platform, installOpts)
+        break
+      }
       case 'uninstall': lifecycleUninstall(platform); break
       case 'up': await lifecycleUp(platform); break
       case 'down': await lifecycleDown(platform); break

@@ -58,7 +58,7 @@ DISCORD_BOT_TOKEN=your-token-here
 EOF
 
 # Install watchdog + verify setup
-bun cli/hydra.ts install discord
+bun cli/hydra.ts install discord --cwd ~/your/project
 
 # Start
 bun cli/hydra.ts up discord

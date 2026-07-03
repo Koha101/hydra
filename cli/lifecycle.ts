@@ -411,7 +411,11 @@ function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string
 `
 }
 
-export async function lifecycleInstall(platform: string): Promise<void> {
+export type InstallOpts = { cwd?: string; configDir?: string }
+
+export async function lifecycleInstall(platform: string, opts?: InstallOpts): Promise<void> {
+  if (opts?.cwd) process.env.SPAWN_CWD = opts.cwd
+  if (opts?.configDir) process.env.CLAUDE_CONFIG_DIR = opts.configDir
   const cfg = resolveConfig(platform)
   const dest = plistPath(platform)
   const label = plistLabel(platform)

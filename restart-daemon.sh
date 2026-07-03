@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "DEPRECATED: use 'hydra restart <platform>' instead (bun cli/hydra.ts restart discord)" >&2
 set -euo pipefail
 # Safely restart the hydra daemon.
 #
