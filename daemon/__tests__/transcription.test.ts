@@ -1,11 +1,23 @@
 import { describe, test, expect } from 'bun:test'
-import { isAudioFile, mergeTranscripts, transcriptionEnabled } from '../transcription.js'
+import { writeFileSync, mkdtempSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { isAudioFile, mergeTranscripts, transcriptionEnabled, transcribeDownloads } from '../transcription.js'
 
 describe('isAudioFile', () => {
   test('detects audio by MIME type', () => {
     expect(isAudioFile({ contentType: 'audio/ogg', name: 'voice-message.ogg' })).toBe(true)
     expect(isAudioFile({ contentType: 'audio/mpeg', name: 'clip' })).toBe(true)
     expect(isAudioFile({ contentType: 'AUDIO/WAV', name: 'x' })).toBe(true)
+  })
+
+  test('detects Slack audio shapes', () => {
+    // Slack voice clips (mic button) arrive as files with mimetype audio/mp4
+    expect(isAudioFile({ contentType: 'audio/mp4', name: 'audio_message.m4a' })).toBe(true)
+    // browser-recorded clips carry a codec suffix
+    expect(isAudioFile({ contentType: 'audio/webm;codecs=opus', name: 'audio_message.webm' })).toBe(true)
+    // uploaded files can come through with a generic mimetype — extension wins
+    expect(isAudioFile({ contentType: 'application/octet-stream', name: 'standup.mp3' })).toBe(true)
   })
 
   test('detects audio by extension when MIME is generic', () => {
@@ -80,4 +92,55 @@ describe('transcriptionEnabled', () => {
 
   if (prev === undefined) delete process.env.HYDRA_TRANSCRIBE_ENABLED
   else process.env.HYDRA_TRANSCRIBE_ENABLED = prev
+})
+
+describe('transcribeDownloads', () => {
+  // DownloadedFile as slack-gateway.ts downloadAttachments() produces it
+  const dir = mkdtempSync(join(tmpdir(), 'hydra-transcribe-test-'))
+  const audioPath = join(dir, 'audio_message.m4a')
+  const imagePath = join(dir, 'screenshot.png')
+  writeFileSync(audioPath, 'fake-audio')
+  writeFileSync(imagePath, 'fake-image')
+  const voiceClip = { path: audioPath, name: 'audio_message.m4a', contentType: 'audio/mp4', sizeKB: '1' }
+  const image = { path: imagePath, name: 'screenshot.png', contentType: 'image/png', sizeKB: '1' }
+
+  const realFetch = globalThis.fetch
+
+  test('posts only audio files to the sidecar and returns transcripts', async () => {
+    const posted: string[] = []
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const audio = (init.body as FormData).get('audio') as File
+      posted.push(audio.name)
+      return new Response(JSON.stringify({ text: 'dictated words' }), { status: 200 })
+    }) as any
+    try {
+      const out = await transcribeDownloads([voiceClip, image] as any)
+      expect(posted).toEqual(['audio_message.m4a'])
+      expect(out).toEqual([{ name: 'audio_message.m4a', text: 'dictated words' }])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('sidecar failure skips the file instead of throwing', async () => {
+    globalThis.fetch = (async () => { throw new Error('connection refused') }) as any
+    try {
+      expect(await transcribeDownloads([voiceClip] as any)).toEqual([])
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  test('disabled flag short-circuits without touching the network', async () => {
+    const prev = process.env.HYDRA_TRANSCRIBE_ENABLED
+    process.env.HYDRA_TRANSCRIBE_ENABLED = '0'
+    globalThis.fetch = (async () => { throw new Error('should not be called') }) as any
+    try {
+      expect(await transcribeDownloads([voiceClip] as any)).toEqual([])
+    } finally {
+      globalThis.fetch = realFetch
+      if (prev === undefined) delete process.env.HYDRA_TRANSCRIBE_ENABLED
+      else process.env.HYDRA_TRANSCRIBE_ENABLED = prev
+    }
+  })
 })
