@@ -53,6 +53,9 @@ function loadTemplateFile(path: string, cache: FileCache | null, label: string):
           for (const a of invalid) process.stderr.write(`daemon: ${label}: "${name}" has unknown action "${a}" — skipping it\n`)
           if (validActions.length > 0) template.actions = validActions
         }
+        if (BUILTIN_TEMPLATES[name.toLowerCase()]?.actions && template.actions) {
+          process.stderr.write(`daemon: ${label}: "${name}" overrides builtin with actions [${BUILTIN_TEMPLATES[name.toLowerCase()].actions}]\n`)
+        }
         valid[name.toLowerCase()] = template
       } else {
         process.stderr.write(`daemon: ${label}: skipping "${name}" — missing or non-string prompt\n`)
@@ -73,38 +76,15 @@ function loadAllTemplates(): Record<string, SpawnTemplate> {
   const localResult = loadTemplateFile(join(HYDRA_DIR, 'templates.local.json'), localCache, 'templates.local.json')
   localCache = localResult.cache
 
-  // Merge: builtins < repo < local (last wins)
   return { ...BUILTIN_TEMPLATES, ...repoResult.templates, ...localResult.templates }
-}
-
-export function resolveTemplate(topic: string): { template: SpawnTemplate | null; remainingTopic: string; templateName: string | null } {
-  let prefix = ''
-  let searchTopic = topic
-  const wtMatch = topic.match(/^(?:worktree|wt):\S+\s+/)
-  if (wtMatch) {
-    prefix = wtMatch[0]
-    searchTopic = topic.slice(wtMatch[0].length)
-  }
-
-  const firstWord = searchTopic.match(/^(\S+)\s+/)
-  if (!firstWord) return { template: null, remainingTopic: topic, templateName: null }
-
-  const name = firstWord[1].toLowerCase()
-  if (name.includes(':')) return { template: null, remainingTopic: topic, templateName: null }
-  const rest = prefix + searchTopic.slice(firstWord[0].length)
-
-  const all = loadAllTemplates()
-  if (all[name]) return { template: all[name], remainingTopic: rest, templateName: name }
-
-  return { template: null, remainingTopic: topic, templateName: null }
-}
-
-export function isTemplateName(name: string): boolean {
-  return name.toLowerCase() in loadAllTemplates()
 }
 
 export function getTemplate(name: string): SpawnTemplate | null {
   return loadAllTemplates()[name.toLowerCase()] ?? null
+}
+
+export function getTemplateNames(): string[] {
+  return Object.keys(loadAllTemplates())
 }
 
 export function listTemplates(): Array<{ name: string; prompt: string }> {

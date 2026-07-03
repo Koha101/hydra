@@ -39,87 +39,67 @@ async function resolveSpawnTarget(msg: InboundMessage): Promise<string> {
   return chatId
 }
 
-export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
+async function spawnAndNotify(
+  msg: InboundMessage,
+  topic: string,
+  template?: { name: string; template: SpawnTemplate },
+): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
   const chatId = await resolveSpawnTarget(msg)
+  const label = template ? `${template.name}` : null
+  const spawnOpts = template ? { promptPrefix: template.template.prompt } : undefined
 
   try {
-    const result = await doSpawnSession(topic, chatId, msg.id)
+    const result = await doSpawnSession(topic, chatId, msg.id, spawnOpts)
 
-    if (msg.isDM) {
-      const e = sessionEmoji(result.name)
-      const base = (result.url && !gateway.canThreadInDM)
-        ? `Spawned ${e} \`${result.name}\` — ${result.url}`
-        : `Spawned ${e} \`${result.name}\``
-      const reply = `${base}\nView in any terminal: \`tmux attach -t ${result.name}\``
-      await gateway.send(msg.channelId, reply, { replyTo: msg.id })
+    if (label) {
+      process.stderr.write(`daemon: template "${label}" spawned ${result.name} for: ${topic}\n`)
+      void gateway.send(result.threadId, `_Using **${label}** template_`).catch(() => {})
     }
 
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'notification',
-        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\` for topic: ${topic}${result.url ? ` — ${result.url}` : ''}`,
-        meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
-      })
-    }
-
-    debouncedRefreshListDisplay()
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`daemon: spawn intercept failed: ${errMsg}\n`)
-    try { await gateway.send(msg.channelId, `Spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
-  }
-}
-
-export async function handleTemplateSpawn(msg: InboundMessage, templateName: string, topic: string, template: SpawnTemplate, access: Access): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
-  const chatId = await resolveSpawnTarget(msg)
-
-  try {
-    const result = await doSpawnSession(topic, chatId, msg.id, { promptPrefix: template.prompt })
-
-    process.stderr.write(`daemon: template "${templateName}" spawned ${result.name} for: ${topic}\n`)
-    void gateway.send(result.threadId, `_Using **${templateName}** template_`).catch(() => {})
-
-    if (template.actions) {
-      for (const action of template.actions) {
+    if (template?.template.actions) {
+      for (const action of template.template.actions) {
         try {
+          const actionTopic = `${template.template.prompt} — ${topic}`
           switch (action) {
             case 'design':
-              await startDesign(result.threadId, `${template.prompt} — ${topic}`)
-              process.stderr.write(`daemon: template action: started design for ${topic}\n`)
+              await startDesign(result.threadId, actionTopic)
               break
             case 'review':
-              await startReview(result.threadId, result.sessionId, 3, `${template.prompt} — ${topic}`)
-              process.stderr.write(`daemon: template action: started review for ${topic}\n`)
+              await startReview(result.threadId, result.sessionId, 3, actionTopic)
               break
             case 'build':
-              await startBuild(result.threadId, result.sessionId, 3, `${template.prompt} — ${topic}`)
-              process.stderr.write(`daemon: template action: started build for ${topic}\n`)
+              await startBuild(result.threadId, result.sessionId, 3, actionTopic)
               break
             default:
               process.stderr.write(`daemon: unknown template action: ${action}\n`)
+              continue
           }
+          process.stderr.write(`daemon: template action: started ${action} for ${topic}\n`)
         } catch (err) {
-          process.stderr.write(`daemon: template action "${action}" failed: ${err instanceof Error ? err.message : err}\n`)
+          const errMsg = err instanceof Error ? err.message : String(err)
+          process.stderr.write(`daemon: template action "${action}" failed: ${errMsg}\n`)
+          void gateway.send(result.threadId, `_Action **${action}** failed: ${errMsg}_`).catch(() => {})
         }
       }
     }
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
+      const suffix = label ? ` (${label})` : ''
       const base = (result.url && !gateway.canThreadInDM)
-        ? `Spawned ${e} \`${result.name}\` (${templateName}) — ${result.url}`
-        : `Spawned ${e} \`${result.name}\` (${templateName})`
-      await gateway.send(msg.channelId, base, { replyTo: msg.id })
+        ? `Spawned ${e} \`${result.name}\`${suffix} — ${result.url}`
+        : `Spawned ${e} \`${result.name}\`${suffix}`
+      const reply = `${base}\nView in any terminal: \`tmux attach -t ${result.name}\``
+      await gateway.send(msg.channelId, reply, { replyTo: msg.id })
     }
 
     const mainBridge = transport.get('main')
     if (mainBridge) {
+      const suffix = label ? ` (${label})` : ''
       transport.sendToBridge(mainBridge, {
         type: 'notification',
-        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\` (${templateName}) for: ${topic}${result.url ? ` — ${result.url}` : ''}`,
+        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\`${suffix} for: ${topic}${result.url ? ` — ${result.url}` : ''}`,
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
@@ -127,9 +107,21 @@ export async function handleTemplateSpawn(msg: InboundMessage, templateName: str
     debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`daemon: template spawn failed: ${errMsg}\n`)
-    try { await gateway.send(msg.channelId, `Template spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
+    process.stderr.write(`daemon: spawn failed: ${errMsg}\n`)
+    try { await gateway.send(msg.channelId, `Spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
   }
+}
+
+export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
+  await spawnAndNotify(msg, topic)
+}
+
+export async function handleTemplateSpawn(msg: InboundMessage, templateName: string, topic: string, template: SpawnTemplate, access: Access): Promise<void> {
+  if (!topic.trim()) {
+    await gateway.send(msg.channelId, `_\`${templateName}:\` needs a topic — e.g. \`${templateName}: describe the task\`_`, { replyTo: msg.id })
+    return
+  }
+  await spawnAndNotify(msg, topic, { name: templateName, template })
 }
 
 export async function handleKillIntercept(msg: InboundMessage, name: string): Promise<void> {

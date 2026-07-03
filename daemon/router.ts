@@ -294,19 +294,24 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     // Template as first-class command: "review: topic", "design: topic", etc.
     // Placed AFTER all hardcoded commands so new commands naturally take priority.
-    const templateCmdMatch = msg.content.match(/^(\w+):\s*([\s\S]+)/i)
-    if (templateCmdMatch) {
-      const resolvedThread = registry.resolveThreadId(msg)
-      const activeSession = registry.getByThread(resolvedThread)
-      const sessionInfo = activeSession ? registry.get(activeSession) : null
-      if (!sessionInfo || !isAlive(sessionInfo)) {
-        const { getTemplate } = await import('./templates.js')
-        const candidateName = templateCmdMatch[1].trim()
-        const candidateTopic = templateCmdMatch[2].trim()
-        const template = getTemplate(candidateName)
-        if (template) {
-          void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
-          return
+    // Uses dynamic regex from known template names to avoid matching arbitrary "word:" patterns.
+    {
+      const { getTemplate, getTemplateNames } = await import('./templates.js')
+      const names = getTemplateNames()
+      if (names.length > 0) {
+        const pattern = new RegExp(`^(${names.join('|')}):\\s*([\\s\\S]*)$`, 'i')
+        const templateCmdMatch = msg.content.match(pattern)
+        if (templateCmdMatch) {
+          const resolvedThread = registry.resolveThreadId(msg)
+          const activeSession = registry.getByThread(resolvedThread)
+          const sessionInfo = activeSession ? registry.get(activeSession) : null
+          if (!sessionInfo || !isAlive(sessionInfo)) {
+            const candidateName = templateCmdMatch[1].trim()
+            const candidateTopic = templateCmdMatch[2].trim()
+            const template = getTemplate(candidateName)!
+            void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
+            return
+          }
         }
       }
     }
