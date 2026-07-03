@@ -53,7 +53,18 @@ function loadUserTemplates(): Record<string, SpawnTemplate> {
         process.stderr.write(`daemon: templates.json: skipping "${name}" — reserved command name\n`)
       } else if (entry && typeof entry === 'object' && typeof entry.prompt === 'string') {
         const template: SpawnTemplate = { prompt: entry.prompt }
-        if (Array.isArray(entry.actions)) template.actions = entry.actions as string[]
+        if (Array.isArray(entry.actions)) {
+          const VALID_ACTIONS = new Set(['review', 'build', 'design'])
+          const validActions: string[] = []
+          for (const a of entry.actions) {
+            if (typeof a === 'string' && VALID_ACTIONS.has(a)) {
+              validActions.push(a)
+            } else {
+              process.stderr.write(`daemon: templates.json: "${name}" has unknown action "${a}" — skipping it\n`)
+            }
+          }
+          if (validActions.length > 0) template.actions = validActions
+        }
         valid[name.toLowerCase()] = template
       } else {
         process.stderr.write(`daemon: templates.json: skipping "${name}" — missing or non-string prompt\n`)
