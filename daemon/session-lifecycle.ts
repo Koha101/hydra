@@ -361,6 +361,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = buildSpawnPrompt(promptParams)
   }
 
+  if (opts?.promptPrefix) {
+    prompt = `${opts.promptPrefix}\n\n${prompt}`
+  }
+
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
   let claudeArgs: string
   if (isFork) {

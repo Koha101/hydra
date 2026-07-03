@@ -11,6 +11,7 @@ import { tmuxHasSession, isAlive } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild } from '../build.js'
 import { getActiveReviews, cancelReview } from '../adversarial.js'
+import { resolveTemplate, isTemplateName } from '../templates.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
@@ -36,8 +37,23 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
     }
   }
 
+  // Resolve template from first word of topic
+  const { template, remainingTopic, templateName } = resolveTemplate(topic)
+  const effectiveTopic = template ? remainingTopic : topic
+  const spawnOpts = template ? { promptPrefix: template.prompt } : undefined
+
+  // Hint when a single-word spawn matches a template name
+  if (!template && !topic.includes(' ') && isTemplateName(topic)) {
+    void gateway.send(msg.channelId, `_Tip: \`${topic}\` is a template — use \`spawn: ${topic} <topic>\` to activate it._`, { replyTo: msg.id }).catch(() => {})
+  }
+
   try {
-    const result = await doSpawnSession(topic, chatId, msg.id)
+    const result = await doSpawnSession(effectiveTopic, chatId, msg.id, spawnOpts)
+
+    if (templateName) {
+      process.stderr.write(`daemon: spawn used template "${templateName}" for topic: ${effectiveTopic}\n`)
+      void gateway.send(result.threadId, `_Using **${templateName}** template_`).catch(() => {})
+    }
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
@@ -165,7 +181,9 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Sessions:**',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
+    '• 🚀 `spawn: <template> <topic>` — templated session (review, fix, investigate, incident)',
     '• 🚀 `spawn-wt: <repo> <topic>` — new session in a git worktree',
+    '• 📋 `templates` — list available spawn templates',
     '• 📊 `list sessions` — show all running sessions',
     '• ☠️ `kill session: <name>` — terminate a named session',
     '• ☠️ `kill` — kill this session (thread-scoped)',
