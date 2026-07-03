@@ -12,6 +12,8 @@ import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild } from '../build.js'
 import { getActiveReviews, cancelReview } from '../adversarial.js'
 import { startDesign } from '../design.js'
+import { startReview } from '../adversarial.js'
+import { startBuild } from '../build.js'
 import type { SpawnTemplate } from '../templates.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
@@ -87,6 +89,14 @@ export async function handleTemplateSpawn(msg: InboundMessage, templateName: str
             case 'design':
               await startDesign(result.threadId, topic)
               process.stderr.write(`daemon: template action: started design for ${topic}\n`)
+              break
+            case 'review':
+              await startReview(result.threadId, result.sessionId, 3, topic)
+              process.stderr.write(`daemon: template action: started review for ${topic}\n`)
+              break
+            case 'build':
+              await startBuild(result.threadId, result.sessionId, 3, topic)
+              process.stderr.write(`daemon: template action: started build for ${topic}\n`)
               break
             default:
               process.stderr.write(`daemon: unknown template action: ${action}\n`)
