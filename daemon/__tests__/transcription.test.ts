@@ -1,9 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { isAudioFile, mergeTranscripts, transcriptionEnabled } from '../transcription.js'
 
-// Suppress stderr logging during tests
-process.stderr.write = (() => true) as any
-
 describe('isAudioFile', () => {
   test('detects audio by MIME type', () => {
     expect(isAudioFile({ contentType: 'audio/ogg', name: 'voice-message.ogg' })).toBe(true)
