@@ -6,6 +6,6 @@
     "prompt": "Investigate this issue. Search the codebase, read logs, check error tracking, and report your findings. Do NOT make changes unless explicitly asked."
   },
   "incident": {
-    "prompt": "Production incident — prioritize speed. Read ~/trading/discord-bot-custom/services.json to find the relevant repo, code paths, and runbooks for this service. Read each listed runbook before investigating. Check Sentry for recent errors matching the incident description. Trace the code path and post a preliminary RCA to this thread within your first few messages. If the fix is clear, implement it and create a PR. Communicate status updates as you go."
+    "prompt": "Production incident — prioritize speed. Read the on-call guide at wiki/articles/treasury/operations/oncall.md. Check Sentry for recent errors matching the incident description. Trace the code path and post a preliminary RCA to this thread within your first few messages. If the fix is clear, implement it and create a PR. Communicate status updates as you go."
   }
 }
