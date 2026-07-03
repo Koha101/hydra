@@ -3,21 +3,21 @@ import { join } from 'path'
 
 export type SpawnTemplate = {
   prompt: string
-  actions?: string[]
+  action?: string
 }
 
 const BUILTIN_TEMPLATES: Record<string, SpawnTemplate> = {
   review: {
     prompt: 'You are the owner of a review session. An adversarial review protocol will start automatically — a critic will challenge your work across multiple rounds. Defend your design and fix valid issues.',
-    actions: ['review'],
+    action: 'review',
   },
   design: {
     prompt: 'You are a design session. A multi-persona design process will start automatically in your thread. Participate as the owner — answer questions from the personas and guide the synthesis toward a concrete implementation plan.',
-    actions: ['design'],
+    action: 'design',
   },
   build: {
     prompt: 'You are the owner of a build session. A multi-agent build protocol will start automatically — a builder will implement the task and a critic will review each round. Guide the process and answer questions.',
-    actions: ['build'],
+    action: 'build',
   },
 }
 
@@ -47,14 +47,15 @@ function loadTemplateFile(path: string, cache: FileCache | null, label: string):
         process.stderr.write(`daemon: ${label}: skipping "${name}" — reserved command name\n`)
       } else if (entry && typeof entry === 'object' && typeof entry.prompt === 'string') {
         const template: SpawnTemplate = { prompt: entry.prompt }
-        if (Array.isArray(entry.actions)) {
-          const validActions = (entry.actions as unknown[]).filter((a): a is string => typeof a === 'string' && VALID_ACTIONS.has(a))
-          const invalid = (entry.actions as unknown[]).filter(a => typeof a !== 'string' || !VALID_ACTIONS.has(a))
-          for (const a of invalid) process.stderr.write(`daemon: ${label}: "${name}" has unknown action "${a}" — skipping it\n`)
-          if (validActions.length > 0) template.actions = validActions
+        if (typeof entry.action === 'string') {
+          if (VALID_ACTIONS.has(entry.action)) {
+            template.action = entry.action
+          } else {
+            process.stderr.write(`daemon: ${label}: "${name}" has unknown action "${entry.action}" — ignoring it\n`)
+          }
         }
-        if (BUILTIN_TEMPLATES[name.toLowerCase()]?.actions && template.actions) {
-          process.stderr.write(`daemon: ${label}: "${name}" overrides builtin with actions [${BUILTIN_TEMPLATES[name.toLowerCase()].actions}]\n`)
+        if (BUILTIN_TEMPLATES[name.toLowerCase()]?.action && template.action) {
+          process.stderr.write(`daemon: ${label}: "${name}" overrides builtin with action "${BUILTIN_TEMPLATES[name.toLowerCase()].action}"\n`)
         }
         valid[name.toLowerCase()] = template
       } else {
@@ -87,9 +88,9 @@ export function getTemplateNames(): string[] {
   return Object.keys(loadAllTemplates())
 }
 
-export function listTemplates(): Array<{ name: string; prompt: string }> {
+export function listTemplates(): Array<{ name: string; prompt: string; action?: string }> {
   const all = loadAllTemplates()
   return Object.entries(all)
-    .map(([name, t]) => ({ name, prompt: t.prompt }))
+    .map(([name, t]) => ({ name, prompt: t.prompt, action: t.action }))
     .sort((a, b) => a.name.localeCompare(b.name))
 }

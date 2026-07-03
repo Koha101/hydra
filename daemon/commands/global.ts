@@ -57,30 +57,26 @@ async function spawnAndNotify(
       void gateway.send(result.threadId, `_Using **${label}** template_`).catch(() => {})
     }
 
-    if (template?.template.actions) {
-      for (const action of template.template.actions) {
-        try {
-          const actionTopic = `${template.template.prompt} — ${topic}`
-          switch (action) {
-            case 'design':
-              await startDesign(result.threadId, actionTopic)
-              break
-            case 'review':
-              await startReview(result.threadId, result.sessionId, 3, actionTopic)
-              break
-            case 'build':
-              await startBuild(result.threadId, result.sessionId, 3, actionTopic)
-              break
-            default:
-              process.stderr.write(`daemon: unknown template action: ${action}\n`)
-              continue
-          }
-          process.stderr.write(`daemon: template action: started ${action} for ${topic}\n`)
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`daemon: template action "${action}" failed: ${errMsg}\n`)
-          void gateway.send(result.threadId, `_Action **${action}** failed: ${errMsg}_`).catch(() => {})
+    if (template?.template.action) {
+      const action = template.template.action
+      const actionTopic = `${template.template.prompt} — ${topic}`
+      try {
+        switch (action) {
+          case 'design':
+            await startDesign(result.threadId, actionTopic)
+            break
+          case 'review':
+            await startReview(result.threadId, result.sessionId, 3, actionTopic)
+            break
+          case 'build':
+            await startBuild(result.threadId, result.sessionId, 3, actionTopic)
+            break
         }
+        process.stderr.write(`daemon: template action: started ${action} for ${topic}\n`)
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        process.stderr.write(`daemon: template action "${action}" failed: ${errMsg}\n`)
+        void gateway.send(result.threadId, `_Action **${action}** failed: ${errMsg}_`).catch(() => {})
       }
     }
 

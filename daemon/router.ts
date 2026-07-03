@@ -226,7 +226,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
       if (templates.length === 0) {
         void gateway.send(msg.channelId, 'No templates configured.', { replyTo: msg.id })
       } else {
-        const lines = templates.map(t => `**${t.name}** — ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '...' : ''}`)
+        const lines = templates.map(t => {
+          const actionTag = t.action ? ` _(+ ${t.action} protocol)_` : ''
+          return `**${t.name}**${actionTag} — ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+        })
         void gateway.send(msg.channelId, `**Spawn Templates**\n${lines.join('\n')}`, { replyTo: msg.id })
       }
       return
@@ -302,16 +305,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
         const pattern = new RegExp(`^(${names.join('|')}):\\s*([\\s\\S]*)$`, 'i')
         const templateCmdMatch = msg.content.match(pattern)
         if (templateCmdMatch) {
-          const resolvedThread = registry.resolveThreadId(msg)
-          const activeSession = registry.getByThread(resolvedThread)
-          const sessionInfo = activeSession ? registry.get(activeSession) : null
-          if (!sessionInfo || !isAlive(sessionInfo)) {
-            const candidateName = templateCmdMatch[1].trim()
-            const candidateTopic = templateCmdMatch[2].trim()
-            const template = getTemplate(candidateName)!
-            void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
-            return
-          }
+          const candidateName = templateCmdMatch[1].trim()
+          const candidateTopic = templateCmdMatch[2].trim()
+          const template = getTemplate(candidateName)!
+          void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
+          return
         }
       }
     }
@@ -364,7 +362,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const designMatch = msg.content.match(/^(?:\/design|design):\s*([\s\S]+)$/i)
+      const designMatch = msg.content.match(/^(?:\/design|design)\s+([\s\S]+)$/i)
       if (designMatch) {
         void handleDesignIntercept(msg, designMatch[1].trim())
         return
