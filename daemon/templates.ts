@@ -1,9 +1,10 @@
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 import { STATE_DIR } from './config.js'
 
 export type SpawnTemplate = {
   prompt: string
+  actions?: string[]
 }
 
 const BUILTIN_TEMPLATES: Record<string, SpawnTemplate> = {
@@ -19,22 +20,41 @@ const BUILTIN_TEMPLATES: Record<string, SpawnTemplate> = {
   incident: {
     prompt: 'Production incident — prioritize speed. Check for on-call guides in .claude/ first. Identify the root cause, implement a fix, and create a PR. Communicate status updates to your thread as you go.',
   },
+  design: {
+    prompt: 'You are a design session. A multi-persona design process will start automatically in your thread. Participate as the owner — answer questions from the personas and guide the synthesis toward a concrete implementation plan.',
+    actions: ['design'],
+  },
 }
+
+const RESERVED = new Set(['spawn', 'kill', 'fork', 'resume', 'respawn', 'listen', 'pause', 'help', 'commands', 'recover', 'build', 'sessions', 'watch', 'unwatch', 'watches', 'health', 'restart', 'reconnect', 'protocols', 'templates', 'usage'])
+
+let userTemplateCache: { mtime: number; templates: Record<string, SpawnTemplate> } | null = null
 
 function loadUserTemplates(): Record<string, SpawnTemplate> {
   const path = join(STATE_DIR, 'templates.json')
   if (!existsSync(path)) return {}
+
   try {
+    const mtime = statSync(path).mtimeMs
+    if (userTemplateCache && userTemplateCache.mtime === mtime) return userTemplateCache.templates
+
     const raw = JSON.parse(readFileSync(path, 'utf-8'))
     const valid: Record<string, SpawnTemplate> = {}
     for (const [name, t] of Object.entries(raw)) {
       const entry = t as Record<string, unknown>
-      if (entry && typeof entry === 'object' && typeof entry.prompt === 'string') {
-        valid[name.toLowerCase()] = { prompt: entry.prompt }
+      if (name.includes(':')) {
+        process.stderr.write(`daemon: templates.json: skipping "${name}" — template names cannot contain colons\n`)
+      } else if (RESERVED.has(name.toLowerCase())) {
+        process.stderr.write(`daemon: templates.json: skipping "${name}" — reserved command name\n`)
+      } else if (entry && typeof entry === 'object' && typeof entry.prompt === 'string') {
+        const template: SpawnTemplate = { prompt: entry.prompt }
+        if (Array.isArray(entry.actions)) template.actions = entry.actions as string[]
+        valid[name.toLowerCase()] = template
       } else {
         process.stderr.write(`daemon: templates.json: skipping "${name}" — missing or non-string prompt\n`)
       }
     }
+    userTemplateCache = { mtime, templates: valid }
     return valid
   } catch (err) {
     process.stderr.write(`daemon: failed to load templates.json: ${err instanceof Error ? err.message : err}\n`)
@@ -70,6 +90,12 @@ export function resolveTemplate(topic: string): { template: SpawnTemplate | null
 export function isTemplateName(name: string): boolean {
   const lower = name.toLowerCase()
   return lower in BUILTIN_TEMPLATES || lower in loadUserTemplates()
+}
+
+export function getTemplate(name: string): SpawnTemplate | null {
+  const lower = name.toLowerCase()
+  const user = loadUserTemplates()
+  return user[lower] ?? BUILTIN_TEMPLATES[lower] ?? null
 }
 
 export function listTemplates(): Array<{ name: string; prompt: string; source: 'builtin' | 'user' }> {

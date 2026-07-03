@@ -6,7 +6,7 @@ import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
-import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
+import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -290,6 +290,25 @@ gateway.onMessage(async (msg: InboundMessage) => {
     if (usageMatch) {
       void handleUsageIntercept(msg)
       return
+    }
+
+    // Template as first-class command: "review: topic", "design: topic", etc.
+    // Placed AFTER all hardcoded commands so new commands naturally take priority.
+    const templateCmdMatch = msg.content.match(/^(\w+):\s*([\s\S]+)/i)
+    if (templateCmdMatch) {
+      const resolvedThread = registry.resolveThreadId(msg)
+      const activeSession = registry.getByThread(resolvedThread)
+      const sessionInfo = activeSession ? registry.get(activeSession) : null
+      if (!sessionInfo || !isAlive(sessionInfo)) {
+        const { getTemplate } = await import('./templates.js')
+        const candidateName = templateCmdMatch[1].trim()
+        const candidateTopic = templateCmdMatch[2].trim()
+        const template = getTemplate(candidateName)
+        if (template) {
+          void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
+          return
+        }
+      }
     }
 
     if (msg.isThread) {
