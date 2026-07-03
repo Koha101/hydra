@@ -42,6 +42,21 @@ which starts it if (and only if) setup has been done, and never restarts a
 running model server. `hydra down` stops it. To start it immediately without
 touching the daemon, run `./start-transcribe.sh` yourself.
 
+Supervision details:
+
+- **One shared tmux session (`hydra-transcribe`) for all platforms** — the
+  discord and slack daemons use the same model server; per-platform sessions
+  would race for the same port.
+- **A crashed server parks instead of exiting** (bad port, missing ffmpeg,
+  failed model download): the session stays alive showing the error, so the
+  watchdog can't respawn-with-model-load every 120s. Fix the cause, then
+  `tmux kill-session -t hydra-transcribe` to let it restart.
+- **The mock backend is never auto-supervised** — it runs manually (or with an
+  explicit `HYDRA_TRANSCRIBE_AUTOSTART=1`), so leftover test config can't keep
+  canned transcripts flowing into real messages.
+- **A remote `HYDRA_TRANSCRIBE_URL` disables local autostart** — nothing to
+  supervise on this machine.
+
 First start downloads the model (Parakeet ~0.6 GB; Canary ~5 GB). When
 `GET /health` reports `"loaded": true`, it's ready. Send a voice note — it
 arrives to Claude as `[voice transcript] ...`. No daemon restart needed; the

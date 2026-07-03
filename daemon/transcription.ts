@@ -18,7 +18,7 @@
  * token-required side effects and can be unit-tested in isolation.
  */
 
-import { readFileSync } from 'fs'
+import { readFileSync, statSync } from 'fs'
 import { basename } from 'path'
 
 import type { DownloadedFile } from '../gateway.js'
@@ -66,12 +66,19 @@ function transcribeMaxBytes(): number {
 // Pure helpers (unit-tested)
 // ---------------------------------------------------------------------------
 
+// Content types that don't identify the payload — only these fall through to
+// the extension check. A definitive non-audio type (video/mp4, image/png) must
+// NOT be re-classified by extension: mp4/webm are also video containers, and a
+// screen recording is not dictation.
+const GENERIC_CONTENT_TYPES = new Set(['', 'unknown', 'application/octet-stream', 'binary/octet-stream', 'application/ogg'])
+
 /** True if a downloaded file looks like audio, by MIME type or extension. */
 export function isAudioFile(file: { contentType?: string | null; name?: string | null }): boolean {
-  const ct = (file.contentType ?? '').toLowerCase()
+  const ct = (file.contentType ?? '').toLowerCase().split(';')[0].trim()
   if (ct.startsWith('audio/')) return true
   // Discord occasionally reports voice notes as application/ogg or octet-stream;
-  // fall back to the extension.
+  // only such generic types fall back to the extension.
+  if (!GENERIC_CONTENT_TYPES.has(ct)) return false
   const name = (file.name ?? '').toLowerCase()
   const dot = name.lastIndexOf('.')
   if (dot === -1) return false
@@ -104,18 +111,20 @@ export function mergeTranscripts(originalContent: string, transcripts: Transcrip
 
 /** Transcribe a single audio file via the sidecar. Returns null on any failure. */
 export async function transcribeFile(path: string, contentType?: string | null): Promise<string | null> {
+  // Size check BEFORE reading: the cap must protect daemon memory too, and
+  // gateway-reported attachment sizes aren't always present or truthful.
   let bytes: Buffer
   try {
+    const size = statSync(path).size
+    if (size > transcribeMaxBytes()) {
+      process.stderr.write(
+        `transcription: skipping ${basename(path)} — ${(size / 1024 / 1024).toFixed(1)}MB exceeds HYDRA_TRANSCRIBE_MAX_BYTES\n`,
+      )
+      return null
+    }
     bytes = readFileSync(path)
   } catch (err) {
     process.stderr.write(`transcription: cannot read ${path}: ${err}\n`)
-    return null
-  }
-
-  if (bytes.byteLength > transcribeMaxBytes()) {
-    process.stderr.write(
-      `transcription: skipping ${basename(path)} — ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB exceeds HYDRA_TRANSCRIBE_MAX_BYTES\n`,
-    )
     return null
   }
 

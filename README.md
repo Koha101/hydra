@@ -187,6 +187,9 @@ to set up is the sidecar.
 ```
 
 Send a voice note → Claude receives `[voice transcript] This is a mock transcription...`.
+(The mock is manual-only: the daemon never auto-starts it, so a leftover mock
+setting can't silently feed canned text into real messages. `hydra down` or
+`tmux kill-session -t hydra-transcribe` stops it.)
 
 **Real transcription (one-time; needs ffmpeg — `brew install ffmpeg`):**
 
@@ -196,12 +199,15 @@ Send a voice note → Claude receives `[voice transcript] This is a mock transcr
 
 That's it. Once set up, the sidecar starts and stays up **with the daemon** —
 `hydra up`, `start-daemon.sh`, and the watchdog all bring it along; `hydra down`
-stops it. Run `./start-transcribe.sh` to start it by hand. Set
+stops it. One shared tmux session (`hydra-transcribe`) serves every platform
+daemon. Run `./start-transcribe.sh` to start it by hand. Set
 `HYDRA_TRANSCRIBE_AUTOSTART=0` to keep the daemon from managing it, or `=1` to
 force autostart even before setup (loud failure instead of a quiet skip).
 
 If the sidecar is unreachable, the daemon logs it and delivers the message without a
-transcript — dictation never blocks normal messages. Disable entirely with
+transcript — dictation never blocks normal messages (a down sidecar fails fast; a
+live-but-slow one delays only the voice message itself, up to
+`HYDRA_TRANSCRIBE_TIMEOUT_MS`, 60s default). Disable entirely with
 `HYDRA_TRANSCRIBE_ENABLED=0`. Full setup, env vars, and tuning:
 [`transcribe-server/README.md`](transcribe-server/README.md).
 

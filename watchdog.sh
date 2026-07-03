@@ -47,6 +47,14 @@ if ! command -v tmux &>/dev/null; then
   exit 1
 fi
 
+# Transcription sidecar — keep the voice-dictation sidecar alive. Runs BEFORE
+# the daemon checks (their branches exit early) — the sidecar is independent
+# of daemon health. --auto is a quiet no-op unless the sidecar is set up (or
+# explicitly enabled) and never restarts a running model server, so this
+# can't crash-loop on machines without dictation. The gate lives in
+# start-transcribe.sh (it reads the state-dir .env itself).
+( cd "$HYDRA_DIR" && HYDRA_STATE_DIR="$HYDRA_STATE_DIR" CHAT_PLATFORM="$CHAT_PLATFORM" ./start-transcribe.sh --auto >> "$LOG" 2>&1 )
+
 # Check if daemon tmux session exists at all
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   echo "$(date): Daemon tmux session missing, starting" >> "$LOG"
@@ -93,9 +101,3 @@ if ! tmux has-session -t "$BOT_TMUX_SESSION" 2>/dev/null; then
   fi
 fi
 
-# Transcription sidecar — keep the voice-dictation sidecar alive. --auto is a
-# quiet no-op unless the sidecar is set up (or explicitly enabled) and never
-# restarts a running model server, so this can't crash-loop on machines
-# without dictation. The gate lives in start-transcribe.sh (it sources .env).
-cd "$HYDRA_DIR"
-HYDRA_STATE_DIR="$HYDRA_STATE_DIR" CHAT_PLATFORM="$CHAT_PLATFORM" ./start-transcribe.sh --auto >> "$LOG" 2>&1
