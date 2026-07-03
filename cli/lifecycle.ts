@@ -1,4 +1,4 @@
-import { existsSync, statSync, unlinkSync, readFileSync, symlinkSync, writeFileSync, readdirSync } from 'fs'
+import { existsSync, statSync, unlinkSync, readFileSync, symlinkSync, writeFileSync, readdirSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
@@ -355,4 +355,125 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
   } else {
     console.log('RESULT: all checks passed.')
   }
+}
+
+// ---------------------------------------------------------------------------
+// install (generates + loads launchd plist)
+// ---------------------------------------------------------------------------
+
+function plistLabel(platform: string): string {
+  return `com.hydra.watchdog.${platform}`
+}
+
+function plistPath(platform: string): string {
+  return join(homedir(), 'Library', 'LaunchAgents', `${plistLabel(platform)}.plist`)
+}
+
+function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string; configDir: string }): string {
+  const bunPath = execFileSync('which', ['bun'], { encoding: 'utf-8', env: process.env as Record<string, string> }).trim()
+  const hydraTs = join(import.meta.dir, 'hydra.ts')
+  const logFile = platform === 'slack'
+    ? join(homedir(), 'hydra-watchdog-slack.log')
+    : join(homedir(), 'hydra-watchdog.log')
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${plistLabel(platform)}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${bunPath}</string>
+        <string>${hydraTs}</string>
+        <string>watchdog</string>
+        <string>${platform}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HYDRA_STATE_DIR</key>
+        <string>${opts.stateDir}</string>
+        <key>SPAWN_CWD</key>
+        <string>${opts.spawnCwd}</string>
+        <key>CLAUDE_CONFIG_DIR</key>
+        <string>${opts.configDir}</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${logFile}</string>
+    <key>StandardErrorPath</key>
+    <string>${logFile}</string>
+</dict>
+</plist>
+`
+}
+
+export async function lifecycleInstall(platform: string): Promise<void> {
+  const cfg = resolveConfig(platform)
+  const dest = plistPath(platform)
+  const label = plistLabel(platform)
+
+  // Ensure LaunchAgents dir exists
+  const laDir = dirname(dest)
+  if (!existsSync(laDir)) mkdirSync(laDir, { recursive: true })
+
+  // Ensure state dir exists
+  if (!existsSync(cfg.stateDir)) mkdirSync(cfg.stateDir, { recursive: true })
+
+  // Unload existing if present
+  if (existsSync(dest)) {
+    try { execSync(`launchctl unload ${shq(dest)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    console.log(`unloaded existing ${label}`)
+  }
+
+  // Check for .env
+  const envFile = join(cfg.stateDir, '.env')
+  if (!existsSync(envFile)) {
+    console.log()
+    console.log(`  ⚠ No .env found at ${envFile}`)
+    if (platform === 'slack') {
+      console.log(`  Create it with SLACK_BOT_TOKEN and SLACK_APP_TOKEN`)
+    } else {
+      console.log(`  Create it with DISCORD_BOT_TOKEN`)
+    }
+    console.log()
+  }
+
+  // Generate and write plist
+  const content = buildPlist(platform, {
+    stateDir: cfg.stateDir,
+    spawnCwd: cfg.spawnCwd,
+    configDir: cfg.configDir,
+  })
+  writeFileSync(dest, content)
+  console.log(`wrote ${dest}`)
+
+  // Load
+  execSync(`launchctl load ${shq(dest)}`, { stdio: 'inherit' })
+  console.log(`loaded ${label}`)
+
+  // Run preflight
+  console.log()
+  await lifecyclePreflight(platform)
+
+  console.log()
+  console.log(`${platform} watchdog installed. It will run every 120s.`)
+  console.log(`Start hydra with: hydra up ${platform}`)
+}
+
+export function lifecycleUninstall(platform: string): void {
+  const dest = plistPath(platform)
+  const label = plistLabel(platform)
+
+  if (!existsSync(dest)) {
+    console.log(`${label} not installed`)
+    return
+  }
+
+  try { execSync(`launchctl unload ${shq(dest)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+  unlinkSync(dest)
+  console.log(`unloaded and removed ${dest}`)
 }

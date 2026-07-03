@@ -37,12 +37,13 @@ Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or
 - **One gateway connection per platform.** Prevents token race conditions (Discord) and simplifies state.
 - **Daemon ↔ Bridge separation.** The daemon is long-lived; Claude sessions come and go. The bridge reconnects automatically.
 - **Platform selection via env var.** Set `CHAT_PLATFORM=discord` or `CHAT_PLATFORM=slack`. Default: `discord`.
-- **Simultaneous platforms.** Run two daemons on different `DISCORD_STATE_DIR` paths for Discord + Slack at the same time.
+- **Simultaneous platforms.** Run two daemons on different state dirs for Discord + Slack at the same time.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - [tmux](https://github.com/tmux/tmux) — `brew install tmux`
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
 
 ## Quick Start
 
@@ -50,11 +51,17 @@ Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or
 # Install dependencies
 bun install
 
-# Start daemon (default: Discord)
-./start-daemon.sh
+# Create .env with your bot token
+mkdir -p ~/.claude/channels/discord
+cat > ~/.claude/channels/discord/.env << 'EOF'
+DISCORD_BOT_TOKEN=your-token-here
+EOF
 
-# Start Claude session
-./start-byte.sh
+# Install watchdog + verify setup
+bun cli/hydra.ts install discord
+
+# Start
+bun cli/hydra.ts up discord
 ```
 
 ## Platform Setup
@@ -62,15 +69,51 @@ bun install
 - **[Discord Setup](docs/discord.md)** — bot creation, token, permissions, pairing
 - **[Slack Setup](docs/slack.md)** — app manifest, Socket Mode, tokens
 
-## Configuration
+## CLI Reference
 
-### Platform selection
+All operations go through the `hydra` CLI (`bun cli/hydra.ts` or alias to `hydra`).
 
-Set in `~/trading/discord-bot-custom/.env`:
+### Setup
 
 ```bash
-CHAT_PLATFORM=discord    # or slack
+hydra install <platform>       # Generate launchd watchdog, run preflight
+hydra uninstall <platform>     # Remove launchd watchdog
+hydra preflight <platform>     # Verify deployment is ready
+```
 
+### Lifecycle
+
+```bash
+hydra up <platform>            # Start daemon + byte
+hydra down <platform>          # Stop byte + daemon
+hydra restart <platform>       # Restart daemon (picks up code changes)
+```
+
+### Session Management
+
+```bash
+hydra spawn <prompt>           # Spawn a new session
+hydra list                     # List active sessions
+hydra status <name>            # Session details
+hydra kill <name>              # Kill a session
+hydra health                   # Daemon diagnostics
+hydra clear-key <key>          # Clear a stuck idempotency key
+```
+
+### Options
+
+```
+--daemon <name>                Target a specific daemon (when multiple running)
+--json                         Output raw JSON
+```
+
+## Configuration
+
+### Bot tokens
+
+Set in `~/.claude/channels/<platform>/.env`:
+
+```bash
 # Discord
 DISCORD_BOT_TOKEN=MTIz...
 
@@ -79,11 +122,9 @@ SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 ```
 
-Discord bot token can also live in `~/.claude/channels/discord/.env` (loaded as fallback).
-
 ### Access control
 
-`access.json` controls who can message the bot. Lives in the state dir (`~/.claude/channels/discord/` by default, or wherever `DISCORD_STATE_DIR` points).
+`access.json` controls who can message the bot. Lives in the state dir (`~/.claude/channels/discord/` by default).
 
 ```jsonc
 {
@@ -107,28 +148,17 @@ See [ACCESS.md](./ACCESS.md) for full reference.
 
 ### Running both platforms simultaneously
 
-Each platform needs its own daemon (separate state dir + socket) and its own Claude session. They can use different `CLAUDE_CONFIG_DIR` values for separate logins.
-
 ```bash
-# Discord daemon (default state dir)
-./start-daemon.sh
-./start-byte.sh  # uses CLAUDE_CONFIG_DIR=~/.claude-personal
+# Install both
+hydra install discord
+hydra install slack
 
-# Slack daemon (separate state dir + socket)
-DISCORD_STATE_DIR=~/.claude/channels/slack CHAT_PLATFORM=slack \
-  bun run daemon.ts
-
-# Slack Claude session (different config dir, different cwd)
-export DAEMON_SOCK=~/.claude/channels/slack/daemon.sock
-export CLAUDE_CONFIG_DIR=~/.claude
-claude --channels plugin:discord@claude-plugins-official
+# Start both
+hydra up discord
+hydra up slack
 ```
 
-**Requirements for each platform:**
-- Its own `access.json` with platform-specific user IDs
-- `discord@claude-plugins-official` enabled in the `CLAUDE_CONFIG_DIR`'s `settings.json`
-- bridge.ts copied into the `CLAUDE_CONFIG_DIR`'s plugin cache
-- `DAEMON_SOCK` must be `export`ed so the bridge subprocess inherits it
+Each platform gets its own daemon, state dir, and watchdog. Use different `CLAUDE_CONFIG_DIR` values for separate logins.
 
 ## Tools
 
@@ -156,7 +186,7 @@ Spawn isolated Claude sessions from chat:
 | `listen` / `pause` | Toggle auto-routing in a session thread |
 | `help` / `commands` | Show all available commands |
 
-Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts. Kill them manually with `kill: <name>`.
+Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts.
 
 ## Files
 
@@ -167,34 +197,8 @@ Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessio
 | `slack-gateway.ts` | Slack implementation (@slack/bolt Socket Mode) |
 | `daemon.ts` | Platform-agnostic message router and session manager |
 | `bridge.ts` | MCP relay between Claude and daemon (unix socket ↔ stdio) |
-| `start-daemon.sh` | Start daemon in tmux |
-| `start-byte.sh` | Start main Claude session in tmux |
-| `stop-byte.sh` | Stop byte + kill orphaned claudes |
-| `restart-daemon.sh` | Safe restart: compile check → kill → relaunch → wait for socket |
-| `watchdog.sh` | launchd health monitor: heartbeat check + byte revival |
-| `preflight.sh` | Pre-deploy validator: tokens, tools, compile, channels gate |
-| `env-setup.sh` | Shared preamble: PATH, .env, STATE_DIR (sourced, not executed) |
-| `compile-check.sh` | Build gate: bun build entrypoints (sourced by daemon/preflight) |
-| `kill-orphan-bytes.sh` | Orphan reaper: kill claudes by DAEMON_SOCK (sourced by byte scripts) |
-| `cli/hydra.ts` | CLI: `hydra up/down/restart/spawn/list/kill/health` |
+| `cli/hydra.ts` | CLI entry point — routes commands |
+| `cli/helpers.ts` | Config resolution, tmux wrappers, socket comms, compile check |
+| `cli/lifecycle.ts` | Lifecycle commands: up/down/restart/watchdog/preflight/install |
 
-## Script Architecture
-
-Every executable script sources `env-setup.sh` as its first action. This guarantees:
-
-- **PATH** — homebrew, asdf shims, npm-global, ~/.local/bin
-- **.env** — platform config sourced from `~/.claude/channels/${CHAT_PLATFORM}/.env`
-- **STATE_DIR** — platform-scoped state directory
-- **CHAT_PLATFORM** — required when multiple platform dirs exist; defaults to discord for single-platform
-- **macOS** — asserted at the top; hydra uses caffeinate, ps eww, stat -f
-
-Scripts fall into two categories:
-
-| Type | Scripts | Convention |
-|------|---------|------------|
-| **Executables** | start-daemon, start-byte, stop-byte, restart-daemon, watchdog, preflight | `set -euo pipefail`, source env-setup.sh |
-| **Libraries** | compile-check, kill-orphan-bytes | Sourced via `source`, define functions only |
-
-Logs land at `~/hydra-${CHAT_PLATFORM}-daemon.log` and `~/hydra-${CHAT_PLATFORM}-byte.log`.
-
-The CLI (`hydra up/down/restart`) orchestrates these scripts — direct invocation also works.
+Logs land at `~/hydra-<platform>-daemon.log` and `~/hydra-<platform>-byte.log`.

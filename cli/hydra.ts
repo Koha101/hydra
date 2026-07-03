@@ -5,6 +5,7 @@ import { resolveSocket, sendRequest, printResponse } from './helpers.js'
 import {
   lifecycleUp, lifecycleDown, lifecycleRestart,
   lifecycleWatchdog, lifecyclePreflight,
+  lifecycleInstall, lifecycleUninstall,
 } from './lifecycle.js'
 
 // ---------------------------------------------------------------------------
@@ -12,6 +13,10 @@ import {
 // ---------------------------------------------------------------------------
 
 const USAGE = `hydra — manage hydra daemons and sessions
+
+Setup:
+  hydra install <platform>             Generate launchd watchdog + run preflight
+  hydra uninstall <platform>           Remove launchd watchdog
 
 Lifecycle:
   hydra up <platform>                  Start daemon + byte
@@ -64,13 +69,15 @@ async function main(): Promise<void> {
   const command = filtered[0]
 
   // Lifecycle commands
-  if (['up', 'down', 'restart', 'watchdog', 'preflight'].includes(command)) {
+  if (['install', 'uninstall', 'up', 'down', 'restart', 'watchdog', 'preflight'].includes(command)) {
     const platform = filtered[1]
     if (!platform) {
       console.error('error: platform is required (e.g. discord, slack)')
       process.exit(1)
     }
     switch (command) {
+      case 'install': await lifecycleInstall(platform); break
+      case 'uninstall': lifecycleUninstall(platform); break
       case 'up': await lifecycleUp(platform); break
       case 'down': await lifecycleDown(platform); break
       case 'restart': await lifecycleRestart(platform); break
