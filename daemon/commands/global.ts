@@ -87,15 +87,15 @@ export async function handleTemplateSpawn(msg: InboundMessage, templateName: str
         try {
           switch (action) {
             case 'design':
-              await startDesign(result.threadId, topic)
+              await startDesign(result.threadId, `${template.prompt} — ${topic}`)
               process.stderr.write(`daemon: template action: started design for ${topic}\n`)
               break
             case 'review':
-              await startReview(result.threadId, result.sessionId, 3, topic)
+              await startReview(result.threadId, result.sessionId, 3, `${template.prompt} — ${topic}`)
               process.stderr.write(`daemon: template action: started review for ${topic}\n`)
               break
             case 'build':
-              await startBuild(result.threadId, result.sessionId, 3, topic)
+              await startBuild(result.threadId, result.sessionId, 3, `${template.prompt} — ${topic}`)
               process.stderr.write(`daemon: template action: started build for ${topic}\n`)
               break
             default:
