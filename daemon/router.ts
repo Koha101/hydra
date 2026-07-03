@@ -19,6 +19,7 @@ import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handl
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
+import { listTemplates, getTemplate, getTemplateNames } from './templates.js'
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -221,7 +222,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     const templatesMatch = msg.content.match(/^(?:\/templates|templates)\s*$/i)
     if (templatesMatch) {
-      const { listTemplates } = await import('./templates.js')
       const templates = listTemplates()
       if (templates.length === 0) {
         void gateway.send(msg.channelId, 'No templates configured.', { replyTo: msg.id })
@@ -299,7 +299,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
     // Placed AFTER all hardcoded commands so new commands naturally take priority.
     // Uses dynamic regex from known template names to avoid matching arbitrary "word:" patterns.
     {
-      const { getTemplate, getTemplateNames } = await import('./templates.js')
       const names = getTemplateNames()
       if (names.length > 0) {
         const pattern = new RegExp(`^(${names.join('|')}):\\s*([\\s\\S]*)$`, 'i')
