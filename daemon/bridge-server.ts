@@ -13,10 +13,41 @@ import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuild
 import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
+import { watchPr, getWatchesBySession } from './pr-watch.js'
 import { shouldHoldIncumbentMain } from './main-guard.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
+
+// ---------------------------------------------------------------------------
+// Auto-watch: scan session replies for GitHub PR URLs
+// ---------------------------------------------------------------------------
+
+const PR_URL_RE = /https?:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/g
+
+function autoWatchPrUrls(sessionId: string, text: string): void {
+  if (!text) return
+  const info = registry.get(sessionId)
+  if (!info) return
+
+  const urls = text.match(PR_URL_RE)
+  if (!urls) return
+
+  const existingWatches = new Set(getWatchesBySession(sessionId).map(w => w.prUrl))
+
+  for (const url of new Set(urls)) {
+    if (existingWatches.has(url)) continue
+
+    watchPr(url, sessionId, info.threadId).then(msg => {
+      process.stderr.write(`daemon: auto-watch: ${msg}\n`)
+      if (!msg.startsWith('already watching')) {
+        gateway.send(info.threadId, `_Auto-watching ${url}_`).catch(() => {})
+      }
+    }).catch(err => {
+      process.stderr.write(`daemon: auto-watch failed for ${url}: ${err instanceof Error ? err.message : err}\n`)
+    })
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Bridge flap circuit breaker — kill sessions that reconnect too rapidly
@@ -216,6 +247,11 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           content: result.content,
           ...(result.isError ? { isError: true } : {}),
         })
+
+        // Auto-watch: detect PR URLs in session replies
+        if (name === 'reply' && !result.isError && conn.sessionId) {
+          autoWatchPrUrls(conn.sessionId, args.text as string)
+        }
 
         // Adversarial review: detect reply from any review participant
         if (name === 'reply' && !result.isError && conn.sessionId && isReviewParticipant(conn.sessionId)) {

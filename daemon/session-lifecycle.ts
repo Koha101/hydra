@@ -73,7 +73,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 
     const tmuxName = info.tmuxName
     try {
-      execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
+      execSync(`tmux kill-session -t ${shq(tmuxName)}`, { stdio: 'pipe' })
     } catch {}
 
     transport.disconnect(info.sessionId)
@@ -131,7 +131,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
         const currentOwner = [...registry.values()].find(s => s.tmuxName === tmuxName)
         if (!currentOwner) {
           execSync(`tmux has-session -t "${tmuxName}"`, { stdio: 'pipe' })
-          execSync(`tmux kill-session -t "${tmuxName}"`, { stdio: 'pipe' })
+          execSync(`tmux kill-session -t ${shq(tmuxName)}`, { stdio: 'pipe' })
           process.stderr.write(`daemon: deferred kill caught lingering tmux session "${tmuxName}"\n`)
         }
       } catch {}

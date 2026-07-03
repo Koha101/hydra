@@ -308,6 +308,7 @@ async function pollPr(entry: WatchEntry): Promise<void> {
 
   // Detect CI status changes
   let ciChanged = false
+  let prevCheckStatus = entry.lastCheckStatus
   if (checkResult) {
     const newSha = checkResult.headSha !== entry.lastHeadSha
     const statusFlipped = checkResult.status !== entry.lastCheckStatus && checkResult.status !== 'pending' && checkResult.status !== 'unknown'
@@ -361,7 +362,7 @@ async function pollPr(entry: WatchEntry): Promise<void> {
         parts.push(`  • \`${f.name}\` — ${f.conclusion}${f.url ? ` — ${f.url}` : ''}`)
       }
       parts.push('')
-    } else if (checkResult.status === 'success' && entry.lastCheckStatus !== 'unknown') {
+    } else if (checkResult.status === 'success' && prevCheckStatus !== 'unknown') {
       parts.push(`✅ **CI Passed** — all checks green`)
       parts.push('')
     }
@@ -503,9 +504,9 @@ export async function watchPr(prUrl: string, sessionId: string, threadId: string
   // Seed watermarks with max IDs so we only report NEW comments/status
   try {
     const [reviewComments, issueComments, reviews, checkResult, prData] = await Promise.all([
-      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=100`),
-      ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=100`),
-      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=100`),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/comments?per_page=1&sort=created&direction=desc`),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/issues/${parsed.prNumber}/comments?per_page=1&sort=created_at&direction=desc`),
+      ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}/reviews?per_page=1&sort=id&direction=desc`),
       fetchCheckStatus(entry),
       ghApi(`repos/${parsed.owner}/${parsed.repo}/pulls/${parsed.prNumber}`),
     ])
