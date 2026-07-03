@@ -107,23 +107,9 @@ export function getTemplate(name: string): SpawnTemplate | null {
   return loadAllTemplates()[name.toLowerCase()] ?? null
 }
 
-export function listTemplates(): Array<{ name: string; prompt: string; source: 'builtin' | 'repo' | 'local' }> {
-  const repo = loadTemplateFile(join(HYDRA_DIR, 'templates.json'), repoCache, 'templates.json').templates
-  const local = loadTemplateFile(join(HYDRA_DIR, 'templates.local.json'), localCache, 'templates.local.json').templates
-
-  const result: Array<{ name: string; prompt: string; source: 'builtin' | 'repo' | 'local' }> = []
-  const seen = new Set<string>()
-
-  // Local wins over repo wins over builtin
-  for (const [name, t] of Object.entries(local)) {
-    result.push({ name, prompt: t.prompt, source: 'local' })
-    seen.add(name)
-  }
-  for (const [name, t] of Object.entries(repo)) {
-    if (!seen.has(name)) { result.push({ name, prompt: t.prompt, source: 'repo' }); seen.add(name) }
-  }
-  for (const [name, t] of Object.entries(BUILTIN_TEMPLATES)) {
-    if (!seen.has(name)) result.push({ name, prompt: t.prompt, source: 'builtin' })
-  }
-  return result.sort((a, b) => a.name.localeCompare(b.name))
+export function listTemplates(): Array<{ name: string; prompt: string }> {
+  const all = loadAllTemplates()
+  return Object.entries(all)
+    .map(([name, t]) => ({ name, prompt: t.prompt }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }

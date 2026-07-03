@@ -226,7 +226,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       if (templates.length === 0) {
         void gateway.send(msg.channelId, 'No templates configured.', { replyTo: msg.id })
       } else {
-        const lines = templates.map(t => `**${t.name}** _(${t.source})_ — ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '...' : ''}`)
+        const lines = templates.map(t => `**${t.name}** — ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '...' : ''}`)
         void gateway.send(msg.channelId, `**Spawn Templates**\n${lines.join('\n')}`, { replyTo: msg.id })
       }
       return
