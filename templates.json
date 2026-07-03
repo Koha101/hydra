@@ -1,0 +1,11 @@
+{
+  "fix": {
+    "prompt": "Fix this issue. Read the relevant code, understand the root cause, implement the fix, write tests if needed, and create a PR when done."
+  },
+  "investigate": {
+    "prompt": "Investigate this issue. Search the codebase, read logs, check error tracking, and report your findings. Do NOT make changes unless explicitly asked."
+  },
+  "incident": {
+    "prompt": "Production incident — prioritize speed. Check for on-call guides in .claude/ first. Identify the root cause, implement a fix, and create a PR. Communicate status updates to your thread as you go."
+  }
+}
