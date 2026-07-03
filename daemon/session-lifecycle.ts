@@ -88,8 +88,11 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       try {
         execSync(`git -C ${shq(info.worktreeRepo)} worktree remove ${shq(info.worktreePath)} --force`, { stdio: 'pipe' })
         process.stderr.write(`daemon: removed worktree ${info.worktreePath}\n`)
-      } catch (err) {
-        process.stderr.write(`daemon: worktree removal failed: ${err instanceof Error ? err.message : String(err)}\n`)
+      } catch {
+        if (info.worktreePath.includes('/.worktrees/') && existsSync(info.worktreePath)) {
+          execSync(`rm -rf ${shq(info.worktreePath)}`, { stdio: 'pipe' })
+          process.stderr.write(`daemon: rm -rf worktree ${info.worktreePath} (git remove failed)\n`)
+        }
       }
       try { execSync(`git -C ${shq(info.worktreeRepo)} worktree prune`, { stdio: 'pipe' }) } catch {}
       try {
