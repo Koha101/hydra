@@ -65,13 +65,15 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
 
   const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
+  // Canonical default is DEFAULT_MODEL in daemon/bridge-dispatch.ts; keep in sync.
+  const byteModel = process.env.HYDRA_MODEL ?? 'claude-opus-4-6[1m]'
   const inner = [
     `cd ${shq(byteCwd)}`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
+    `caffeinate -i claude --model ${shq(byteModel)} --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)

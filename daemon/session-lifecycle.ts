@@ -370,6 +370,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = buildSpawnPrompt(promptParams)
   }
 
+  const model = opts?.model ?? SPAWN_MODEL
+
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
   let claudeArgs: string
   if (isFork) {
@@ -377,7 +379,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `claude`,
       `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
       `--fork-session`,
-      `--model ${shq(SPAWN_MODEL)}`,
+      `--model ${shq(model)}`,
       `--channels ${shq(channelFlag)}`,
       `--dangerously-skip-permissions`,
       shq(prompt),
@@ -386,12 +388,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     claudeArgs = [
       `claude`,
       `--resume ${shq(opts!.resumeFrom!)}`,
-      `--model ${shq(SPAWN_MODEL)}`,
+      `--model ${shq(model)}`,
       `--channels ${shq(channelFlag)}`,
       `--dangerously-skip-permissions`,
     ].join(' ')
   } else {
-    claudeArgs = `claude --model ${shq(SPAWN_MODEL)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+    claudeArgs = `claude --model ${shq(model)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
   }
 
   const inner = [
@@ -427,7 +429,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const capabilities: SessionCapabilities = {
     role: 'worker',
     tools: computeToolsForSession(sessionId).map(t => t.name),
-    model: SPAWN_MODEL,
+    model,
     cwd: effectiveCwd,
     platform: PLATFORM,
   }
