@@ -153,6 +153,13 @@ gateway.onMessage(async (msg: InboundMessage) => {
   const senderId = msg.authorId
   const isAllowed = access.allowFrom.includes(senderId)
 
+  // Command interception below is gated on top-level allowFrom (separate from a
+  // channel group's allowFrom, which only gates replies). Surface the common gotcha:
+  // a command-shaped message from a non-allowlisted sender silently routes as normal.
+  if (!isAllowed && /^(?:new session:|spawn:|\/spawn|spawn-wt:|kill:|\/kill|\/sessions|list sessions)\b/i.test(msg.content)) {
+    process.stderr.write(`daemon: command-shaped message from non-allowlisted sender ${senderId} ignored — add them to access.json allowFrom to enable spawn:/kill:/session commands\n`)
+  }
+
   if (isAllowed) {
     const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i)
     if (spawnMatch) {

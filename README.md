@@ -189,6 +189,24 @@ Spawn isolated Claude sessions from chat:
 
 Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts.
 
+## Troubleshooting
+
+Symptoms first — each maps to one root cause. See [ONBOARDING_TIPS.md](./ONBOARDING_TIPS.md) for a full first-machine checklist.
+
+**Bot is online but a spawned thread stays empty, or `spawn:` does nothing.**
+Command interception (`spawn:`, `kill:`, `/sessions`, `/health`) fires only for senders in the **top-level** `access.json` `allowFrom` — separate from a channel group's `allowFrom`. A group lets *replies* through; *commands* need you in the global allowlist. → `/discord:access allow <your-snowflake>`. (The daemon logs `command-shaped message from non-allowlisted sender …` when this happens.)
+
+**Byte or spawned session hangs on a theme picker, login, or "trust this folder" screen.**
+The byte is a second, headless Claude in tmux using `CLAUDE_CONFIG_DIR` (default `~/.claude`), so it reads **`$CLAUDE_CONFIG_DIR/.claude.json`** — not `~/.claude.json`. A fresh config dir triggers first-run gates that block a detached session. → Complete them once via `tmux attach -t <platform>-byte`, or pre-seed `theme`, `hasCompletedOnboarding`, `bypassPermissionsModeAccepted`, and per-project `hasTrustDialogAccepted`. `hydra preflight` now flags this.
+
+**Bot connects but never sees inbound (looks healthy, ignores everyone).**
+→ Enable **Message Content Intent** (Developer Portal → Bot → Privileged Gateway Intents), or the bot receives empty message content.
+
+**Byte dies instantly, or spawns fail to launch.**
+→ Check `SPAWN_CWD` points at a directory that exists. Inspect `~/hydra-<platform>-byte.log` and `~/hydra-<platform>-daemon.log`.
+
+**Verify inbound end-to-end:** `grep -E "main bridge connected|running tmux new-session" ~/hydra-<platform>-daemon.log`
+
 ## Files
 
 | File | Purpose |

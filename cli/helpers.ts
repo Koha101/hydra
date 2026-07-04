@@ -60,7 +60,7 @@ export function resolveConfig(platform?: string): HydraConfig {
 
   const stateDir = process.env.HYDRA_STATE_DIR ?? process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', platform)
   const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const spawnCwd = process.env.SPAWN_CWD ?? join(homedir(), 'Documents', 'angellist')
+  const spawnCwd = process.env.SPAWN_CWD ?? homedir()
 
   // Source .env from state dir (mirrors env-setup.sh)
   const envFile = join(stateDir, '.env')
@@ -97,6 +97,26 @@ export function resolveConfig(platform?: string): HydraConfig {
     watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),
     sockPath: join(stateDir, 'daemon.sock'),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin version discovery
+// ---------------------------------------------------------------------------
+
+// Locate the installed bridge-plugin version dir, e.g. `.../discord/0.0.5`.
+// Avoids hardcoding a version that breaks on the next plugin release. Prefers a
+// dir that already holds server.ts; otherwise the newest by numeric sort.
+export function pluginVersionDir(configDir: string, plugin = 'discord'): string | null {
+  const base = join(configDir, 'plugins', 'cache', 'claude-plugins-official', plugin)
+  try {
+    const versions = readdirSync(base).filter(v => {
+      try { return statSync(join(base, v)).isDirectory() } catch { return false }
+    })
+    if (versions.length === 0) return null
+    versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    const withServer = versions.find(v => existsSync(join(base, v, 'server.ts')))
+    return join(base, withServer ?? versions[0])
+  } catch { return null }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +235,7 @@ export function shq(s: string): string {
 // Wait for socket
 // ---------------------------------------------------------------------------
 
-export async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<boolean> {
+export async function waitForSocket(sockPath: string, timeoutMs = Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000): Promise<boolean> {
   const start = Date.now()
   process.stdout.write('waiting for socket')
   while (Date.now() - start < timeoutMs) {
