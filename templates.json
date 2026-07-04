@@ -4,8 +4,5 @@
   },
   "investigate": {
     "prompt": "Investigate this issue. Search the codebase, read logs, check error tracking, and report your findings. Do NOT make changes unless explicitly asked."
-  },
-  "incident": {
-    "prompt": "Production incident — prioritize speed. Read the operational wiki and relevant code to get up to speed on the issue. Check Sentry for recent errors. Post a preliminary RCA to this thread, then implement a fix and create a PR. Communicate status updates as you go."
   }
 }
