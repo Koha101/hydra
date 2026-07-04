@@ -9,11 +9,9 @@ import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
 import { tmuxHasSession, isAlive } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
-import { getActiveBuilds, cancelBuild } from '../build.js'
-import { getActiveReviews, cancelReview } from '../adversarial.js'
+import { getActiveBuilds, cancelBuild, startBuild } from '../build.js'
+import { getActiveReviews, cancelReview, startReview } from '../adversarial.js'
 import { startDesign } from '../design.js'
-import { startReview } from '../adversarial.js'
-import { startBuild } from '../build.js'
 import type { SpawnTemplate } from '../templates.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
@@ -46,7 +44,7 @@ async function spawnAndNotify(
 ): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
   const chatId = await resolveSpawnTarget(msg)
-  const label = template ? `${template.name}` : null
+  const label = template?.name ?? null
   const spawnOpts = template ? { promptPrefix: template.template.prompt } : undefined
 
   try {
@@ -59,17 +57,16 @@ async function spawnAndNotify(
 
     if (template?.template.action) {
       const action = template.template.action
-      const actionTopic = `${template.template.prompt} — ${topic}`
       try {
         switch (action) {
           case 'design':
-            await startDesign(result.threadId, actionTopic)
+            await startDesign(result.threadId, topic)
             break
           case 'review':
-            await startReview(result.threadId, result.sessionId, 3, actionTopic)
+            await startReview(result.threadId, result.sessionId, 3, topic)
             break
           case 'build':
-            await startBuild(result.threadId, result.sessionId, 3, actionTopic)
+            await startBuild(result.threadId, result.sessionId, 3, topic)
             break
         }
         process.stderr.write(`daemon: template action: started ${action} for ${topic}\n`)

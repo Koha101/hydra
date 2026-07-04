@@ -19,7 +19,7 @@ import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handl
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
-import { listTemplates, getTemplate, getTemplateNames } from './templates.js'
+import { listTemplates, getTemplate } from './templates.js'
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -299,14 +299,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     // Placed AFTER all hardcoded commands so new commands naturally take priority.
     // Uses dynamic regex from known template names to avoid matching arbitrary "word:" patterns.
     {
-      const names = getTemplateNames()
-      if (names.length > 0) {
-        const pattern = new RegExp(`^(${names.join('|')}):\\s*([\\s\\S]*)$`, 'i')
-        const templateCmdMatch = msg.content.match(pattern)
-        if (templateCmdMatch) {
-          const candidateName = templateCmdMatch[1].trim()
-          const candidateTopic = templateCmdMatch[2].trim()
-          const template = getTemplate(candidateName)!
+      const colonIdx = msg.content.indexOf(':')
+      if (colonIdx > 0) {
+        const candidateName = msg.content.slice(0, colonIdx).trim().toLowerCase()
+        const template = getTemplate(candidateName)
+        if (template) {
+          const candidateTopic = msg.content.slice(colonIdx + 1).trim()
           void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
           return
         }
