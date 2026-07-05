@@ -104,7 +104,7 @@ export function resolveConfig(platform?: string): HydraConfig {
     sockPath: join(stateDir, 'daemon.sock'),
     byteModel: process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL,
     byteAuth: (process.env.HYDRA_AUTH?.trim() ?? 'auto') === 'keychain' ? 'keychain' : 'auto',
-    byteCwd: process.env.BYTE_CWD ?? process.env.SPAWN_CWD ?? spawnCwd,
+    byteCwd: process.env.BYTE_CWD ?? spawnCwd,
     byteChannel: process.env.BYTE_CHANNEL ?? '',
     socketTimeout: Math.max(Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000, 1_000),
   }
@@ -251,7 +251,7 @@ export function shq(s: string): string {
 // Wait for socket
 // ---------------------------------------------------------------------------
 
-export async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<boolean> {
+export async function waitForSocket(sockPath: string, timeoutMs: number): Promise<boolean> {
   const start = Date.now()
   process.stdout.write('waiting for socket')
   while (Date.now() - start < timeoutMs) {
