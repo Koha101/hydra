@@ -5,7 +5,7 @@ import { gateway, STATE_DIR, PLATFORM } from '../config.js'
 import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { SessionInfo } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync, isAlive } from '../util.js'
+import { fallbackDescription, formatDuration, getContextPercent, atomicWriteFileSync, isAlive, safeSend } from '../util.js'
 import { getWatchesBySession } from '../pr-watch.js'
 import { getActiveReviews } from '../adversarial.js'
 import { getActiveBuilds } from '../build.js'
@@ -241,7 +241,7 @@ export async function handleUsageIntercept(msg: InboundMessage): Promise<void> {
     lines.push(`    ◦ 🍴 forked from ${pe} \`${info.originFrom}\``)
   }
 
-  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+  await safeSend(msg.channelId, lines.join('\n'), { replyTo: msg.id })
 }
 
 export async function handleHealthIntercept(msg: InboundMessage): Promise<void> {
@@ -276,7 +276,7 @@ export async function handleHealthIntercept(msg: InboundMessage): Promise<void> 
     lines.push(`• Dead (recoverable): ${deadSessions.map(s => s.tmuxName).join(', ')}`)
   }
 
-  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+  await safeSend(msg.channelId, lines.join('\n'), { replyTo: msg.id })
 }
 
 // ---------------------------------------------------------------------------
@@ -325,5 +325,5 @@ export async function handleProtocolsIntercept(msg: InboundMessage): Promise<voi
     lines.push(`  Personas: ${alivePersonas.length}/${d.personas.length} alive · ${elapsed}`)
   }
 
-  try { await gateway.send(msg.channelId, lines.join('\n'), { replyTo: msg.id }) } catch {}
+  await safeSend(msg.channelId, lines.join('\n'), { replyTo: msg.id })
 }

@@ -183,3 +183,25 @@ export async function reportError(
   if (suggestion) lines.push(suggestion)
   try { await gateway.send(channelId, lines.join('\n'), { replyTo: messageId }) } catch {}
 }
+
+export async function safeSend(
+  channelId: string, text: string, opts?: { replyTo?: string },
+): Promise<string[]> {
+  const chunks = chunk(text, 2000, 'markdown')
+  const sentIds: string[] = []
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      const sent = await gateway.send(channelId, chunks[i], {
+        ...(i === 0 && opts?.replyTo ? { replyTo: opts.replyTo } : {}),
+      })
+      sentIds.push(sent.id)
+    } catch (err) {
+      process.stderr.write(`daemon: safeSend failed on chunk ${i + 1}/${chunks.length}: ${String(err)}\n`)
+      if (sentIds.length > 0 && i < chunks.length - 1) {
+        try { await gateway.send(channelId, '_[message truncated]_') } catch {}
+      }
+      break
+    }
+  }
+  return sentIds
+}

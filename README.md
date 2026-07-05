@@ -205,6 +205,26 @@ The byte is a second, headless Claude in tmux using `CLAUDE_CONFIG_DIR` (default
 **Byte dies instantly, or spawns fail to launch.**
 → Check `SPAWN_CWD` points at a directory that exists. Inspect `~/hydra-<platform>-byte.log` and `~/hydra-<platform>-daemon.log`.
 
+**`usage` shows `?` instead of context percentage.**
+Claude Code doesn't display context % in the status bar by default. Add a `statusLine` hook to `$CLAUDE_CONFIG_DIR/settings.json`:
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "refreshInterval": 5
+  }
+}
+```
+Where `~/.claude/statusline.sh` extracts the percentage from the JSON passed on stdin:
+```bash
+#!/bin/bash
+input=$(cat)
+pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
+echo "ctx: ${pct}%"
+```
+The hook receives `context_window.used_percentage`, `model.id`, `cost.total_cost_usd`, and more. Restart the byte to pick up the change.
+
 **Verify inbound end-to-end:** `grep -E "main bridge connected|running tmux new-session" ~/hydra-<platform>-daemon.log`
 
 ## Files
