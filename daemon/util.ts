@@ -50,23 +50,116 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
-export function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
+export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
   if (text.length <= limit) return [text]
+
+  if (mode !== 'markdown') {
+    const out: string[] = []
+    let rest = text
+    while (rest.length > limit) {
+      let cut = limit
+      if (mode === 'newline') {
+        const para = rest.lastIndexOf('\n\n', limit)
+        const line = rest.lastIndexOf('\n', limit)
+        const space = rest.lastIndexOf(' ', limit)
+        cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
+      }
+      out.push(rest.slice(0, cut))
+      rest = rest.slice(cut).replace(/^\n+/, '')
+    }
+    if (rest) out.push(rest)
+    return out
+  }
+
+  return chunkMarkdown(text, limit)
+}
+
+function fenceState(text: string): { open: boolean; lang: string } {
+  let open = false
+  let lang = ''
+  for (const m of text.matchAll(/^(`{3,})(.*)?$/gm)) {
+    if (!open) {
+      open = true
+      lang = (m[2] ?? '').trim()
+    } else {
+      open = false
+      lang = ''
+    }
+  }
+  return { open, lang }
+}
+
+function chunkMarkdown(text: string, limit: number): string[] {
+  const FENCE_CLOSER = '\n```'
+  const safeLimit = Math.max(limit, FENCE_CLOSER.length + 1)
   const out: string[] = []
   let rest = text
-  while (rest.length > limit) {
-    let cut = limit
-    if (mode === 'newline') {
-      const para = rest.lastIndexOf('\n\n', limit)
-      const line = rest.lastIndexOf('\n', limit)
-      const space = rest.lastIndexOf(' ', limit)
-      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
+
+  while (rest.length > safeLimit) {
+    const cut = pickMarkdownCut(rest, safeLimit - FENCE_CLOSER.length)
+    let part = rest.slice(0, cut)
+    let nextRest = rest.slice(cut).replace(/^\n+/, '')
+
+    const { open, lang } = fenceState(part)
+    if (open) {
+      const opener = lang ? '```' + lang : '```'
+      const candidateRest = opener + '\n' + nextRest
+      if (candidateRest.length < rest.length) {
+        part = part.replace(/\n?$/, FENCE_CLOSER)
+        nextRest = candidateRest
+      }
     }
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
+
+    out.push(part)
+    rest = nextRest
   }
+
   if (rest) out.push(rest)
   return out
+}
+
+function pickMarkdownCut(text: string, limit: number): number {
+  const window = text.slice(0, limit)
+  const lines = window.split('\n')
+
+  let bestParaOutside = -1
+  let bestLineOutside = -1
+  let bestInsideFence = -1
+  let pos = 0
+  let fenceOpen = false
+  let inTable = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineEnd = pos + lines[i].length
+    if (lineEnd > limit) break
+    const cutAfter = lineEnd + 1
+
+    if (/^`{3,}/.test(lines[i])) fenceOpen = !fenceOpen
+
+    const isTableRow = /^\s*\|/.test(lines[i])
+    if (!isTableRow) inTable = false
+    else if (!inTable) inTable = true
+
+    if (!fenceOpen) {
+      if (lines[i] === '' && i > 0 && cutAfter <= limit) {
+        bestParaOutside = cutAfter
+      } else if (!inTable && cutAfter <= limit) {
+        bestLineOutside = cutAfter
+      }
+    } else {
+      if (cutAfter <= limit) bestInsideFence = cutAfter
+    }
+
+    pos = lineEnd + 1
+  }
+
+  if (bestParaOutside > limit / 4) return bestParaOutside
+  if (bestLineOutside > limit / 4) return bestLineOutside
+  if (bestInsideFence > limit / 4) return bestInsideFence
+
+  const space = text.lastIndexOf(' ', limit)
+  if (space > 0) return space
+  return limit
 }
 
 export function assertSendable(f: string): void {

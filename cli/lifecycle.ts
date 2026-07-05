@@ -124,6 +124,13 @@ export async function lifecycleUp(platform: string): Promise<void> {
   console.log(`starting ${platform} byte...`)
   await startByte(cfg)
 
+  // Reload watchdog so it monitors the new daemon
+  const plist = plistPath(platform)
+  if (existsSync(plist)) {
+    try { execSync(`launchctl load ${shq(plist)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    console.log(`loaded watchdog`)
+  }
+
   console.log(`${platform} is up`)
 }
 
@@ -135,6 +142,13 @@ export async function lifecycleDown(platform: string): Promise<void> {
   const cfg = resolveConfig(platform)
 
   console.log(`stopping ${platform}...`)
+
+  // Unload watchdog first so it doesn't revive the daemon
+  const plist = plistPath(platform)
+  if (existsSync(plist)) {
+    try { execSync(`launchctl unload ${shq(plist)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    console.log(`unloaded watchdog`)
+  }
 
   tmuxKill(cfg.byteTmux)
   killOrphanBytes(cfg.sockPath, cfg.byteLog)

@@ -26,6 +26,7 @@ type SessionRow = {
   paused: boolean
   url: string
   watches: WatchEntry[]
+  contextLinks: string[]
 }
 
 function getActiveSessions(): SessionRow[] {
@@ -52,6 +53,7 @@ function getActiveSessions(): SessionRow[] {
       paused: !!s.paused,
       url,
       watches: getWatchesBySession(s.sessionId),
+      contextLinks: s.contextLinks ?? [],
     })
   }
 
@@ -69,6 +71,25 @@ function checkStatusEmoji(status: string): string {
 
 function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[*~`]/g, '')
+}
+
+function renderContextLink(link: string): string {
+  // Slack channel mention: slack:channel:C0ABC123:channel-name
+  const channelMatch = link.match(/^slack:channel:([A-Z0-9]+):(.+)$/)
+  if (channelMatch) {
+    return `• 🔗 <#${channelMatch[1]}|${channelMatch[2]}>`
+  }
+  // URL-based links
+  let label: string
+  if (/slack\.com\/archives/.test(link)) label = 'Slack thread'
+  else if (/linear\.app/.test(link)) label = 'Linear'
+  else if (/incident\.io/.test(link)) label = 'Incident'
+  else if (/datadoghq\.com/.test(link)) label = 'Datadog'
+  else if (/sentry\.io/.test(link)) label = 'Sentry'
+  else if (/notion\.so/.test(link)) label = 'Notion'
+  else if (/pagerduty\.com/.test(link)) label = 'PagerDuty'
+  else { try { label = new URL(link).hostname.replace(/^www\./, '') } catch { label = 'link' } }
+  return `• 🔗 <${link}|${label}>`
 }
 
 function buildSessionText(s: SessionRow): string {
@@ -98,14 +119,20 @@ function buildHomeBlocks(sessions: SessionRow[]): any[] {
         type: 'section',
         text: { type: 'mrkdwn', text: buildSessionText(s) },
       })
-      if (s.watches.length > 0) {
-        const prLines = s.watches.slice(0, 5).map(w => {
-          const title = w.title || `#${w.prNumber}`
-          return `• <${w.prUrl}|${title}> ${checkStatusEmoji(w.lastCheckStatus)}`
-        })
+      const contextLines: string[] = []
+      for (const w of s.watches.slice(0, 5)) {
+        const title = w.title || `#${w.prNumber}`
+        contextLines.push(`• <${w.prUrl}|${title}> ${checkStatusEmoji(w.lastCheckStatus)}`)
+      }
+      const watchUrls = new Set(s.watches.map(w => w.prUrl))
+      for (const link of s.contextLinks.slice(0, 5 - contextLines.length)) {
+        if (watchUrls.has(link)) continue
+        contextLines.push(renderContextLink(link))
+      }
+      if (contextLines.length > 0) {
         blocks.push({
           type: 'context',
-          elements: [{ type: 'mrkdwn', text: prLines.join('\n') }],
+          elements: [{ type: 'mrkdwn', text: contextLines.join('\n') }],
         })
       }
       if (i < shown.length - 1) blocks.push({ type: 'divider' })
