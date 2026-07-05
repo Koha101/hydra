@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileS
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
+import { DEFAULT_MODEL } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Config resolution (replaces env-setup.sh)
@@ -20,6 +21,11 @@ export type HydraConfig = {
   byteLog: string
   watchdogLog: string
   sockPath: string
+  byteModel: string
+  byteAuth: 'auto' | 'keychain'
+  byteCwd: string
+  byteChannel: string
+  socketTimeout: number
 }
 
 export function resolveConfig(platform?: string): HydraConfig {
@@ -96,6 +102,11 @@ export function resolveConfig(platform?: string): HydraConfig {
     byteLog: process.env.HYDRA_BYTE_LOG ?? join(homedir(), `hydra-${platform}-byte.log`),
     watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),
     sockPath: join(stateDir, 'daemon.sock'),
+    byteModel: process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL,
+    byteAuth: (process.env.HYDRA_AUTH?.trim() ?? 'auto') === 'keychain' ? 'keychain' : 'auto',
+    byteCwd: process.env.BYTE_CWD ?? process.env.SPAWN_CWD ?? spawnCwd,
+    byteChannel: process.env.BYTE_CHANNEL ?? '',
+    socketTimeout: Math.max(Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000, 1_000),
   }
 }
 
@@ -240,7 +251,7 @@ export function shq(s: string): string {
 // Wait for socket
 // ---------------------------------------------------------------------------
 
-export async function waitForSocket(sockPath: string, timeoutMs = Math.max(Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000, 1_000)): Promise<boolean> {
+export async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<boolean> {
   const start = Date.now()
   process.stdout.write('waiting for socket')
   while (Date.now() - start < timeoutMs) {
