@@ -55,7 +55,7 @@ export const BRIDGE_TOOLS = [
 // Canonical default. HYDRA_MODEL overrides it for byte + all spawns;
 // `hydra spawn --model <id>` overrides a single spawn.
 export const DEFAULT_MODEL = 'claude-opus-4-6[1m]'
-export const SPAWN_MODEL = process.env.HYDRA_MODEL ?? DEFAULT_MODEL
+export const SPAWN_MODEL = process.env.HYDRA_MODEL || DEFAULT_MODEL
 export const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
