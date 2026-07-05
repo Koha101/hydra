@@ -9,7 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs, pluginVersionDir,
 } from './helpers.js'
-import { DEFAULT_MODEL, isKnownModel } from '../shared/constants.js'
+import { isKnownModel } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)
@@ -45,10 +45,9 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   appendLog(cfg.byteLog, 'symlinked bridge.ts into plugin cache')
 
   // Build prompt
-  const greetChannel = process.env.BYTE_CHANNEL ?? ''
   let prompt: string
-  if (greetChannel) {
-    prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files, then send a brief greeting to chat ${greetChannel} using reply(chat_id=${greetChannel}).`
+  if (cfg.byteChannel) {
+    prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files, then send a brief greeting to chat ${cfg.byteChannel} using reply(chat_id=${cfg.byteChannel}).`
   } else {
     prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files to orient, then wait silently for incoming messages — do NOT post anything proactively. When a message arrives, reply with the reply tool using the chat_id from the incoming message.`
   }
@@ -70,7 +69,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   // HYDRA_AUTH=keychain: copy the macOS keychain credential into the config dir so a
   // detached tmux byte that can't read the keychain still authenticates. Opt-in —
   // default 'auto' preserves today's behavior (token env, else claude's native keychain read).
-  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain' && !oauthToken && process.platform === 'darwin') {
+  if (cfg.byteAuth === 'keychain' && !oauthToken && process.platform === 'darwin') {
     const credFile = join(cfg.configDir, '.credentials.json')
     if (!existsSync(credFile)) {
       try {
@@ -86,18 +85,16 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     }
   }
 
-  const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
-  const byteModel = process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
-  if (!isKnownModel(byteModel)) {
-    console.warn(`\u26a0\ufe0f  Unrecognized model "${byteModel}" — may be a new release or typo. Starting anyway.`)
+  if (!isKnownModel(cfg.byteModel)) {
+    console.warn(`\u26a0\ufe0f  Unrecognized model "${cfg.byteModel}" \u2014 may be a new release or typo. Starting anyway.`)
   }
   const inner = [
-    `cd ${shq(byteCwd)}`,
+    `cd ${shq(cfg.byteCwd)}`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model ${shq(byteModel)} --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
+    `caffeinate -i claude --model ${shq(cfg.byteModel)} --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)
@@ -142,7 +139,7 @@ export async function lifecycleUp(platform: string): Promise<void> {
     `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
   appendLog(cfg.daemonLog, `Daemon started in tmux session '${cfg.daemonTmux}' (SPAWN_CWD=${cfg.spawnCwd})`)
 
-  if (!await waitForSocket(cfg.sockPath)) {
+  if (!await waitForSocket(cfg.sockPath, cfg.socketTimeout)) {
     console.error(`error: ${platform} daemon socket did not appear`)
     process.exit(1)
   }
@@ -188,7 +185,7 @@ export async function lifecycleDown(platform: string): Promise<void> {
   }
 
   // Clean up credential file copied by HYDRA_AUTH=keychain
-  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain') {
+  if (cfg.byteAuth === 'keychain') {
     const credFile = join(cfg.configDir, '.credentials.json')
     if (existsSync(credFile)) {
       try { unlinkSync(credFile) } catch {}
@@ -230,7 +227,7 @@ export async function lifecycleRestart(platform: string): Promise<void> {
   tmuxSpawn(cfg.daemonTmux,
     `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
 
-  if (await waitForSocket(cfg.sockPath)) {
+  if (await waitForSocket(cfg.sockPath, cfg.socketTimeout)) {
     appendLog(cfg.daemonLog, 'Daemon restarted successfully')
     console.log(`${platform} daemon restarted`)
   } else {
