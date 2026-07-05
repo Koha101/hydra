@@ -7,7 +7,7 @@ import type { HydraConfig } from './helpers.js'
 import {
   resolveConfig, tmuxExists, tmuxKill, tmuxSpawn, tmuxSessionAge,
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
-  waitForSocket, buildDaemonEnvs,
+  waitForSocket, buildDaemonEnvs, pluginVersionDir,
 } from './helpers.js'
 import { DEFAULT_MODEL } from '../shared/constants.js'
 
@@ -29,15 +29,17 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
 
   // Symlink bridge.ts into plugin cache
   const bridgeSrc = join(cfg.hydraDir, 'bridge.ts')
-  const bridgeDest = join(cfg.configDir, 'plugins', 'cache', 'claude-plugins-official', 'discord', '0.0.4', 'server.ts')
   if (!existsSync(bridgeSrc)) {
     console.error(`error: bridge.ts missing at ${bridgeSrc}`)
     process.exit(1)
   }
-  if (!existsSync(dirname(bridgeDest))) {
-    console.error(`error: plugin cache dir missing at ${dirname(bridgeDest)}`)
+  const pluginDir = pluginVersionDir(cfg.configDir)
+  if (!pluginDir) {
+    console.error(`error: discord bridge plugin not found under ${cfg.configDir}`)
+    console.error(`Install it: claude plugin install discord@claude-plugins-official`)
     process.exit(1)
   }
+  const bridgeDest = join(pluginDir, 'server.ts')
   try { unlinkSync(bridgeDest) } catch {}
   symlinkSync(bridgeSrc, bridgeDest)
   appendLog(cfg.byteLog, 'symlinked bridge.ts into plugin cache')
@@ -62,6 +64,25 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     const angellistToken = join(homedir(), '.angellist-claude-token')
     if (cfg.platform === 'slack' && existsSync(angellistToken)) {
       authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(angellistToken)})"`
+    }
+  }
+
+  // HYDRA_AUTH=keychain: copy the macOS keychain credential into the config dir so a
+  // detached tmux byte that can't read the keychain still authenticates. Opt-in —
+  // default 'auto' preserves today's behavior (token env, else claude's native keychain read).
+  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain' && !oauthToken && process.platform === 'darwin') {
+    const credFile = join(cfg.configDir, '.credentials.json')
+    if (!existsSync(credFile)) {
+      try {
+        const cred = execFileSync('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+        if (cred) {
+          JSON.parse(cred)
+          writeFileSync(credFile, cred, { mode: 0o600 })
+          appendLog(cfg.byteLog, 'HYDRA_AUTH=keychain: copied keychain credential into config dir')
+        }
+      } catch (err) {
+        appendLog(cfg.byteLog, `HYDRA_AUTH=keychain: keychain copy failed (non-fatal): ${err}`)
+      }
     }
   }
 
@@ -161,6 +182,14 @@ export async function lifecycleDown(platform: string): Promise<void> {
 
   for (const f of ['daemon.sock', 'daemon.pid']) {
     try { unlinkSync(join(cfg.stateDir, f)) } catch {}
+  }
+
+  // Clean up credential file copied by HYDRA_AUTH=keychain
+  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain') {
+    const credFile = join(cfg.configDir, '.credentials.json')
+    if (existsSync(credFile)) {
+      try { unlinkSync(credFile) } catch {}
+    }
   }
 
   console.log(`${platform} is down`)
@@ -362,6 +391,32 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
     }
   }
 
+  // The byte runs `claude` with CLAUDE_CONFIG_DIR=<configDir>, so it reads
+  // <configDir>/.claude.json. Un-onboarded flags there hang a detached tmux byte
+  // on the theme/trust/bypass first-run screens.
+  const byteConfigJson = join(cfg.configDir, '.claude.json')
+  try {
+    const cj = JSON.parse(readFileSync(byteConfigJson, 'utf-8'))
+    if (cj.hasCompletedOnboarding && cj.bypassPermissionsModeAccepted) {
+      ok('byte config dir onboarded (no first-run hang)')
+    } else {
+      wrn(`byte config dir not fully onboarded (${byteConfigJson}) — a detached byte will hang. Set hasCompletedOnboarding + bypassPermissionsModeAccepted, or complete once via tmux attach`)
+    }
+  } catch {
+    wrn(`byte config state missing (${byteConfigJson}) — first byte start will hit interactive onboarding`)
+  }
+
+  const credFile = join(cfg.configDir, '.credentials.json')
+  let authOk = !!process.env.CLAUDE_CODE_OAUTH_TOKEN || existsSync(credFile)
+  if (!authOk && process.platform === 'darwin') {
+    try {
+      execFileSync('security', ['find-generic-password', '-s', 'Claude Code-credentials'], { stdio: 'pipe', env: process.env as Record<string, string> })
+      authOk = true
+    } catch {}
+  }
+  if (authOk) ok('byte auth resolvable (token / keychain / credentials file)')
+  else wrn('no resolvable byte auth — set CLAUDE_CODE_OAUTH_TOKEN, or log in once via tmux attach (persists to keychain)')
+
   console.log()
   if (fail) {
     console.log('RESULT: NOT READY — fix the ✗ items above.')
@@ -385,6 +440,10 @@ function plistPath(platform: string): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${plistLabel(platform)}.plist`)
 }
 
+function escapeXmlText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string; configDir: string }): string {
   const bunPath = execFileSync('which', ['bun'], { encoding: 'utf-8', env: process.env as Record<string, string> }).trim()
   const hydraTs = join(import.meta.dir, 'hydra.ts')
@@ -397,31 +456,37 @@ function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${plistLabel(platform)}</string>
+    <string>${escapeXmlText(plistLabel(platform))}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${bunPath}</string>
-        <string>${hydraTs}</string>
+        <string>${escapeXmlText(bunPath)}</string>
+        <string>${escapeXmlText(hydraTs)}</string>
         <string>watchdog</string>
-        <string>${platform}</string>
+        <string>${escapeXmlText(platform)}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HOME</key>
+        <string>${escapeXmlText(homedir())}</string>
+        <key>PATH</key>
+        <string>${escapeXmlText(process.env.PATH ?? '')}</string>
+        <key>CHAT_PLATFORM</key>
+        <string>${escapeXmlText(platform)}</string>
         <key>HYDRA_STATE_DIR</key>
-        <string>${opts.stateDir}</string>
+        <string>${escapeXmlText(opts.stateDir)}</string>
         <key>SPAWN_CWD</key>
-        <string>${opts.spawnCwd}</string>
+        <string>${escapeXmlText(opts.spawnCwd)}</string>
         <key>CLAUDE_CONFIG_DIR</key>
-        <string>${opts.configDir}</string>
+        <string>${escapeXmlText(opts.configDir)}</string>
     </dict>
     <key>StartInterval</key>
     <integer>120</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${logFile}</string>
+    <string>${escapeXmlText(logFile)}</string>
     <key>StandardErrorPath</key>
-    <string>${logFile}</string>
+    <string>${escapeXmlText(logFile)}</string>
 </dict>
 </plist>
 `
