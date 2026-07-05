@@ -425,6 +425,43 @@ function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string
 `
 }
 
+function installCLILink(hydraDir: string): void {
+  const binDir = join(homedir(), '.local', 'bin')
+  const linkPath = join(binDir, 'hydra')
+  const cliEntry = join(hydraDir, 'cli', 'hydra.ts')
+
+  const wrapper = `#!/bin/sh\nexec bun ${shq(cliEntry)} "$@"\n`
+
+  try {
+    if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true })
+    const existing = existsSync(linkPath) ? readFileSync(linkPath, 'utf-8') : ''
+    if (existing !== wrapper) {
+      writeFileSync(linkPath, wrapper, { mode: 0o755 })
+      console.log(`installed hydra CLI → ${linkPath}`)
+    } else {
+      console.log(`hydra CLI already at ${linkPath}`)
+    }
+  } catch (err) {
+    console.log(`⚠ failed to install hydra CLI: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+
+  // Auto-add ~/.local/bin to PATH via shell profile if needed
+  const path = process.env.PATH ?? ''
+  if (!path.includes(binDir)) {
+    const rcFile = join(homedir(), '.zshrc')
+    const exportLine = `export PATH="$HOME/.local/bin:$PATH"`
+    try {
+      const rc = existsSync(rcFile) ? readFileSync(rcFile, 'utf-8') : ''
+      if (!rc.includes('.local/bin')) {
+        writeFileSync(rcFile, rc + `\n# Added by hydra install\n${exportLine}\n`)
+        console.log(`added ${binDir} to PATH in ~/.zshrc`)
+        console.log(`  run: source ~/.zshrc  (or open a new terminal)`)
+      }
+    } catch {}
+  }
+}
+
 export type InstallOpts = { cwd?: string; configDir?: string }
 
 export async function lifecycleInstall(platform: string, opts?: InstallOpts): Promise<void> {
@@ -472,6 +509,9 @@ export async function lifecycleInstall(platform: string, opts?: InstallOpts): Pr
   // Load
   execSync(`launchctl load ${shq(dest)}`, { stdio: 'inherit' })
   console.log(`loaded ${label}`)
+
+  // Install `hydra` CLI to PATH
+  installCLILink(cfg.hydraDir)
 
   // Run preflight
   console.log()

@@ -8,6 +8,7 @@ import {
   lifecycleInstall, lifecycleUninstall,
   type InstallOpts,
 } from './lifecycle.js'
+import { peek } from './peek.js'
 
 // ---------------------------------------------------------------------------
 // CLI entry point
@@ -33,6 +34,7 @@ Session management:
   hydra list                           List active sessions
   hydra status <name>                  Session details
   hydra kill <name>                    Kill a session
+  hydra peek [name]                    Read-only view of live sessions
   hydra health                         Daemon diagnostics
   hydra clear-key <key>                Clear a stuck idempotency key
 
@@ -227,6 +229,11 @@ async function main(): Promise<void> {
         type: 'cli', command: 'check-key', id: randomUUID(), params: { key },
       })
       printResponse(response, json)
+      break
+    }
+
+    case 'peek': {
+      await peek(filtered.slice(1), daemonName)
       break
     }
 
