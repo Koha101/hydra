@@ -184,11 +184,10 @@ export async function lifecycleDown(platform: string): Promise<void> {
     try { unlinkSync(join(cfg.stateDir, f)) } catch {}
   }
 
-  // Clean up keychain credential copied by HYDRA_AUTH=keychain
+  // Clean up credential file that startByte may have copied from keychain
   const credFile = join(cfg.configDir, '.credentials.json')
-  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain' && existsSync(credFile)) {
+  if (existsSync(credFile)) {
     try { unlinkSync(credFile) } catch {}
-    console.log('cleaned up keychain credential copy')
   }
 
   console.log(`${platform} is down`)

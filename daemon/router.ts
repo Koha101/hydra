@@ -29,6 +29,10 @@ const COMMAND_PREFIXES = [
   '/restart', 'restart daemon', 'restart',
   '/health', 'health', 'status',
   '/protocols', 'protocols',
+  '/reconnect', 'reconnect',
+  '/recover', 'recover',
+  '/commands', 'commands', '/help', 'help',
+  '/usage', 'usage',
 ]
 const COMMAND_RE = new RegExp(
   `^(?:${COMMAND_PREFIXES.map(p => p.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')).join('|')})(?:\\s|$)`, 'i',
