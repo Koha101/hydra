@@ -7,6 +7,7 @@ import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
+import { DEFAULT_MODEL } from '../shared/constants.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -52,10 +53,8 @@ export const BRIDGE_TOOLS = [
   { name: 'list_watches', description: 'List all PRs being watched (your session or all).', inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'Show all watches, not just yours' } } } },
 ]
 
-import { DEFAULT_MODEL } from '../shared/constants.js'
-
 // Frozen at import time — daemon restart required to pick up changes.
-export const SPAWN_MODEL = process.env.HYDRA_MODEL || DEFAULT_MODEL
+export const SPAWN_MODEL = process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
 export const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
 export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {

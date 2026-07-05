@@ -66,7 +66,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
 
   const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
-  const byteModel = process.env.HYDRA_MODEL || DEFAULT_MODEL
+  const byteModel = process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
   const inner = [
     `cd ${shq(byteCwd)}`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
