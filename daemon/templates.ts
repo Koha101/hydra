@@ -54,8 +54,13 @@ function loadTemplateFile(path: string, cache: FileCache | null, label: string):
             process.stderr.write(`daemon: ${label}: "${name}" has unknown action "${entry.action}" — ignoring it\n`)
           }
         }
-        if (BUILTIN_TEMPLATES[name.toLowerCase()]?.action && template.action) {
-          process.stderr.write(`daemon: ${label}: "${name}" overrides builtin with action "${BUILTIN_TEMPLATES[name.toLowerCase()].action}"\n`)
+        const builtin = BUILTIN_TEMPLATES[name.toLowerCase()]
+        if (builtin?.action) {
+          if (!template.action) {
+            process.stderr.write(`daemon: ${label}: WARNING "${name}" overrides builtin but omits action "${builtin.action}" — protocol will not auto-start\n`)
+          } else if (template.action !== builtin.action) {
+            process.stderr.write(`daemon: ${label}: "${name}" overrides builtin action "${builtin.action}" with "${template.action}"\n`)
+          }
         }
         valid[name.toLowerCase()] = template
       } else {
@@ -82,10 +87,6 @@ function loadAllTemplates(): Record<string, SpawnTemplate> {
 
 export function getTemplate(name: string): SpawnTemplate | null {
   return loadAllTemplates()[name.toLowerCase()] ?? null
-}
-
-export function getTemplateNames(): string[] {
-  return Object.keys(loadAllTemplates())
 }
 
 export function listTemplates(): Array<{ name: string; prompt: string; action?: string }> {
