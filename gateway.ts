@@ -146,6 +146,7 @@ export interface ChatGateway {
   readonly canThreadInDM: boolean
   readonly dmThreadsAreExclusive: boolean
   readonly healthCheckUrl: string
+  readonly maxMessageLength: number
 
   // Lifecycle
   start(token: string): Promise<void>
