@@ -9,17 +9,16 @@ import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
 import { tmuxHasSession, isAlive } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
-import { getActiveBuilds, cancelBuild } from '../build.js'
-import { getActiveReviews, cancelReview } from '../adversarial.js'
+import { getActiveBuilds, cancelBuild, startBuild } from '../build.js'
+import { getActiveReviews, cancelReview, startReview } from '../adversarial.js'
+import { startDesign } from '../design.js'
+import type { SpawnTemplate } from '../templates.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
 
 const RESTART_PENDING_FILE = join(STATE_DIR, 'restart-pending.json')
 
-export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
-  void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
-
-  // If spawn is typed in a thread with a dead session, target that thread so it gets reused
+async function resolveSpawnTarget(msg: InboundMessage): Promise<string> {
   let chatId = msg.channelId
   const resolvedThreadId = registry.resolveThreadId(msg)
   if (msg.isThread && resolvedThreadId !== msg.channelId) {
@@ -35,24 +34,65 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
       chatId = resolvedThreadId
     }
   }
+  return chatId
+}
+
+async function spawnAndNotify(
+  msg: InboundMessage,
+  topic: string,
+  template?: { name: string; template: SpawnTemplate },
+): Promise<void> {
+  void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
+  const chatId = await resolveSpawnTarget(msg)
+  const label = template?.name ?? null
+  const spawnOpts = template ? { promptPrefix: template.template.prompt } : undefined
 
   try {
-    const result = await doSpawnSession(topic, chatId, msg.id)
+    const result = await doSpawnSession(topic, chatId, msg.id, spawnOpts)
+
+    if (label) {
+      process.stderr.write(`daemon: template "${label}" spawned ${result.name} for: ${topic}\n`)
+      void gateway.send(result.threadId, `_Using **${label}** template_`).catch(() => {})
+    }
+
+    if (template?.template.action) {
+      const action = template.template.action
+      try {
+        switch (action) {
+          case 'design':
+            await startDesign(result.threadId, topic)
+            break
+          case 'review':
+            await startReview(result.threadId, result.sessionId, 3, topic)
+            break
+          case 'build':
+            await startBuild(result.threadId, result.sessionId, 3, topic)
+            break
+        }
+        process.stderr.write(`daemon: template action: started ${action} for ${topic}\n`)
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        process.stderr.write(`daemon: template action "${action}" failed: ${errMsg}\n`)
+        void gateway.send(result.threadId, `_Action **${action}** failed: ${errMsg}_`).catch(() => {})
+      }
+    }
 
     if (msg.isDM) {
       const e = sessionEmoji(result.name)
+      const suffix = label ? ` (${label})` : ''
       const base = (result.url && !gateway.canThreadInDM)
-        ? `Spawned ${e} \`${result.name}\` — ${result.url}`
-        : `Spawned ${e} \`${result.name}\``
+        ? `Spawned ${e} \`${result.name}\`${suffix} — ${result.url}`
+        : `Spawned ${e} \`${result.name}\`${suffix}`
       const reply = `${base}\nView in any terminal: \`tmux attach -t ${result.name}\``
       await gateway.send(msg.channelId, reply, { replyTo: msg.id })
     }
 
     const mainBridge = transport.get('main')
     if (mainBridge) {
+      const suffix = label ? ` (${label})` : ''
       transport.sendToBridge(mainBridge, {
         type: 'notification',
-        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\` for topic: ${topic}${result.url ? ` — ${result.url}` : ''}`,
+        content: `[system] Spawned ${sessionEmoji(result.name)} \`${result.name}\`${suffix} for: ${topic}${result.url ? ` — ${result.url}` : ''}`,
         meta: { chat_id: msg.channelId, message_id: msg.id, user: 'system', user_id: 'system', ts: new Date().toISOString() },
       })
     }
@@ -60,9 +100,21 @@ export async function handleSpawnIntercept(msg: InboundMessage, topic: string, a
     debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`daemon: spawn intercept failed: ${errMsg}\n`)
+    process.stderr.write(`daemon: spawn failed: ${errMsg}\n`)
     try { await gateway.send(msg.channelId, `Spawn failed: ${errMsg}`, { replyTo: msg.id }) } catch {}
   }
+}
+
+export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access): Promise<void> {
+  await spawnAndNotify(msg, topic)
+}
+
+export async function handleTemplateSpawn(msg: InboundMessage, templateName: string, topic: string, template: SpawnTemplate, access: Access): Promise<void> {
+  if (!topic.trim()) {
+    await gateway.send(msg.channelId, `_\`${templateName}:\` needs a topic — e.g. \`${templateName}: describe the task\`_`, { replyTo: msg.id })
+    return
+  }
+  await spawnAndNotify(msg, topic, { name: templateName, template })
 }
 
 export async function handleKillIntercept(msg: InboundMessage, name: string): Promise<void> {
@@ -166,6 +218,8 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '**Sessions:**',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
     '• 🚀 `spawn-wt: <repo> <topic>` — new session in a git worktree',
+    '• 🎯 `review: <topic>` / `fix: <topic>` / `design: <topic>` — templated session',
+    '• 📋 `templates` — list available spawn templates',
     '• 📊 `list sessions` — show all running sessions',
     '• ☠️ `kill session: <name>` — terminate a named session',
     '• ☠️ `kill` — kill this session (thread-scoped)',

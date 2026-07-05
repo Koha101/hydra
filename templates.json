@@ -1,0 +1,8 @@
+{
+  "fix": {
+    "prompt": "Fix this issue. Read the relevant code, understand the root cause, implement the fix, write tests if needed, and create a PR when done."
+  },
+  "investigate": {
+    "prompt": "Investigate this issue. Search the codebase, read logs, check error tracking, and report your findings. Do NOT make changes unless explicitly asked."
+  }
+}

@@ -6,7 +6,7 @@ import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
-import { handleSpawnIntercept, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
+import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -19,6 +19,7 @@ import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handl
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
+import { listTemplates, getTemplate } from './templates.js'
 
 // Global command prefixes — gated on top-level allowFrom. Thread-scoped
 // commands (fork, watch, build, respawn, resume) are excluded: those are
@@ -96,6 +97,31 @@ async function buildNotificationPayload(
 // Deliver a message to a session
 // ---------------------------------------------------------------------------
 
+const CONTEXT_LINK_DOMAINS = /slack\.com\/archives|linear\.app|notion\.so|incident\.io|app\.datadoghq\.com|sentry\.io|pagerduty\.com/
+const MAX_CONTEXT_LINKS = 5
+
+function extractContextLinks(text: string): string[] {
+  const links: string[] = []
+
+  // Match URLs from Slack mrkdwn: <https://...|label> or bare https://...
+  const urlRe = /https?:\/\/[^\s|>)]+/g
+  let m: RegExpExecArray | null
+  while ((m = urlRe.exec(text)) !== null) {
+    const url = m[0].replace(/[.,;:!?)]+$/, '')
+    if (CONTEXT_LINK_DOMAINS.test(url)) links.push(url)
+  }
+
+  // Match Slack channel mentions: <#C0ABC123> or <#C0ABC123|channel-name>
+  const channelRe = /<#([A-Z0-9]+)(?:\|([^>]+))?>/g
+  while ((m = channelRe.exec(text)) !== null) {
+    const channelId = m[1]
+    const label = m[2] || channelId
+    links.push(`slack:channel:${channelId}:${label}`)
+  }
+
+  return links
+}
+
 async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
   void gateway.typing(msg.channelId).catch(() => {})
   if (access.ackReaction) {
@@ -107,6 +133,14 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
     const thread = threadRegistry.get(sessionInfo.threadId)
     if (thread) thread.totalMessages++
+
+    const links = extractContextLinks(msg.content)
+    if (links.length > 0) {
+      const existing = new Set(sessionInfo.contextLinks ?? [])
+      for (const url of links) existing.add(url)
+      sessionInfo.contextLinks = [...existing].slice(-MAX_CONTEXT_LINKS)
+      registry.debouncedPersist()
+    }
   }
   const chatId = sessionInfo?.threadId ?? msg.channelId
 
@@ -193,7 +227,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const repo = spawnWtMatch[1].trim()
       const topic = spawnWtMatch[2].trim()
       if (repo && topic) {
-        void handleSpawnIntercept(msg, `worktree:${repo} ${topic}`, access)
+        void handleSpawnIntercept(msg, `wt:${repo} ${topic}`, access)
         return
       }
     }
@@ -207,6 +241,21 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const listMatch = msg.content.match(/^(?:\/sessions|list sessions)\s*$/i)
     if (listMatch) {
       void handleListIntercept(msg)
+      return
+    }
+
+    const templatesMatch = msg.content.match(/^(?:\/templates|templates)\s*$/i)
+    if (templatesMatch) {
+      const templates = listTemplates()
+      if (templates.length === 0) {
+        void gateway.send(msg.channelId, 'No templates configured.', { replyTo: msg.id })
+      } else {
+        const lines = templates.map(t => {
+          const actionTag = t.action ? ` _(+ ${t.action} protocol)_` : ''
+          return `**${t.name}**${actionTag} — ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+        })
+        void gateway.send(msg.channelId, `**Spawn Templates**\n${lines.join('\n')}`, { replyTo: msg.id })
+      }
       return
     }
 
@@ -268,6 +317,29 @@ gateway.onMessage(async (msg: InboundMessage) => {
     if (usageMatch) {
       void handleUsageIntercept(msg)
       return
+    }
+
+    // Template as first-class command: "review: topic", "design: topic", etc.
+    // Placed AFTER all hardcoded commands so new commands naturally take priority.
+    // Skip in active session threads — let thread-scoped commands (design, review, build) handle it.
+    {
+      const resolvedThread = registry.resolveThreadId(msg)
+      const activeSession = registry.getByThread(resolvedThread)
+      const activeInfo = activeSession ? registry.get(activeSession) : undefined
+      const liveInThread = activeInfo ? isAlive(activeInfo) : false
+
+      if (!liveInThread) {
+        const colonIdx = msg.content.indexOf(':')
+        if (colonIdx > 0) {
+          const candidateName = msg.content.slice(0, colonIdx).trim().toLowerCase()
+          const template = getTemplate(candidateName)
+          if (template) {
+            const candidateTopic = msg.content.slice(colonIdx + 1).trim()
+            void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
+            return
+          }
+        }
+      }
     }
 
     if (msg.isThread) {
