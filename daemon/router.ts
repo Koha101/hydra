@@ -20,8 +20,10 @@ import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } 
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
 
-// Command prefixes recognized by the dispatch block below. Kept here so the
-// "non-allowlisted sender" warning stays in sync with actual dispatch.
+// Global command prefixes — gated on top-level allowFrom. Thread-scoped
+// commands (fork, watch, build, respawn, resume) are excluded: those are
+// gated on session ownership, not allowFrom, so non-allowlisted users
+// can never trigger them.
 const COMMAND_PREFIXES = [
   'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
   'kill session:', 'kill:', '/kill',

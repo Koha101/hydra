@@ -184,10 +184,12 @@ export async function lifecycleDown(platform: string): Promise<void> {
     try { unlinkSync(join(cfg.stateDir, f)) } catch {}
   }
 
-  // Clean up credential file that startByte may have copied from keychain
-  const credFile = join(cfg.configDir, '.credentials.json')
-  if (existsSync(credFile)) {
-    try { unlinkSync(credFile) } catch {}
+  // Clean up credential file copied by HYDRA_AUTH=keychain
+  if ((process.env.HYDRA_AUTH ?? 'auto') === 'keychain') {
+    const credFile = join(cfg.configDir, '.credentials.json')
+    if (existsSync(credFile)) {
+      try { unlinkSync(credFile) } catch {}
+    }
   }
 
   console.log(`${platform} is down`)
@@ -438,7 +440,7 @@ function plistPath(platform: string): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${plistLabel(platform)}.plist`)
 }
 
-function escapeXml(s: string): string {
+function escapeXmlText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
@@ -454,37 +456,37 @@ function buildPlist(platform: string, opts: { stateDir: string; spawnCwd: string
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${escapeXml(plistLabel(platform))}</string>
+    <string>${escapeXmlText(plistLabel(platform))}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${escapeXml(bunPath)}</string>
-        <string>${escapeXml(hydraTs)}</string>
+        <string>${escapeXmlText(bunPath)}</string>
+        <string>${escapeXmlText(hydraTs)}</string>
         <string>watchdog</string>
-        <string>${escapeXml(platform)}</string>
+        <string>${escapeXmlText(platform)}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>${escapeXml(homedir())}</string>
+        <string>${escapeXmlText(homedir())}</string>
         <key>PATH</key>
-        <string>${escapeXml(process.env.PATH ?? '')}</string>
+        <string>${escapeXmlText(process.env.PATH ?? '')}</string>
         <key>CHAT_PLATFORM</key>
-        <string>${escapeXml(platform)}</string>
+        <string>${escapeXmlText(platform)}</string>
         <key>HYDRA_STATE_DIR</key>
-        <string>${escapeXml(opts.stateDir)}</string>
+        <string>${escapeXmlText(opts.stateDir)}</string>
         <key>SPAWN_CWD</key>
-        <string>${escapeXml(opts.spawnCwd)}</string>
+        <string>${escapeXmlText(opts.spawnCwd)}</string>
         <key>CLAUDE_CONFIG_DIR</key>
-        <string>${escapeXml(opts.configDir)}</string>
+        <string>${escapeXmlText(opts.configDir)}</string>
     </dict>
     <key>StartInterval</key>
     <integer>120</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${escapeXml(logFile)}</string>
+    <string>${escapeXmlText(logFile)}</string>
     <key>StandardErrorPath</key>
-    <string>${escapeXml(logFile)}</string>
+    <string>${escapeXmlText(logFile)}</string>
 </dict>
 </plist>
 `

@@ -116,7 +116,12 @@ export function pluginVersionDir(configDir: string, plugin = 'discord'): string 
     versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
     const withServer = versions.find(v => existsSync(join(base, v, 'server.ts')))
     return join(base, withServer ?? versions[0])
-  } catch { return null }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      process.stderr.write(`pluginVersionDir: ${err}\n`)
+    }
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
