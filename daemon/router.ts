@@ -21,6 +21,26 @@ import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
 
+// Global command prefixes — gated on top-level allowFrom. Thread-scoped
+// commands (fork, watch, build, respawn, resume) are excluded: those are
+// gated on session ownership, not allowFrom, so non-allowlisted users
+// can never trigger them.
+const COMMAND_PREFIXES = [
+  'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
+  'kill session:', 'kill:', '/kill',
+  '/sessions', 'list sessions',
+  '/restart', 'restart daemon', 'restart',
+  '/health', 'health', 'status',
+  '/protocols', 'protocols',
+  '/reconnect', 'reconnect',
+  '/recover', 'recover',
+  '/commands', 'commands', '/help', 'help',
+  '/usage', 'usage',
+]
+const COMMAND_RE = new RegExp(
+  `^(?:${COMMAND_PREFIXES.map(p => p.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')).join('|')})(?:\\s|$)`, 'i',
+)
+
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
 // ---------------------------------------------------------------------------
@@ -186,6 +206,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
   const access = loadAccess()
   const senderId = msg.authorId
   const isAllowed = access.allowFrom.includes(senderId)
+
+  if (!isAllowed && COMMAND_RE.test(msg.content)) {
+    process.stderr.write(`daemon: command-shaped message from non-allowlisted sender ${senderId} ignored — add them to access.json allowFrom to enable commands\n`)
+  }
 
   if (isAllowed) {
     const spawnMatch = msg.content.match(/^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i)

@@ -62,7 +62,7 @@ function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?
 // ---------------------------------------------------------------------------
 
 async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
-  const { prompt, initiator, idempotencyKey, channel, message, ephemeral, quiet } = req.params as {
+  const { prompt, initiator, idempotencyKey, channel, message, ephemeral, quiet, model } = req.params as {
     prompt?: string
     initiator?: string
     idempotencyKey?: string
@@ -70,6 +70,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     message?: string
     ephemeral?: boolean
     quiet?: boolean
+    model?: string
   }
 
   if (!prompt) return respond(req, false, 'prompt is required')
@@ -88,7 +89,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
   let result
   try {
-    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, ephemeral })
+    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral })
   } catch (err) {
     updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err
