@@ -20,6 +20,20 @@ import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } 
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
 
+// Command prefixes recognized by the dispatch block below. Kept here so the
+// "non-allowlisted sender" warning stays in sync with actual dispatch.
+const COMMAND_PREFIXES = [
+  'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
+  'kill session:', 'kill:', '/kill',
+  '/sessions', 'list sessions',
+  '/restart', 'restart daemon', 'restart',
+  '/health', 'health', 'status',
+  '/protocols', 'protocols',
+]
+const COMMAND_RE = new RegExp(
+  `^(?:${COMMAND_PREFIXES.map(p => p.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')).join('|')})(?:\\s|$)`, 'i',
+)
+
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
 // ---------------------------------------------------------------------------
@@ -153,11 +167,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
   const senderId = msg.authorId
   const isAllowed = access.allowFrom.includes(senderId)
 
-  // Command interception below is gated on top-level allowFrom (separate from a
-  // channel group's allowFrom, which only gates replies). Surface the common gotcha:
-  // a command-shaped message from a non-allowlisted sender silently routes as normal.
-  if (!isAllowed && /^(?:new session:|spawn:|\/spawn|spawn-wt:|kill:|\/kill|\/sessions|list sessions)\b/i.test(msg.content)) {
-    process.stderr.write(`daemon: command-shaped message from non-allowlisted sender ${senderId} ignored — add them to access.json allowFrom to enable spawn:/kill:/session commands\n`)
+  if (!isAllowed && COMMAND_RE.test(msg.content)) {
+    process.stderr.write(`daemon: command-shaped message from non-allowlisted sender ${senderId} ignored — add them to access.json allowFrom to enable commands\n`)
   }
 
   if (isAllowed) {

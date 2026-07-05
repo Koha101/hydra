@@ -235,7 +235,7 @@ export function shq(s: string): string {
 // Wait for socket
 // ---------------------------------------------------------------------------
 
-export async function waitForSocket(sockPath: string, timeoutMs = Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000): Promise<boolean> {
+export async function waitForSocket(sockPath: string, timeoutMs = Math.max(Number(process.env.HYDRA_SOCKET_TIMEOUT) || 15_000, 1_000)): Promise<boolean> {
   const start = Date.now()
   process.stdout.write('waiting for socket')
   while (Date.now() - start < timeoutMs) {
