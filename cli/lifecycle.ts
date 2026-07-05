@@ -56,11 +56,11 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
   if (oauthToken) {
     writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
-    authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})" &&`
+    authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})"`
   } else {
     const angellistToken = join(homedir(), '.angellist-claude-token')
     if (cfg.platform === 'slack' && existsSync(angellistToken)) {
-      authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(angellistToken)})" &&`
+      authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(angellistToken)})"`
     }
   }
 
