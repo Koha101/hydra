@@ -301,7 +301,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
     {
       const resolvedThread = registry.resolveThreadId(msg)
       const activeSession = registry.getByThread(resolvedThread)
-      const liveInThread = activeSession ? isAlive(registry.get(activeSession)!) : false
+      const activeInfo = activeSession ? registry.get(activeSession) : undefined
+      const liveInThread = activeInfo ? isAlive(activeInfo) : false
 
       if (!liveInThread) {
         const colonIdx = msg.content.indexOf(':')
@@ -365,7 +366,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const designMatch = msg.content.match(/^(?:\/design|design)\s+([\s\S]+)$/i)
+      const designMatch = msg.content.match(/^(?:\/design|design):\s*([\s\S]+)$/i)
       if (designMatch) {
         void handleDesignIntercept(msg, designMatch[1].trim())
         return
