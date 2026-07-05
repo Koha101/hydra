@@ -191,7 +191,7 @@ Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessio
 
 ## Troubleshooting
 
-Symptoms first — each maps to one root cause. See [ONBOARDING_TIPS.md](./ONBOARDING_TIPS.md) for a full first-machine checklist.
+Symptoms first — each maps to one root cause. See [docs/ONBOARDING_TIPS.md](./docs/ONBOARDING_TIPS.md) for a full first-machine checklist.
 
 **Bot is online but a spawned thread stays empty, or `spawn:` does nothing.**
 Command interception (`spawn:`, `kill:`, `/sessions`, `/health`) fires only for senders in the **top-level** `access.json` `allowFrom` — separate from a channel group's `allowFrom`. A group lets *replies* through; *commands* need you in the global allowlist. → `/discord:access allow <your-snowflake>`. (The daemon logs `command-shaped message from non-allowlisted sender …` when this happens.)
