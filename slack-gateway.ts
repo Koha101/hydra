@@ -55,6 +55,7 @@ export class SlackGateway implements ChatGateway {
   readonly canThreadInDM = true
   readonly dmThreadsAreExclusive = true
   readonly healthCheckUrl = 'https://slack.com/api/api.test'
+  readonly maxMessageLength = 4000
   private app: App | null = null
   private _botId: string | null = null
   private _botUserId: string | null = null

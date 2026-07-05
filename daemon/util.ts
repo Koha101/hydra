@@ -187,7 +187,7 @@ export async function reportError(
 export async function safeSend(
   channelId: string, text: string, opts?: { replyTo?: string },
 ): Promise<string[]> {
-  const chunks = chunk(text, 2000, 'markdown')
+  const chunks = chunk(text, gateway.maxMessageLength, 'markdown')
   const sentIds: string[] = []
   for (let i = 0; i < chunks.length; i++) {
     try {
