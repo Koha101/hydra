@@ -297,16 +297,22 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     // Template as first-class command: "review: topic", "design: topic", etc.
     // Placed AFTER all hardcoded commands so new commands naturally take priority.
-    // Uses dynamic regex from known template names to avoid matching arbitrary "word:" patterns.
+    // Skip in active session threads — let thread-scoped commands (design, review, build) handle it.
     {
-      const colonIdx = msg.content.indexOf(':')
-      if (colonIdx > 0) {
-        const candidateName = msg.content.slice(0, colonIdx).trim().toLowerCase()
-        const template = getTemplate(candidateName)
-        if (template) {
-          const candidateTopic = msg.content.slice(colonIdx + 1).trim()
-          void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
-          return
+      const resolvedThread = registry.resolveThreadId(msg)
+      const activeSession = registry.getByThread(resolvedThread)
+      const liveInThread = activeSession ? isAlive(registry.get(activeSession)!) : false
+
+      if (!liveInThread) {
+        const colonIdx = msg.content.indexOf(':')
+        if (colonIdx > 0) {
+          const candidateName = msg.content.slice(0, colonIdx).trim().toLowerCase()
+          const template = getTemplate(candidateName)
+          if (template) {
+            const candidateTopic = msg.content.slice(colonIdx + 1).trim()
+            void handleTemplateSpawn(msg, candidateName, candidateTopic, template, access)
+            return
+          }
         }
       }
     }
