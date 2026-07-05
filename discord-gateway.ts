@@ -90,7 +90,7 @@ export class DiscordGateway implements ChatGateway {
   readonly canThreadInDM = false
   readonly dmThreadsAreExclusive = false
   readonly healthCheckUrl = 'https://discord.com/api/v10/gateway'
-  readonly maxMessageLength = 2000
+  readonly maxMessageLength = 2000 // Discord API hard limit
   private client: Client
   private messageHandler: ((msg: InboundMessage) => Promise<void>) | null = null
   private threadDeleteHandler: ((threadId: string) => void) | null = null

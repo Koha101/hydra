@@ -46,7 +46,7 @@ export type GateResult =
 // Constants
 // ---------------------------------------------------------------------------
 
-export const MAX_CHUNK_LIMIT = gateway.maxMessageLength
+export function maxChunkLimit(): number { return gateway.maxMessageLength }
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
