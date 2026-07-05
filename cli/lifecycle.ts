@@ -9,7 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs,
 } from './helpers.js'
-import { DEFAULT_MODEL } from '../daemon/bridge-dispatch.js'
+import { DEFAULT_MODEL } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)

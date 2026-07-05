@@ -52,9 +52,9 @@ export const BRIDGE_TOOLS = [
   { name: 'list_watches', description: 'List all PRs being watched (your session or all).', inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'Show all watches, not just yours' } } } },
 ]
 
-// Canonical default. HYDRA_MODEL overrides it for byte + all spawns;
-// `hydra spawn --model <id>` overrides a single spawn.
-export const DEFAULT_MODEL = 'claude-opus-4-6[1m]'
+import { DEFAULT_MODEL } from '../shared/constants.js'
+
+// Frozen at import time — daemon restart required to pick up changes.
 export const SPAWN_MODEL = process.env.HYDRA_MODEL || DEFAULT_MODEL
 export const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
 
@@ -206,7 +206,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case 'spawn_session': {
         const worktree = args.worktree as string | undefined
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
-        const model = args.model as string | undefined
+        const model = (args.model as string | undefined)?.trim() || undefined
+        if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
         const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, model ? { model } : undefined)
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }

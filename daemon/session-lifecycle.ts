@@ -370,7 +370,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     prompt = buildSpawnPrompt(promptParams)
   }
 
-  const model = opts?.model || SPAWN_MODEL
+  const model = opts?.model ?? SPAWN_MODEL
 
   // Build claude command — fork adds --resume --fork-session, resume uses --resume without fork
   let claudeArgs: string
