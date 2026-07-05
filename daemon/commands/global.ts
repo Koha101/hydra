@@ -7,7 +7,7 @@ import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
 import type { ThreadMetadata } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
 import { doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
-import { tmuxHasSession, isAlive } from '../util.js'
+import { tmuxHasSession, isAlive, safeSend } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild, startBuild } from '../build.js'
 import { getActiveReviews, cancelReview, startReview } from '../adversarial.js'
@@ -224,59 +224,46 @@ export async function handleReconnectIntercept(msg: InboundMessage): Promise<voi
 export async function handleCommandsIntercept(msg: InboundMessage): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '📋').catch(() => {})
   const text = [
-    '**Commands**',
+    '**Help / Commands**',
     '',
-    '**Sessions:**',
+    '**Channel** (work anywhere):',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
-    '• 🚀 `spawn <model>: <topic>` — spawn with model (sonnet, haiku, fable, opus-4-7, etc)',
-    '• 🚀 `spawn-wt: <repo> <topic>` — new session in a git worktree',
-    '• 🚀 `spawn-wt <model>: <repo> <topic>` — worktree spawn with model',
-    '• 🎯 `review: <topic>` / `fix: <topic>` / `design: <topic>` — templated session',
-    '• 📋 `templates` — list available spawn templates',
+    '• 🚀 `spawn <model>: <topic>` — spawn with model (sonnet, haiku, fable, etc)',
+    '• 🚀 `spawn-wt: <repo> <topic>` — spawn in a git worktree',
+    '• 🎯 `review:` / `fix:` / `design:` — templated session · 📋 `templates`',
     '• 📊 `list sessions` — show all running sessions',
     '• ☠️ `kill session: <name>` — terminate a named session',
-    '• ☠️ `kill` — kill this session (thread-scoped)',
-    '• 🍴 `fork` / `fork: <focus>` — fork into a new thread with full history',
+    '',
+    '**Thread** (inside a session thread):',
+    '• ⚡ `! <message>` — interrupt current work, then deliver',
+    '• 🍴 `fork` / `fork: <focus>` — fork into a new thread',
     '• 🍽️ `forks` — list forks from this thread',
+    '• ☠️ `kill` — kill this session',
+    '• 👂 `listen` / 🔇 `unlisten` — mute/unmute message delivery',
+    '• ⏸️ `pause` / ▶️ `unpause` — mark as paused (visual only)',
+    '• 📈 `usage` — context %, messages, runtime',
     '',
-    '**Recovery (thread-scoped):**',
-    '• ⏯️ `resume` — reconnect to a dead session with full context (via --resume)',
-    '• 🔁 `respawn` — fresh session that reads thread history and continues',
-    '• 🔮 `recover` — revive dead sessions from a crash',
+    '**Multi-agent** (thread):',
+    '• 🔨 `build [N] [task]` — implement + review cycle',
+    '• 🏗️ `build-wt: <repo> [N] [task]` — build in a worktree',
+    '• ⚔️ `/review [N] [topic]` — adversarial review',
+    '• 🎨 `design: <topic>` — multi-persona design session',
+    '• 🚫 `kill build` / `kill review` / `kill design`',
     '',
-    '**Multi-agent:**',
-    '• `build [N] [task]` — owner implements, critic reviews (default 3 rounds)',
-    '• `build-wt: <repo> [N] [task]` — build in an isolated worktree',
-    '• `kill build` — cancel an in-progress build',
-    '• `/review [N] [topic]` — adversarial review: critic challenges, owner defends',
-    '• `kill review` — cancel an in-progress review',
-    '• `design: <topic>` — autonomous multi-persona design (propose → synthesize → refine → audit)',
-    '• `kill design` — cancel an in-progress design session',
+    '**Recovery** (thread, or channel for `recover`):',
+    '• ⏯️ `resume` — reconnect with full context (--resume)',
+    '• 🔁 `respawn` — fresh session, reads thread history',
+    '• 🔮 `recover [name]` — revive dead sessions from a crash',
     '',
-    '**Recovery:**',
-    '• ⏯️ `resume` — reconnect to a dead session with full context',
-    '• 🔁 `respawn` — fresh session that reads thread history and continues',
-    '• 🔮 `recover` — revive dead sessions from a crash',
-    '',
-    '**Session control:**',
-    '• ⚡ `! <message>` — interrupt current work, then deliver message',
-    '• 👂/🔇 `listen` / `unlisten` — toggle message routing to session',
-    '• ⏸️/▶️ `pause` / `unpause` — visual queue state (sidebar indicator)',
-    '• 📈 `usage` — context %, messages, runtime, fork count',
-    '',
-    '**PR Watching:**',
-    '• 👁️ `watch <pr-url>` — poll PR for new comments/reviews (in session thread)',
-    '• 🙈 `unwatch <pr-url>` — stop watching a PR',
-    '• 📡 `watches` — list all watched PRs',
+    '**PR watching** (thread):',
+    '• 👁️ `watch [pr-url]` — auto-detect or specify PR to watch',
+    '• 🙈 `unwatch <pr-url>` · 📡 `watches` — list watched PRs',
     '',
     '**Daemon:**',
-    '• 💚 `health` / `status` — daemon diagnostics',
-    '• 🧩 `protocols` — show active reviews/builds/designs',
-    '• 🔌 `reconnect` — re-establish chat connection',
-    '• 🔄 `restart` — restart daemon (sessions reconnect)',
+    '• 💚 `health` · 🧩 `protocols` · 🔌 `reconnect` · 🔄 `restart`',
     '• 📋 `help` / `commands` — this list',
   ].join('\n')
-  try { await gateway.send(msg.channelId, text, { replyTo: msg.id }) } catch {}
+  await safeSend(msg.channelId, text, { replyTo: msg.id })
 }
 
 // ---------------------------------------------------------------------------
