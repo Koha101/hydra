@@ -9,6 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs,
 } from './helpers.js'
+import { DEFAULT_MODEL } from '../daemon/bridge-dispatch.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)
@@ -65,8 +66,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
 
   const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
-  // Canonical default is DEFAULT_MODEL in daemon/bridge-dispatch.ts; keep in sync.
-  const byteModel = process.env.HYDRA_MODEL ?? 'claude-opus-4-6[1m]'
+  const byteModel = process.env.HYDRA_MODEL || DEFAULT_MODEL
   const inner = [
     `cd ${shq(byteCwd)}`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
