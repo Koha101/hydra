@@ -45,6 +45,7 @@ Spawn options (required):
   --idempotency-key <key>              Prevent duplicate spawns
   --channel <id>                       Target channel for the spawned thread
   --message <id>                       Create thread on this message (requires --channel)
+  --model <id>                         Model for this session (default: $HYDRA_MODEL or claude-opus-4-6[1m])
 
 Global options:
   --daemon <name>                      Target a specific daemon
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
       let message: string | undefined
       let quiet = false
       let ephemeral = false
+      let model: string | undefined
       const promptParts: string[] = []
 
       for (let i = 1; i < filtered.length; i++) {
@@ -131,6 +133,8 @@ async function main(): Promise<void> {
           quiet = true
         } else if (filtered[i] === '--ephemeral') {
           ephemeral = true
+        } else if (filtered[i] === '--model' && i + 1 < filtered.length) {
+          model = filtered[++i]
         } else {
           promptParts.push(filtered[i])
         }
@@ -158,7 +162,7 @@ async function main(): Promise<void> {
         type: 'cli',
         command: 'spawn',
         id: randomUUID(),
-        params: { prompt, idempotencyKey, initiator, ...(channel && { channel }), ...(message && { message }), ...(quiet && { quiet }), ...(ephemeral && { ephemeral }) },
+        params: { prompt, idempotencyKey, initiator, model, ...(channel && { channel }), ...(message && { message }), ...(quiet && { quiet }), ...(ephemeral && { ephemeral }) },
       })
       printResponse(response, json)
       break

@@ -9,6 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs,
 } from './helpers.js'
+import { DEFAULT_MODEL } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)
@@ -65,13 +66,14 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
 
   const byteCwd = process.env.BYTE_CWD ?? cfg.spawnCwd
+  const byteModel = process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
   const inner = [
     `cd ${shq(byteCwd)}`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model 'claude-opus-4-6[1m]' --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
+    `caffeinate -i claude --model ${shq(byteModel)} --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)
