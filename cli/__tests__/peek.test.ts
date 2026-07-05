@@ -1,96 +1,180 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, mock, beforeEach } from 'bun:test'
 
-// We test the peek module's tmux command construction by mocking exec calls
-// and verifying the correct tmux commands are issued.
+// Mock child_process before importing peek
+const mockExecSync = mock(() => '')
+const mockExecFileSync = mock(() => '')
+mock.module('child_process', () => ({
+  execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
+}))
+
+// Mock helpers to avoid real socket/tmux calls
+const mockSendRequest = mock(async () => ({ ok: true, data: [] }))
+const mockTmuxExists = mock(() => true)
+const mockTmuxKill = mock(() => {})
+mock.module('../helpers.js', () => ({
+  resolveSocket: () => '/tmp/fake.sock',
+  sendRequest: mockSendRequest,
+  shq: (s: string) => "'" + s.replace(/'/g, "'\\''") + "'",
+  tmuxExists: mockTmuxExists,
+  tmuxKill: mockTmuxKill,
+}))
+
+// Now import peek (uses mocked modules)
+const { peek } = await import('../peek.js')
+
+// Capture process.exit calls
+const mockExit = mock(() => { throw new Error('exit') })
+process.exit = mockExit as any
+
+beforeEach(() => {
+  mockExecSync.mockClear()
+  mockSendRequest.mockClear()
+  mockTmuxExists.mockClear()
+  mockTmuxKill.mockClear()
+  mockExit.mockClear()
+})
 
 describe('peek', () => {
-  describe('CLI argument parsing', () => {
-    test('hydra peek with no args parses correctly', async () => {
-      // Verify the module exports the peek function
-      const { peek } = await import('../peek.js')
-      expect(typeof peek).toBe('function')
-    })
-
-    test('peek accepts --split flag', async () => {
-      const { peek } = await import('../peek.js')
-      // peek(['--split']) would attempt socket connection — we just verify it's callable
-      expect(typeof peek).toBe('function')
+  describe('no live sessions', () => {
+    test('exits cleanly when no sessions are live', async () => {
+      mockSendRequest.mockResolvedValueOnce({ ok: true, data: [] })
+      try { await peek([], undefined) } catch {}
+      expect(mockExit).toHaveBeenCalledWith(0)
     })
   })
 
-  describe('tmux session management', () => {
-    test('hydra-peek session name is deterministic', () => {
-      // The peek session is always named 'hydra-peek' for easy cleanup
-      const peekName = 'hydra-peek'
-      expect(peekName).toBe('hydra-peek')
+  describe('single session — direct attach', () => {
+    test('attaches read-only to the sole session', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [{ name: 'spark', status: 'connected', description: 'test' }],
+      })
+      await peek([], undefined)
+      const attachCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes("'spark'")
+      )
+      expect(attachCall).toBeDefined()
     })
 
-    test('attachReadOnly constructs correct tmux command', () => {
-      // The attach command should include -r for read-only
-      const expectedPattern = /tmux attach-session -t .+ -r/
-      const cmd = `tmux attach-session -t 'spark' -r`
-      expect(cmd).toMatch(expectedPattern)
-    })
-
-    test('buildPeekSession creates correct split commands', () => {
-      // Each session after the first should generate a split-window command
-      const sessions = [
-        { name: 'spark', description: 'doing stuff', status: 'connected' },
-        { name: 'pixel', description: 'other work', status: 'connected' },
-        { name: 'nova', description: undefined, status: 'disconnected' },
-      ]
-
-      // Verify the unset TMUX pattern for nested attach
-      const attachCmd = (name: string) => `unset TMUX && exec tmux attach-session -t '${name}' -r`
-      expect(attachCmd('spark')).toBe("unset TMUX && exec tmux attach-session -t 'spark' -r")
-      expect(attachCmd('pixel')).toBe("unset TMUX && exec tmux attach-session -t 'pixel' -r")
-
-      // Verify pane titles include description when available
-      const title = (s: typeof sessions[0]) => s.name + (s.description ? ' — ' + s.description : '')
-      expect(title(sessions[0])).toBe('spark — doing stuff')
-      expect(title(sessions[1])).toBe('pixel — other work')
-      expect(title(sessions[2])).toBe('nova')
-    })
-
-    test('single session skips split and attaches directly', () => {
-      const sessions = [{ name: 'spark', description: 'solo', status: 'connected' }]
-      // With 1 session and no --split flag, should use direct attach (no hydra-peek session)
-      expect(sessions.length).toBe(1)
+    test('validates session name exists', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [{ name: 'spark', status: 'connected' }],
+      })
+      try { await peek(['drift'], undefined) } catch {}
+      expect(mockExit).toHaveBeenCalledWith(1)
     })
   })
+
+  describe('multiple sessions — window view', () => {
+    test('creates hydra-peek session with windows for each', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [
+          { name: 'spark', status: 'connected', description: 'alpha' },
+          { name: 'pixel', status: 'connected', description: 'beta' },
+          { name: 'nova', status: 'disconnected' },
+        ],
+      })
+      await peek([], undefined)
+
+      // Should kill existing peek session
+      expect(mockTmuxKill).toHaveBeenCalledWith('hydra-peek')
+
+      // Should create new session with first window
+      const newSessionCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('new-session') && c[0].includes('hydra-peek')
+      )
+      expect(newSessionCall).toBeDefined()
+
+      // Should link-window for each session
+      const linkCalls = mockExecSync.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('link-window')
+      )
+      expect(linkCalls).toHaveLength(3) // spark + pixel + nova
+
+      // Should attach to peek session
+      const attachCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes('hydra-peek')
+      )
+      expect(attachCall).toBeDefined()
+    })
+
+    test('attaches to the peek session (not read-only, to allow navigation)', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [
+          { name: 'spark', status: 'connected' },
+          { name: 'pixel', status: 'connected' },
+        ],
+      })
+      await peek([], undefined)
+
+      const attachCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes('hydra-peek')
+      )
+      expect(attachCall).toBeDefined()
+      // Should NOT be read-only — -r blocks ctrl+b n/p navigation
+      expect(attachCall![0]).not.toContain(' -r')
+    })
+
+    test('does not modify global tmux key bindings', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [
+          { name: 'spark', status: 'connected' },
+          { name: 'pixel', status: 'connected' },
+        ],
+      })
+      await peek([], undefined)
+
+      const bindCalls = mockExecSync.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('bind-key')
+      )
+      expect(bindCalls).toHaveLength(0)
+    })
+  })
+
 
   describe('session filtering', () => {
-    test('only connected and disconnected sessions are shown', () => {
-      const allSessions = [
-        { name: 'spark', status: 'connected' },
-        { name: 'pixel', status: 'disconnected' },
-        { name: 'nova', status: 'dead' },
-      ]
-      const live = allSessions.filter(s => s.status === 'connected' || s.status === 'disconnected')
-      expect(live).toHaveLength(2)
-      expect(live.map(s => s.name)).toEqual(['spark', 'pixel'])
-    })
+    test('excludes dead sessions', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [
+          { name: 'spark', status: 'connected' },
+          { name: 'pixel', status: 'dead' },
+        ],
+      })
+      await peek([], undefined)
 
-    test('peek <name> validates against live sessions', () => {
-      const sessions = [
-        { name: 'spark', status: 'connected' },
-        { name: 'pixel', status: 'connected' },
-      ]
-      const target = sessions.find(s => s.name === 'drift')
-      expect(target).toBeUndefined()
-
-      const found = sessions.find(s => s.name === 'spark')
-      expect(found).toBeDefined()
-      expect(found!.name).toBe('spark')
+      // Only spark is live — should direct-attach, not split
+      const attachCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes("'spark'")
+      )
+      expect(attachCall).toBeDefined()
+      // No hydra-peek session created
+      expect(mockTmuxKill).not.toHaveBeenCalled()
     })
   })
 
-  describe('shell quoting', () => {
-    test('session names with special chars are quoted', async () => {
-      const { shq } = await import('../helpers.js')
-      expect(shq('spark')).toBe("'spark'")
-      expect(shq("it's")).toBe("'it'\\''s'")
-      expect(shq('hello world')).toBe("'hello world'")
+  describe('named peek', () => {
+    test('attaches to specific named session', async () => {
+      mockSendRequest.mockResolvedValueOnce({
+        ok: true,
+        data: [
+          { name: 'spark', status: 'connected' },
+          { name: 'pixel', status: 'connected' },
+        ],
+      })
+      await peek(['pixel'], undefined)
+
+      const attachCall = mockExecSync.mock.calls.find(
+        c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes("'pixel'")
+      )
+      expect(attachCall).toBeDefined()
+      // Should NOT create hydra-peek
+      expect(mockTmuxKill).not.toHaveBeenCalled()
     })
   })
 })

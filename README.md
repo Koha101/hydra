@@ -96,6 +96,7 @@ hydra spawn <prompt>           # Spawn a new session
 hydra list                     # List active sessions
 hydra status <name>            # Session details
 hydra kill <name>              # Kill a session
+hydra peek [name]              # View live sessions (chooser or direct attach)
 hydra health                   # Daemon diagnostics
 hydra clear-key <key>          # Clear a stuck idempotency key
 ```
@@ -200,5 +201,6 @@ Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessio
 | `cli/hydra.ts` | CLI entry point — routes commands |
 | `cli/helpers.ts` | Config resolution, tmux wrappers, socket comms, compile check |
 | `cli/lifecycle.ts` | Lifecycle commands: up/down/restart/watchdog/preflight/install |
+| `cli/peek.ts` | View live sessions via tmux linked windows with filtered chooser |
 
 Logs land at `~/hydra-<platform>-daemon.log` and `~/hydra-<platform>-byte.log`.
