@@ -483,6 +483,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   refreshSessionVisual(threadId!, { state: respawnCount > 0 ? 'zombie' : 'live' })
 
+  if (!isJoin) {
+    void gateway.send(threadId!, `_model: \`${model}\`_`).catch(() => {})
+  }
+
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
 

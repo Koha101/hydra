@@ -52,3 +52,11 @@ export function isKnownModel(id: string): boolean {
 export function spawnModel(): string {
   return process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
 }
+
+export function reviewModel(): string {
+  return process.env.HYDRA_REVIEW_MODEL?.trim() || spawnModel()
+}
+
+export function buildModel(): string {
+  return process.env.HYDRA_BUILD_MODEL?.trim() || spawnModel()
+}

@@ -401,7 +401,20 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
       if (reviewMatch) {
-        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewMatch[2]?.trim())
+        // Check if first word of topic is a model alias: "/review 3 fable fix the auth bug"
+        const rawTopic = reviewMatch[2]?.trim()
+        let reviewModel: string | undefined
+        let reviewTopic = rawTopic
+        if (rawTopic) {
+          const firstSpace = rawTopic.indexOf(' ')
+          const firstWord = firstSpace > 0 ? rawTopic.slice(0, firstSpace) : rawTopic
+          const resolved = resolveModelAlias(firstWord)
+          if (resolved) {
+            reviewModel = firstWord
+            reviewTopic = firstSpace > 0 ? rawTopic.slice(firstSpace + 1).trim() : undefined
+          }
+        }
+        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewTopic, reviewModel)
         return
       }
 
@@ -424,7 +437,19 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
       if (buildMatch) {
-        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildMatch[2]?.trim())
+        const rawTask = buildMatch[2]?.trim()
+        let buildModelAlias: string | undefined
+        let buildTask = rawTask
+        if (rawTask) {
+          const firstSpace = rawTask.indexOf(' ')
+          const firstWord = firstSpace > 0 ? rawTask.slice(0, firstSpace) : rawTask
+          const resolved = resolveModelAlias(firstWord)
+          if (resolved) {
+            buildModelAlias = firstWord
+            buildTask = firstSpace > 0 ? rawTask.slice(firstSpace + 1).trim() : undefined
+          }
+        }
+        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildTask, undefined, buildModelAlias)
         return
       }
 

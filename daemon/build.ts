@@ -10,6 +10,7 @@ import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 import { createStateMachine } from './state-machine.js'
+import { buildModel, resolveModelAlias } from '../shared/constants.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -51,6 +52,7 @@ export type BuildState = {
   worktreeRepo?: string
   worktreePath?: string
   worktreeBranch?: string
+  model?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +125,7 @@ export async function startBuild(
   rounds: number,
   task?: string,
   worktreeTarget?: string,
+  model?: string,
 ): Promise<BuildState> {
   if (threadToBuild.has(ownerThreadId)) {
     throw new Error('A build is already in progress in this thread')
@@ -183,6 +186,7 @@ export async function startBuild(
     worktreeRepo,
     worktreePath,
     worktreeBranch,
+    model,
   }
 
   builds.set(buildId, state)
@@ -500,10 +504,11 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
   const ownerInfo = registry.get(state.ownerSessionId)
   const ownerCwd = ownerInfo?.capabilities?.cwd
 
-  // Intentionally omits model — critics always use SPAWN_MODEL (strongest available)
+  const criticModel = state.model ? (resolveModelAlias(state.model) ?? state.model) : buildModel()
   try {
     const result = await doSpawnSession(`Build CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
+      model: criticModel,
       promptBuilder: (sessionId, tmuxName) =>
         buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd, implementationText }),
     })
