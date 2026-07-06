@@ -47,7 +47,7 @@ async function spawnAndNotify(
   const chatId = await resolveSpawnTarget(msg)
   const label = template?.name ?? null
   // Model priority: chat/CLI alias (router.ts / hydra.ts) > template.model (here)
-  //   > HYDRA_MODEL env > DEFAULT_MODEL (session-lifecycle.ts via SPAWN_MODEL)
+  //   > HYDRA_MODEL env > DEFAULT_MODEL (shared/constants.ts via spawnModel())
   const resolvedModel = model ?? template?.template.model
   const spawnOpts = {
     ...(template && { promptPrefix: template.template.prompt }),

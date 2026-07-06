@@ -101,7 +101,7 @@ export type SpawnOpts = {
   memberLabel?: string   // label for thread member (e.g. 'critic', 'judge')
   initiator?: string
   ephemeral?: boolean    // auto-kill on [done] sentinel, skip death visuals
-  model?: string         // per-spawn model override (falls back to SPAWN_MODEL / HYDRA_MODEL)
+  model?: string         // per-spawn model override (falls back to spawnModel() / HYDRA_MODEL)
 }
 
 // ---------------------------------------------------------------------------

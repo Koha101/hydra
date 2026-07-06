@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileS
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
-import { DEFAULT_MODEL } from '../shared/constants.js'
+import { spawnModel } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Config resolution (replaces env-setup.sh)
@@ -102,7 +102,7 @@ export function resolveConfig(platform?: string): HydraConfig {
     byteLog: process.env.HYDRA_BYTE_LOG ?? join(homedir(), `hydra-${platform}-byte.log`),
     watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),
     sockPath: join(stateDir, 'daemon.sock'),
-    byteModel: process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL,
+    byteModel: spawnModel(),
     byteAuth: (process.env.HYDRA_AUTH?.trim() ?? 'auto') === 'keychain' ? 'keychain' : 'auto',
     byteCwd: process.env.BYTE_CWD ?? spawnCwd,
     byteChannel: process.env.BYTE_CHANNEL ?? '',

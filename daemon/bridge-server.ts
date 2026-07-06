@@ -4,7 +4,9 @@ import { createServer, type Socket } from 'net'
 import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
-import { executeTool, computeToolsForSession, MAIN_ONLY_TOOLS, SPAWN_MODEL } from './bridge-dispatch.js'
+import { executeTool } from './bridge-dispatch.js'
+import { computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-tools.js'
+import { spawnModel } from '../shared/constants.js'
 import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
@@ -242,7 +244,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         capabilities: info?.capabilities ?? {
           role: sessionId === 'main' ? 'main' : 'worker',
           tools: tools.map(t => t.name),
-          model: SPAWN_MODEL,
+          model: spawnModel(),
           cwd: process.env.SPAWN_CWD ?? '(unknown)',
           platform: PLATFORM,
         },
