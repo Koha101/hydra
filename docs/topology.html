@@ -1,0 +1,345 @@
+<title>Hydra Import Topology</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e4e4e7; --muted: #71717a; --dim: #3f3f46;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow-x: auto; }
+  header { padding: 20px 24px 12px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+  header p { font-size: 12px; color: var(--muted); }
+  .legend { display: flex; gap: 12px; padding: 4px 24px 16px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+  .legend-item:hover { color: var(--text); }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+  #canvas { position: relative; width: 1360px; margin: 0 auto; height: 860px; }
+  svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  .layer-band { position: absolute; left: 0; right: 0; border-radius: 6px; opacity: 0.04; }
+  .layer-label { position: absolute; left: 8px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; writing-mode: vertical-lr; transform: rotate(180deg); }
+  .node {
+    position: absolute; height: 30px; padding: 0 10px; border-radius: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 500; white-space: nowrap;
+    cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
+    user-select: none;
+  }
+  .node .accent { width: 3px; height: 14px; border-radius: 1.5px; flex-shrink: 0; }
+  .node:hover { border-color: #555; z-index: 10; }
+  .node.active { z-index: 20; box-shadow: 0 0 12px rgba(255,255,255,0.08); }
+  .node.faded { opacity: 0.2; }
+  .node .badge { font-size: 9px; color: var(--muted); background: var(--bg); padding: 1px 5px; border-radius: 8px; margin-left: auto; }
+  .edge { fill: none; stroke-width: 1.2; opacity: 0; transition: opacity 0.2s; }
+  .edge.visible { opacity: 0.5; }
+  .edge.highlight { opacity: 0.85; stroke-width: 1.8; }
+  .tooltip {
+    position: fixed; padding: 8px 12px; background: #252830; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 11px; pointer-events: none; z-index: 100;
+    max-width: 280px; line-height: 1.5; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tooltip .tt-name { font-weight: 600; margin-bottom: 2px; }
+  .tooltip .tt-desc { color: var(--muted); }
+  .tooltip .tt-stats { margin-top: 4px; font-size: 10px; color: var(--muted); }
+  .help { position: fixed; bottom: 12px; right: 16px; font-size: 11px; color: var(--dim); }
+</style>
+
+<header>
+  <h1>Hydra Import Topology</h1>
+  <p>35 modules &middot; hover to trace imports &middot; click to lock</p>
+</header>
+<div class="legend" id="legend"></div>
+<div id="canvas">
+  <svg id="edges"></svg>
+</div>
+<div class="tooltip" id="tooltip"></div>
+<div class="help">hover: trace &middot; click: lock &middot; esc: reset</div>
+
+<script>
+const LAYERS = [
+  { id: 'entry',     name: 'Entry Points',       color: '#6B8DB5', y: 30 },
+  { id: 'shared',    name: 'Shared',              color: '#9B8BC4', y: 110 },
+  { id: 'core',      name: 'Core Infrastructure', color: '#5BA39B', y: 190 },
+  { id: 'tools',     name: 'Tool Layer',          color: '#7B8BC4', y: 280 },
+  { id: 'server',    name: 'Server',              color: '#5B8BA3', y: 370 },
+  { id: 'lifecycle', name: 'Lifecycle',            color: '#6BAB8E', y: 460 },
+  { id: 'domain',    name: 'Domain Features',     color: '#C4A35B', y: 550 },
+  { id: 'protocols', name: 'Protocols',            color: '#C47B7B', y: 640 },
+  { id: 'commands',  name: 'Commands',             color: '#8B7DB8', y: 740 },
+];
+
+const NODES = [
+  { id: 'daemon',           label: 'daemon.ts',              layer: 'entry',     desc: 'Daemon entry point — boots gateway, server, router' },
+  { id: 'bridge',           label: 'bridge.ts',              layer: 'entry',     desc: 'Bridge entry point — MCP relay, one per Claude session' },
+  { id: 'cli',              label: 'cli/hydra.ts',           layer: 'entry',     desc: 'CLI entry point — up/down/restart/health' },
+  { id: 'constants',        label: 'shared/constants.ts',    layer: 'shared',    desc: 'DEFAULT_MODEL, isKnownModel, spawnModel(), MODEL_ALIASES' },
+  { id: 'config',           label: 'config.ts',              layer: 'core',      desc: 'Env, paths, .env loading, gateway instance' },
+  { id: 'sessions',         label: 'sessions.ts',            layer: 'core',      desc: 'SessionRegistry, ThreadRegistry, session catalog' },
+  { id: 'transport',        label: 'bridge-transport.ts',    layer: 'core',      desc: 'BridgeConn map, message queuing, flush' },
+  { id: 'util',             label: 'util.ts',                layer: 'core',      desc: 'safeSend, chunk, getContextPercent, formatDuration' },
+  { id: 'bridge_tools',     label: 'bridge-tools.ts',       layer: 'tools',     desc: 'BRIDGE_TOOLS, MAIN_ONLY_TOOLS, computeToolsForSession — zero daemon imports (cycle guard)' },
+  { id: 'bridge_dispatch',  label: 'bridge-dispatch.ts',    layer: 'tools',     desc: 'executeTool — tool execution dispatch' },
+  { id: 'bridge_server',    label: 'bridge-server.ts',      layer: 'server',    desc: 'Unix socket server, bridge protocol, death detection, flap guard' },
+  { id: 'protocol_dispatch',label: 'protocol-dispatch.ts',  layer: 'server',    desc: 'Unified dispatch{Reconnect,Reply,Disconnect} fan-out' },
+  { id: 'main_guard',       label: 'main-guard.ts',         layer: 'server',    desc: 'Duplicate-main detection logic' },
+  { id: 'permission',       label: 'permission.ts',         layer: 'server',    desc: 'Permission request routing to DM' },
+  { id: 'cli_handler',      label: 'cli-handler.ts',        layer: 'server',    desc: 'CLI socket request handler' },
+  { id: 'session_lifecycle', label: 'session-lifecycle.ts', layer: 'lifecycle', desc: 'doSpawnSession, killSession, tryResume, tryRespawn' },
+  { id: 'anchor_state',     label: 'anchor-state.ts',       layer: 'lifecycle', desc: 'Thread anchor message visual state machine' },
+  { id: 'gateway_health',   label: 'gateway-health.ts',     layer: 'lifecycle', desc: 'Gateway connectivity monitoring' },
+  { id: 'router',           label: 'router.ts',             layer: 'domain',    desc: 'Inbound routing, command interception, COMMAND_PREFIXES' },
+  { id: 'access',           label: 'access.ts',             layer: 'domain',    desc: 'Access control, allowlists, maxChunkLimit' },
+  { id: 'templates',        label: 'templates.ts',          layer: 'domain',    desc: 'Spawn templates (review:, fix:, design:)' },
+  { id: 'pr_watch',         label: 'pr-watch.ts',           layer: 'domain',    desc: 'GitHub PR polling, comment delivery' },
+  { id: 'dashboard',        label: 'dashboard.ts',          layer: 'domain',    desc: 'Slack Home tab dashboard' },
+  { id: 'idempotency',      label: 'idempotency.ts',        layer: 'domain',    desc: 'Message deduplication' },
+  { id: 'state_machine',    label: 'state-machine.ts',      layer: 'domain',    desc: 'Generic state machine for protocols' },
+  { id: 'adversarial',      label: 'adversarial.ts',        layer: 'protocols', desc: 'Adversarial review protocol — owner/critic rounds' },
+  { id: 'build',            label: 'build.ts',              layer: 'protocols', desc: 'Build protocol — implement/review iteration' },
+  { id: 'design',           label: 'design.ts',             layer: 'protocols', desc: 'Design protocol — personas, synthesis, audit' },
+  { id: 'cmd_global',       label: 'commands/global.ts',    layer: 'commands',  desc: 'spawn, kill, restart, recover commands' },
+  { id: 'cmd_status',       label: 'commands/status.ts',    layer: 'commands',  desc: 'sessions list, status display' },
+  { id: 'cmd_thread',       label: 'commands/thread.ts',    layer: 'commands',  desc: 'listen, pause, resume, join, handoff' },
+  { id: 'cmd_review',       label: 'commands/review.ts',    layer: 'commands',  desc: 'review command handler' },
+  { id: 'cmd_build',        label: 'commands/build.ts',     layer: 'commands',  desc: 'build command handler' },
+  { id: 'cmd_design',       label: 'commands/design.ts',    layer: 'commands',  desc: 'design command handler' },
+  { id: 'cmd_watch',        label: 'commands/watch.ts',     layer: 'commands',  desc: 'watch/unwatch PR commands' },
+];
+
+const EDGES = [
+  // Entry
+  ['daemon','config'],['daemon','sessions'],['daemon','transport'],['daemon','util'],
+  ['daemon','bridge_server'],['daemon','access'],['daemon','anchor_state'],
+  ['daemon','dashboard'],['daemon','permission'],['daemon','pr_watch'],['daemon','cmd_global'],
+  ['cli','constants'],
+  // Core
+  ['sessions','config'],['sessions','util'],
+  ['transport','config'],['transport','sessions'],['transport','util'],
+  ['util','config'],
+  // Tools
+  ['bridge_dispatch','config'],['bridge_dispatch','sessions'],['bridge_dispatch','transport'],
+  ['bridge_dispatch','access'],['bridge_dispatch','session_lifecycle'],['bridge_dispatch','util'],
+  ['bridge_dispatch','pr_watch'],['bridge_dispatch','anchor_state'],
+  // Server
+  ['bridge_server','config'],['bridge_server','sessions'],['bridge_server','transport'],
+  ['bridge_server','bridge_dispatch'],['bridge_server','bridge_tools'],['bridge_server','constants'],
+  ['bridge_server','permission'],['bridge_server','session_lifecycle'],['bridge_server','access'],
+  ['bridge_server','protocol_dispatch'],['bridge_server','anchor_state'],['bridge_server','cli_handler'],
+  ['bridge_server','pr_watch'],['bridge_server','main_guard'],
+  ['protocol_dispatch','adversarial'],['protocol_dispatch','build'],['protocol_dispatch','design'],
+  ['cli_handler','access'],['cli_handler','transport'],['cli_handler','config'],
+  ['cli_handler','idempotency'],['cli_handler','session_lifecycle'],['cli_handler','sessions'],
+  ['cli_handler','util'],
+  ['permission','access'],['permission','transport'],
+  // Lifecycle
+  ['session_lifecycle','config'],['session_lifecycle','sessions'],['session_lifecycle','transport'],
+  ['session_lifecycle','bridge_tools'],['session_lifecycle','constants'],
+  ['session_lifecycle','anchor_state'],['session_lifecycle','pr_watch'],['session_lifecycle','access'],
+  ['anchor_state','config'],['anchor_state','sessions'],
+  // Domain
+  ['router','config'],['router','sessions'],['router','transport'],['router','constants'],
+  ['router','access'],['router','anchor_state'],['router','util'],['router','templates'],
+  ['router','session_lifecycle'],['router','adversarial'],['router','build'],['router','design'],
+  ['router','cmd_global'],['router','cmd_status'],['router','cmd_thread'],
+  ['router','cmd_review'],['router','cmd_build'],['router','cmd_design'],['router','cmd_watch'],
+  ['access','config'],['templates','constants'],
+  ['pr_watch','config'],['pr_watch','transport'],['pr_watch','sessions'],['pr_watch','util'],
+  ['dashboard','config'],['dashboard','sessions'],['dashboard','transport'],
+  ['dashboard','access'],['dashboard','pr_watch'],['dashboard','util'],
+  ['idempotency','config'],['idempotency','util'],
+  // Protocols
+  ['adversarial','config'],['adversarial','sessions'],['adversarial','transport'],
+  ['adversarial','anchor_state'],['adversarial','session_lifecycle'],['adversarial','state_machine'],
+  ['adversarial','build'],['adversarial','design'],
+  ['build','config'],['build','sessions'],['build','transport'],
+  ['build','anchor_state'],['build','session_lifecycle'],['build','state_machine'],
+  ['build','adversarial'],['build','design'],
+  ['design','config'],['design','sessions'],['design','transport'],
+  ['design','anchor_state'],['design','session_lifecycle'],['design','state_machine'],
+  ['design','adversarial'],['design','build'],
+  // Commands
+  ['cmd_global','config'],['cmd_global','sessions'],['cmd_global','transport'],
+  ['cmd_global','access'],['cmd_global','session_lifecycle'],['cmd_global','util'],
+  ['cmd_global','templates'],['cmd_global','adversarial'],['cmd_global','build'],
+  ['cmd_global','design'],['cmd_global','cmd_status'],
+  ['cmd_status','config'],['cmd_status','sessions'],['cmd_status','transport'],
+  ['cmd_status','adversarial'],['cmd_status','build'],['cmd_status','design'],
+  ['cmd_status','pr_watch'],['cmd_status','util'],
+  ['cmd_thread','config'],['cmd_thread','sessions'],['cmd_thread','transport'],
+  ['cmd_thread','anchor_state'],['cmd_thread','session_lifecycle'],['cmd_thread','util'],
+  ['cmd_thread','cmd_status'],
+  ['cmd_review','config'],['cmd_review','sessions'],['cmd_review','adversarial'],
+  ['cmd_build','config'],['cmd_build','sessions'],['cmd_build','build'],
+  ['cmd_design','config'],['cmd_design','sessions'],['cmd_design','design'],
+  ['cmd_watch','config'],['cmd_watch','sessions'],['cmd_watch','pr_watch'],['cmd_watch','util'],
+];
+
+// Layout
+const W = 130, H = 30, GAP = 16;
+const CANVAS_W = 1360;
+const layerMap = {};
+LAYERS.forEach(l => layerMap[l.id] = l);
+const nodeMap = {};
+const layerNodes = {};
+NODES.forEach(n => {
+  nodeMap[n.id] = n;
+  if (!layerNodes[n.layer]) layerNodes[n.layer] = [];
+  layerNodes[n.layer].push(n);
+});
+
+LAYERS.forEach(l => {
+  const nodes = layerNodes[l.id] || [];
+  const totalW = nodes.length * W + (nodes.length - 1) * GAP;
+  const startX = (CANVAS_W - totalW) / 2;
+  nodes.forEach((n, i) => {
+    n.x = startX + i * (W + GAP);
+    n.y = l.y;
+    n.color = l.color;
+  });
+});
+
+// Count edges per node
+const inCount = {}, outCount = {};
+EDGES.forEach(([s, t]) => {
+  outCount[s] = (outCount[s] || 0) + 1;
+  inCount[t] = (inCount[t] || 0) + 1;
+});
+
+// Render legend
+const legend = document.getElementById('legend');
+LAYERS.forEach(l => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  item.innerHTML = `<span class="legend-dot" style="background:${l.color}"></span>${l.name}`;
+  item.onclick = () => highlightLayer(l.id);
+  legend.appendChild(item);
+});
+
+// Render layer bands
+const canvas = document.getElementById('canvas');
+LAYERS.forEach(l => {
+  const band = document.createElement('div');
+  band.className = 'layer-band';
+  band.style.cssText = `top:${l.y - 10}px; height:${H + 20}px; background:${l.color};`;
+  canvas.appendChild(band);
+});
+
+// Render nodes
+NODES.forEach(n => {
+  const el = document.createElement('div');
+  el.className = 'node';
+  el.id = `node-${n.id}`;
+  el.style.cssText = `left:${n.x}px; top:${n.y}px; width:${W}px;`;
+  const total = (inCount[n.id] || 0) + (outCount[n.id] || 0);
+  el.innerHTML = `<span class="accent" style="background:${n.color}"></span>` +
+    `<span>${n.label.replace(/^(daemon\/|commands\/|shared\/|cli\/)/, '')}</span>` +
+    (total > 0 ? `<span class="badge">${total}</span>` : '');
+  el.addEventListener('mouseenter', e => onNodeEnter(n, e));
+  el.addEventListener('mouseleave', onNodeLeave);
+  el.addEventListener('click', e => { e.stopPropagation(); onNodeClick(n); });
+  canvas.appendChild(el);
+});
+
+// Render edges (SVG)
+const svg = document.getElementById('edges');
+const edgeEls = [];
+EDGES.forEach(([sid, tid]) => {
+  const s = nodeMap[sid], t = nodeMap[tid];
+  if (!s || !t) return;
+  const x1 = s.x + W / 2, y1 = s.y + H;
+  const x2 = t.x + W / 2, y2 = t.y;
+  const dy = Math.abs(y2 - y1);
+  const cp = Math.max(dy * 0.4, 30);
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', `M${x1},${y1} C${x1},${y1 + cp} ${x2},${y2 - cp} ${x2},${y2}`);
+  path.setAttribute('stroke', s.color);
+  path.classList.add('edge');
+  path.dataset.source = sid;
+  path.dataset.target = tid;
+  svg.appendChild(path);
+  edgeEls.push(path);
+});
+
+// Interaction
+let locked = null;
+const tooltip = document.getElementById('tooltip');
+
+function showEdges(nodeId) {
+  const connected = new Set([nodeId]);
+  edgeEls.forEach(e => {
+    const isOut = e.dataset.source === nodeId;
+    const isIn = e.dataset.target === nodeId;
+    if (isOut || isIn) {
+      e.classList.add('visible');
+      e.classList.add('highlight');
+      connected.add(e.dataset.source);
+      connected.add(e.dataset.target);
+    } else {
+      e.classList.remove('visible');
+      e.classList.remove('highlight');
+    }
+  });
+  document.querySelectorAll('.node').forEach(el => {
+    const nid = el.id.replace('node-', '');
+    el.classList.toggle('faded', !connected.has(nid));
+    el.classList.toggle('active', nid === nodeId);
+  });
+}
+
+function clearEdges() {
+  edgeEls.forEach(e => { e.classList.remove('visible'); e.classList.remove('highlight'); });
+  document.querySelectorAll('.node').forEach(el => {
+    el.classList.remove('faded');
+    el.classList.remove('active');
+  });
+}
+
+function highlightLayer(layerId) {
+  const ids = new Set((layerNodes[layerId] || []).map(n => n.id));
+  document.querySelectorAll('.node').forEach(el => {
+    const nid = el.id.replace('node-', '');
+    el.classList.toggle('faded', !ids.has(nid));
+  });
+  edgeEls.forEach(e => {
+    const show = ids.has(e.dataset.source) || ids.has(e.dataset.target);
+    e.classList.toggle('visible', show);
+    e.classList.remove('highlight');
+  });
+  locked = null;
+}
+
+function onNodeEnter(n, e) {
+  if (!locked) showEdges(n.id);
+  const imports = outCount[n.id] || 0;
+  const importedBy = inCount[n.id] || 0;
+  tooltip.innerHTML = `<div class="tt-name">${n.label}</div>` +
+    `<div class="tt-desc">${n.desc}</div>` +
+    `<div class="tt-stats">${imports} imports &middot; ${importedBy} imported by</div>`;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (e.clientX + 12) + 'px';
+  tooltip.style.top = (e.clientY - 10) + 'px';
+}
+
+function onNodeLeave() {
+  if (!locked) clearEdges();
+  tooltip.style.display = 'none';
+}
+
+function onNodeClick(n) {
+  if (locked === n.id) { locked = null; clearEdges(); }
+  else { locked = n.id; showEdges(n.id); }
+}
+
+document.addEventListener('click', () => { locked = null; clearEdges(); });
+document.addEventListener('mousemove', e => {
+  if (tooltip.style.display === 'block') {
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY - 10) + 'px';
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { locked = null; clearEdges(); }
+});
+</script>
