@@ -13,6 +13,8 @@ describe('computeToolsForSession', () => {
     expect(names).toContain('spawn_session')
     expect(names).toContain('list_sessions')
     expect(names).toContain('kill_session')
+    expect(names).toContain('send_to_thread')
+    expect(names).toContain('peek_session')
   })
 
   test('worker session excludes main-only tools', () => {
@@ -27,11 +29,21 @@ describe('computeToolsForSession', () => {
     }
   })
 
+  test('worker session gets orchestration tools', () => {
+    const tools = computeToolsForSession('some-worker-id')
+    const names = tools.map(t => t.name)
+    expect(names).toContain('send_to_thread')
+    expect(names).toContain('peek_session')
+    expect(names).toContain('list_sessions')
+  })
+
   test('MAIN_ONLY_TOOLS contains expected tools', () => {
     expect(MAIN_ONLY_TOOLS.has('spawn_session')).toBe(true)
-    expect(MAIN_ONLY_TOOLS.has('list_sessions')).toBe(true)
     expect(MAIN_ONLY_TOOLS.has('kill_session')).toBe(true)
+    expect(MAIN_ONLY_TOOLS.has('list_sessions')).toBe(false)
     expect(MAIN_ONLY_TOOLS.has('reply')).toBe(false)
+    expect(MAIN_ONLY_TOOLS.has('send_to_thread')).toBe(false)
+    expect(MAIN_ONLY_TOOLS.has('peek_session')).toBe(false)
   })
 
   test('all BRIDGE_TOOLS have required schema fields', () => {
@@ -41,5 +53,26 @@ describe('computeToolsForSession', () => {
       expect(tool.inputSchema).toBeDefined()
       expect(tool.inputSchema.type).toBe('object')
     }
+  })
+
+  test('send_to_thread schema has required fields including type', () => {
+    const tool = BRIDGE_TOOLS.find(t => t.name === 'send_to_thread')!
+    expect(tool).toBeDefined()
+    expect(tool.inputSchema.required).toContain('target')
+    expect(tool.inputSchema.required).toContain('type')
+    expect(tool.inputSchema.required).toContain('text')
+    expect(tool.inputSchema.properties).toHaveProperty('target')
+    expect(tool.inputSchema.properties).toHaveProperty('type')
+    expect(tool.inputSchema.properties).toHaveProperty('text')
+    expect(tool.inputSchema.properties).toHaveProperty('files')
+    expect((tool.inputSchema.properties as any).type.enum).toEqual(['progress', 'question', 'result'])
+  })
+
+  test('peek_session schema has required fields', () => {
+    const tool = BRIDGE_TOOLS.find(t => t.name === 'peek_session')!
+    expect(tool).toBeDefined()
+    expect(tool.inputSchema.required).toContain('name')
+    expect(tool.inputSchema.properties).toHaveProperty('name')
+    expect(tool.inputSchema.properties).toHaveProperty('lines')
   })
 })

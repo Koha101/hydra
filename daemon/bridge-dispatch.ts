@@ -1,10 +1,11 @@
 import { statSync } from 'fs'
+import { execSync } from 'child_process'
 import { gateway, INBOX_DIR } from './config.js'
 import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, maxChunkLimit, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
-import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive } from './util.js'
+import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
 
@@ -187,11 +188,14 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           return {
             name: s.tmuxName,
             description: desc,
+            thread_id: s.threadId,
             url: s.threadUrl ?? '',
             context: getContextPercent(s.tmuxName),
             messages: s.messageCount ?? 0,
             running_for: formatDuration(Date.now() - s.createdAt),
             status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
+            origin_type: s.originType ?? 'spawn',
+            origin_from: s.originFrom ?? null,
           }
         })
         return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
@@ -257,6 +261,87 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         if (entries.length === 0) return { content: [{ type: 'text', text: 'no PRs being watched' }] }
         const lines = entries.map(e => `• ${formatWatchEntry(e)}`)
         return { content: [{ type: 'text', text: lines.join('\n') }] }
+      }
+
+      case 'send_to_thread': {
+        const target = (args.target as string)?.trim()
+        const msgType = (args.type as string)?.trim()
+        const text = args.text as string
+        const files = (args.files as string[] | undefined) ?? []
+        if (!target) throw new Error('target is required (session name, e.g. "cedar")')
+        const VALID_TYPES = ['progress', 'question', 'result']
+        if (!msgType || !VALID_TYPES.includes(msgType)) throw new Error(`type is required: ${VALID_TYPES.join(', ')}`)
+        if (!text) throw new Error('text is required')
+        process.stderr.write(`daemon: send_to_thread [${msgType}] → ${target}\n`)
+
+        // Resolve by session name only — no raw thread IDs (use reply for those)
+        const targetSession = [...registry.values()].find(s => s.tmuxName === target)
+        if (!targetSession) {
+          const known = [...registry.values()].map(s => s.tmuxName).join(', ')
+          throw new Error(`no session named "${target}". Known sessions: ${known || '(none)'}`)
+        }
+        const threadId = targetSession.threadId
+
+        for (const f of files) {
+          assertSendable(f)
+          const st = statSync(f)
+          if (st.size > MAX_ATTACHMENT_BYTES) {
+            throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 25MB)`)
+          }
+        }
+        if (files.length > 10) throw new Error('max 10 attachments per message')
+
+        const access = loadAccess()
+        const sendLimit = Math.max(1, Math.min(access.textChunkLimit ?? maxChunkLimit(), maxChunkLimit()))
+        const chunks = chunk(text, sendLimit, access.chunkMode ?? 'markdown')
+        const sentIds: string[] = []
+
+        try {
+          for (let i = 0; i < chunks.length; i++) {
+            const sent = await retrySend(() => gateway.send(threadId, chunks[i], {
+              ...(i === 0 && files.length > 0 ? { files } : {}),
+            }))
+            sentIds.push(sent.id)
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          throw new Error(`send failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
+        }
+
+        const result = sentIds.length === 1
+          ? `sent to ${target} (id: ${sentIds[0]})`
+          : `sent ${sentIds.length} parts to ${target} (ids: ${sentIds.join(', ')})`
+        return { content: [{ type: 'text', text: result }], sentIds }
+      }
+
+      case 'peek_session': {
+        const name = (args.name as string)?.trim()
+        if (!name) throw new Error('name is required')
+        const lines = Math.min(Math.max((args.lines as number) ?? 50, 1), 500)
+
+        const found = [...registry.values()].find(s => s.tmuxName === name)
+        if (!found) throw new Error(`no session named "${name}"`)
+
+        if (callerSessionId && callerSessionId !== 'main') {
+          const caller = registry.get(callerSessionId)
+          if (caller && found.originFrom !== caller.tmuxName) {
+            throw new Error(`peek denied — "${name}" is not a child of your session`)
+          }
+        }
+
+        if (!tmuxHasSession(name)) throw new Error(`session "${name}" tmux not running`)
+
+        const output = execSync(
+          `tmux capture-pane -t '${name.replace(/'/g, "'\\''")}' -p -S -${lines}`,
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
+        ).trimEnd()
+
+        const ctx = getContextPercent(name)
+        const msgs = found.messageCount ?? 0
+        const duration = formatDuration(Date.now() - found.createdAt)
+        const header = `Session: ${name} | ${ctx} | ${msgs} msgs | ${duration}`
+
+        return { content: [{ type: 'text', text: `${header}\n${'─'.repeat(60)}\n${output || '(empty)'}` }] }
       }
 
       default:
