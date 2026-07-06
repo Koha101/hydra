@@ -10,9 +10,7 @@ import { spawnModel } from '../shared/constants.js'
 import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
-import { isReviewParticipant, onReviewReply, onParticipantDisconnect, onParticipantReconnect } from './adversarial.js'
-import { isBuildParticipant, onBuildReply, onBuildParticipantDisconnect, onBuildParticipantReconnect } from './build.js'
-import { isDesignParticipant, onDesignReply, onDesignParticipantDisconnect, onDesignParticipantReconnect } from './design.js'
+import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-dispatch.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
@@ -250,9 +248,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         },
       })
       transport.flushQueue(sessionId)
-      if (isReviewParticipant(sessionId)) onParticipantReconnect(sessionId)
-      if (isBuildParticipant(sessionId)) onBuildParticipantReconnect(sessionId)
-      if (isDesignParticipant(sessionId)) onDesignParticipantReconnect(sessionId)
+      dispatchReconnect(sessionId)
       if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
       if (sessionId === 'main') {
         mainBridge.connect()
@@ -299,16 +295,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
             autoWatchPrUrls(conn.sessionId, replyText)
           }
 
-          // Protocol handlers
-          if (isReviewParticipant(conn.sessionId)) {
-            onReviewReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
-          }
-          if (isBuildParticipant(conn.sessionId)) {
-            onBuildReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
-          }
-          if (isDesignParticipant(conn.sessionId)) {
-            onDesignReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
-          }
+          dispatchReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
 
           // Ephemeral session: kill on [done] sentinel
           if (replyInfo?.ephemeral && /^\[done\]$/m.test(replyText)) {
@@ -452,18 +439,7 @@ export const socketServer = createServer((socket: Socket) => {
         const sid = conn.sessionId
         setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
       }
-      // Adversarial review: handle participant disconnect
-      if (isReviewParticipant(conn.sessionId)) {
-        onParticipantDisconnect(conn.sessionId)
-      }
-      // Build: handle participant disconnect
-      if (isBuildParticipant(conn.sessionId)) {
-        onBuildParticipantDisconnect(conn.sessionId)
-      }
-      // Design: handle participant disconnect
-      if (isDesignParticipant(conn.sessionId)) {
-        onDesignParticipantDisconnect(conn.sessionId)
-      }
+      dispatchDisconnect(conn.sessionId)
     }
   })
 
@@ -475,6 +451,7 @@ export const socketServer = createServer((socket: Socket) => {
         const sid = conn.sessionId
         setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
       }
+      dispatchDisconnect(conn.sessionId)
     }
   })
 })
