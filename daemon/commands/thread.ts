@@ -50,8 +50,7 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
   const parentContext = getContextPercent(parentName)
   const thread = threadRegistry.get(info.threadId)
   const forkTopic = description || `continuing: ${thread?.topic ?? info.description ?? 'session'}`
-  const threadAnchor = gateway.getThreadAnchor(msg.channelId)
-  const baseChatId = threadAnchor?.channelId ?? msg.channelId
+  const baseChatId = msg.parentChannelId ?? msg.channelId
 
   try {
     const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
