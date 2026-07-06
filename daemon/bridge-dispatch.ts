@@ -7,7 +7,6 @@ import { doSpawnSession, killSession } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
-import { DEFAULT_MODEL } from '../shared/constants.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -30,38 +29,6 @@ async function retrySend<T>(fn: () => Promise<T>): Promise<T> {
     }
   }
   throw new Error('unreachable')
-}
-
-// ---------------------------------------------------------------------------
-// Bridge tool definitions (sent to bridges on registration for dynamic refresh)
-// ---------------------------------------------------------------------------
-
-export const BRIDGE_TOOLS = [
-  { name: 'reply', description: 'Reply in chat. Pass chat_id from the inbound message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to thread under.' }, files: { type: 'array', items: { type: 'string' }, description: 'Absolute file paths to attach.' } }, required: ['chat_id', 'text'] } },
-  { name: 'react', description: 'Add an emoji reaction to a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, emoji: { type: 'string' } }, required: ['chat_id', 'message_id', 'emoji'] } },
-  { name: 'edit_message', description: 'Edit a message the bot previously sent.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['chat_id', 'message_id', 'text'] } },
-  { name: 'delete_message', description: 'Delete a message. Bot can delete its own messages; in DMs the bot can also delete user messages.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
-  { name: 'download_attachment', description: 'Download attachments from a message.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
-  { name: 'create_thread', description: 'Create a thread in a channel.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, auto_archive_minutes: { type: 'number' }, files: { type: 'array', items: { type: 'string' } } }, required: ['chat_id', 'name'] } },
-  { name: 'fetch_messages', description: 'Fetch recent messages from a channel.', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'number' } }, required: ['channel'] } },
-  { name: 'spawn_session', description: 'Spawn a new Claude session. Main session only. Pass worktree with a repo directory name (e.g. "options_bot") to spawn in an isolated git worktree.', inputSchema: { type: 'object', properties: { topic: { type: 'string' }, chat_id: { type: 'string' }, message_id: { type: 'string' }, worktree: { type: 'string', description: 'Git repo subdirectory to create a worktree from (e.g. "options_bot", "anytester"). Session gets an isolated copy.' }, model: { type: 'string', description: 'Model ID for this spawn (overrides HYDRA_MODEL).' } }, required: ['topic'] } },
-  { name: 'list_sessions', description: 'List all active sessions. Main session only.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'kill_session', description: 'Kill a session by ID or thread ID. Main session only.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, thread_id: { type: 'string' } } } },
-  { name: 'set_description', description: 'Set a brief description for your session.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, description: { type: 'string' } }, required: ['session_id', 'description'] } },
-  { name: 'watch_pr', description: 'Watch a GitHub PR for new comments/reviews. The daemon polls every 3 min and delivers new feedback to your thread for triage. Omit pr_url to auto-detect from the current branch.', inputSchema: { type: 'object', properties: { pr_url: { type: 'string', description: 'Full GitHub PR URL. Omit to auto-detect from current branch via gh pr view.' }, chat_id: { type: 'string', description: 'Thread to deliver feedback to (defaults to your session thread)' } } } },
-  { name: 'unwatch_pr', description: 'Stop watching a GitHub PR.', inputSchema: { type: 'object', properties: { pr_url: { type: 'string' } }, required: ['pr_url'] } },
-  { name: 'list_watches', description: 'List all PRs being watched (your session or all).', inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'Show all watches, not just yours' } } } },
-]
-
-// Frozen at import time — daemon restart required to pick up .env changes.
-// `hydra restart` restarts daemon but not byte — byte keeps its original model
-// until a full down/up cycle. Per-spawn overrides bypass this via SpawnOpts.model.
-export const SPAWN_MODEL = process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
-export const MAIN_ONLY_TOOLS = new Set(['spawn_session', 'list_sessions', 'kill_session'])
-
-export function computeToolsForSession(sessionId: string): typeof BRIDGE_TOOLS {
-  if (sessionId === 'main') return BRIDGE_TOOLS
-  return BRIDGE_TOOLS.filter(t => !MAIN_ONLY_TOOLS.has(t.name))
 }
 
 // ---------------------------------------------------------------------------

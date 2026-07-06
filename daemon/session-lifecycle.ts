@@ -9,8 +9,8 @@ import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } 
 import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
-import { computeToolsForSession, SPAWN_MODEL } from './bridge-dispatch.js'
-import { isKnownModel, resolveModelAlias } from '../shared/constants.js'
+import { computeToolsForSession } from './bridge-tools.js'
+import { isKnownModel, resolveModelAlias, spawnModel } from '../shared/constants.js'
 import { buildSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
@@ -378,7 +378,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   // Central model resolution: alias → full ID → validate. All callers can pass
   // raw aliases (e.g. "sonnet") or full IDs (e.g. "claude-sonnet-4-6[1m]").
   const rawModel = opts?.model
-  const model = rawModel ? (resolveModelAlias(rawModel) ?? rawModel) : SPAWN_MODEL
+  const model = rawModel ? (resolveModelAlias(rawModel) ?? rawModel) : spawnModel()
 
   if (!isKnownModel(model)) {
     process.stderr.write(`daemon: unrecognized model ${model} — may be a new release or typo. Spawning anyway.\n`)

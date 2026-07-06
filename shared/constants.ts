@@ -46,3 +46,9 @@ export function resolveModelAlias(alias: string): string | undefined {
 export function isKnownModel(id: string): boolean {
   return KNOWN_MODELS.has(id.replace(/\[1m\]$/, ''))
 }
+
+// Late-bound (reads env per call, not frozen at import time). Intentional behavioral
+// change from the original SPAWN_MODEL constant — consistent with maxChunkLimit().
+export function spawnModel(): string {
+  return process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
+}

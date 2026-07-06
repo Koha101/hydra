@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { computeToolsForSession, MAIN_ONLY_TOOLS, BRIDGE_TOOLS } from '../bridge-dispatch.js'
+import { computeToolsForSession, MAIN_ONLY_TOOLS, BRIDGE_TOOLS } from '../bridge-tools.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
