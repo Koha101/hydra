@@ -72,6 +72,18 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       refreshSessionVisual(info.threadId, { state: 'killed' })
     }
 
+    // Notify parent session when a child dies
+    if (info.originFrom && !info.isJoinMember) {
+      const parent = [...registry.values()].find(s => s.tmuxName === info.originFrom)
+      if (parent) {
+        const msgs = info.messageCount ?? 0
+        const emoji = sessionEmoji(info.tmuxName)
+        try {
+          await gateway.send(parent.threadId, `${emoji} \`${info.tmuxName}\` died — _${reason}_ (${msgs} msgs)`)
+        } catch {}
+      }
+    }
+
     const tmuxName = info.tmuxName
     try {
       execSync(`tmux kill-session -t ${shq(tmuxName)}`, { stdio: 'pipe' })
