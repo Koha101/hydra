@@ -7,7 +7,7 @@ import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
-import { resolveModelAlias, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
+import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -401,20 +401,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
       if (reviewMatch) {
-        // Check if first word of topic is a model alias: "/review 3 fable fix the auth bug"
         const rawTopic = reviewMatch[2]?.trim()
-        let reviewModel: string | undefined
-        let reviewTopic = rawTopic
-        if (rawTopic) {
-          const firstSpace = rawTopic.indexOf(' ')
-          const firstWord = firstSpace > 0 ? rawTopic.slice(0, firstSpace) : rawTopic
-          const resolved = resolveModelAlias(firstWord)
-          if (resolved) {
-            reviewModel = firstWord
-            reviewTopic = firstSpace > 0 ? rawTopic.slice(firstSpace + 1).trim() : undefined
-          }
-        }
-        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewTopic, reviewModel)
+        const { model: reviewModelId, rest: reviewTopic } = rawTopic ? extractModelPrefix(rawTopic) : { model: undefined, rest: rawTopic }
+        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewTopic, reviewModelId)
         return
       }
 
@@ -426,7 +415,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const buildWtMatch = msg.content.match(/^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i)
       if (buildWtMatch) {
-        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), buildWtMatch[3]?.trim(), buildWtMatch[1].trim())
+        const rawWtTask = buildWtMatch[3]?.trim()
+        const { model: wtModelId, rest: wtTask } = rawWtTask ? extractModelPrefix(rawWtTask) : { model: undefined, rest: rawWtTask }
+        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), wtTask, buildWtMatch[1].trim(), wtModelId)
         return
       }
       // Catch malformed build-wt (missing repo)
@@ -438,18 +429,8 @@ gateway.onMessage(async (msg: InboundMessage) => {
       const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
       if (buildMatch) {
         const rawTask = buildMatch[2]?.trim()
-        let buildModelAlias: string | undefined
-        let buildTask = rawTask
-        if (rawTask) {
-          const firstSpace = rawTask.indexOf(' ')
-          const firstWord = firstSpace > 0 ? rawTask.slice(0, firstSpace) : rawTask
-          const resolved = resolveModelAlias(firstWord)
-          if (resolved) {
-            buildModelAlias = firstWord
-            buildTask = firstSpace > 0 ? rawTask.slice(firstSpace + 1).trim() : undefined
-          }
-        }
-        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildTask, undefined, buildModelAlias)
+        const { model: buildModelId, rest: buildTask } = rawTask ? extractModelPrefix(rawTask) : { model: undefined, rest: rawTask }
+        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildTask, undefined, buildModelId)
         return
       }
 

@@ -504,7 +504,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
   const ownerInfo = registry.get(state.ownerSessionId)
   const ownerCwd = ownerInfo?.capabilities?.cwd
 
-  const criticModel = state.model ? (resolveModelAlias(state.model) ?? state.model) : buildModel()
+  const criticModel = state.model ?? buildModel()
   try {
     const result = await doSpawnSession(`Build CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,

@@ -53,6 +53,16 @@ export function spawnModel(): string {
   return process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
 }
 
+/** Extract a model alias prefix from text using colon syntax (e.g. "fable: topic").
+ *  Colon is required to disambiguate from English words like "opus" or "fable".
+ *  Returns the resolved full model ID and remaining text. */
+export function extractModelPrefix(raw: string): { model?: string; rest?: string } {
+  const match = raw.match(/^(\S+?):\s*([\s\S]*)$/)
+  if (!match) return { rest: raw }
+  const resolved = resolveModelAlias(match[1])
+  if (!resolved) return { rest: raw }
+  return { model: resolved, rest: match[2]?.trim() || undefined }
+}
 export function reviewModel(): string {
   return process.env.HYDRA_REVIEW_MODEL?.trim() || spawnModel()
 }

@@ -493,7 +493,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   const statusMsg = await gateway.send(state.ownerThreadId, `Spawning critic...`)
   state.messageIds.push(statusMsg.id)
 
-  const criticModel = state.model ? (resolveModelAlias(state.model) ?? state.model) : reviewModel()
+  const criticModel = state.model ?? reviewModel()
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
