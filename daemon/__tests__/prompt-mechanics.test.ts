@@ -140,9 +140,11 @@ describe('persona specs — counter-steering invariants', () => {
 })
 
 describe('brief seed — cast comes from parameters (drift item 5)', () => {
-  test('names every persona passed in, no hardcoded cast', () => {
+  const RETIRED_CAST = ['adversary', 'pragmatist', 'systems_thinker', 'operator', 'historian']
+
+  test('names every persona passed in, no hardcoded cast retired or current', () => {
     const text = designBriefPrompt({ ...base, personaNames: ['alpha', 'beta'] })
     expect(text).toContain('alpha, beta')
-    expect(text).not.toContain('adversary')
+    for (const name of [...RETIRED_CAST, ...PERSONA_NAMES]) expect(text).not.toContain(name)
   })
 })
