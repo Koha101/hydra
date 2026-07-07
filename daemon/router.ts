@@ -399,11 +399,22 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (reviewMatch) {
-        const rawTopic = reviewMatch[2]?.trim()
-        const { model: reviewModelId, rest: reviewTopic } = rawTopic ? extractModelPrefix(rawTopic) : { model: undefined, rest: rawTopic }
-        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewTopic, reviewModelId)
+        const preModel = reviewMatch[1] ? resolveModelAlias(reviewMatch[1]) : undefined
+        const postModel = reviewMatch[3] ? resolveModelAlias(reviewMatch[3]) : undefined
+        const modelId = preModel ?? postModel
+        const rounds = parseInt(reviewMatch[2] ?? '3')
+        const topic = reviewMatch[4]?.trim()
+        // Detect wrong order: "review fable 3 topic" (alias without colon)
+        if (!modelId && topic) {
+          const badOrder = topic.match(/^(\S+)\s+(\d+)\b/)
+          if (badOrder && resolveModelAlias(badOrder[1])) {
+            void gateway.send(msg.channelId, `_Model syntax: \`/review ${badOrder[2]} ${badOrder[1]}: topic\` or \`/review ${badOrder[1]}: ${badOrder[2]} topic\`_`, { replyTo: msg.id }).catch(() => {})
+            return
+          }
+        }
+        void handleReviewIntercept(msg, rounds, topic, modelId)
         return
       }
 
@@ -426,11 +437,21 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (buildMatch) {
-        const rawTask = buildMatch[2]?.trim()
-        const { model: buildModelId, rest: buildTask } = rawTask ? extractModelPrefix(rawTask) : { model: undefined, rest: rawTask }
-        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildTask, undefined, buildModelId)
+        const preModel = buildMatch[1] ? resolveModelAlias(buildMatch[1]) : undefined
+        const postModel = buildMatch[3] ? resolveModelAlias(buildMatch[3]) : undefined
+        const buildModelId = preModel ?? postModel
+        const buildRounds = parseInt(buildMatch[2] ?? '3')
+        const buildTask = buildMatch[4]?.trim()
+        if (!buildModelId && buildTask) {
+          const badOrder = buildTask.match(/^(\S+)\s+(\d+)\b/)
+          if (badOrder && resolveModelAlias(badOrder[1])) {
+            void gateway.send(msg.channelId, `_Model syntax: \`build ${badOrder[2]} ${badOrder[1]}: task\` or \`build ${badOrder[1]}: ${badOrder[2]} task\`_`, { replyTo: msg.id }).catch(() => {})
+            return
+          }
+        }
+        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId)
         return
       }
 
