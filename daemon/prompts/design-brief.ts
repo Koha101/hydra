@@ -1,5 +1,7 @@
 import { mechanicsBlock } from './mechanics.js'
 
+export const BRIEF_TAG = '[brief→thread]'
+
 export function designBriefPrompt(opts: {
   sessionId: string
   tmuxName: string
@@ -15,7 +17,7 @@ export function designBriefPrompt(opts: {
       protocol: 'design',
       sessionId,
       threadId,
-      tag: '[brief→thread]',
+      tag: BRIEF_TAG,
       cadence: 'one-message',
     }),
     ``,

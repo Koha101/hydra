@@ -5,9 +5,9 @@ import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { createStateMachine } from './state-machine.js'
 import { designPersonaPrompt, PERSONA_NAMES, personaQuestionsTag, personaProposalTag, type PersonaName } from './prompts/design-personas.js'
-import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
-import { designAuditorPrompt } from './prompts/design-auditor.js'
-import { designBriefPrompt } from './prompts/design-brief.js'
+import { designSynthesizerPrompt, SYNTHESIZER_TAG } from './prompts/design-synthesizer.js'
+import { designAuditorPrompt, AUDITOR_TAG } from './prompts/design-auditor.js'
+import { designBriefPrompt, BRIEF_TAG } from './prompts/design-brief.js'
 import { refreshSessionVisual, registerProtocolBadge, formatPhaseBadge } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
@@ -574,8 +574,9 @@ async function processNextDivergence(state: DesignState): Promise<void> {
   state.refinementRespondedIds = new Set()
 
   // Find relevant personas
+  const normName = (s: string) => s.toLowerCase().replaceAll(/[-_ ]/g, '')
   const relevant = state.personas.filter(p =>
-    divergence.personas.some(name => name === p.name || name === p.name.replace('_', ' '))
+    divergence.personas.some(name => normName(name) === normName(p.name))
   )
   state.refinementExpected = relevant.length
 
@@ -766,7 +767,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Synthesizer posting
     if (state.synthesizerSessionId === sessionId && state.phase === 'synthesis') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[synthesizer→thread]')) return
+      if (!firstLine.startsWith(SYNTHESIZER_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
 
@@ -810,7 +811,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Brief writer posting
     if (state.briefSessionId === sessionId && state.phase === 'brief') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[brief→thread]')) return
+      if (!firstLine.startsWith(BRIEF_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
       if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
@@ -832,7 +833,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Auditor posting
     if (state.auditorSessionId === sessionId && state.phase === 'audit') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[auditor→thread]')) return
+      if (!firstLine.startsWith(AUDITOR_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
       process.stderr.write(`daemon: design: auditor posted findings\n`)

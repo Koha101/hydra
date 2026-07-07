@@ -1,5 +1,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 
+import { PERSONA_NAMES } from '../prompts/design-personas.js'
+
 // Suppress stderr logging during tests
 process.stderr.write = (() => true) as any
 
@@ -8,7 +10,7 @@ process.stderr.write = (() => true) as any
 // proposal tracking logic directly.
 
 describe('design proposal sentinel parsing', () => {
-  const PERSONA_NAMES = ['subtractor', 'archaeologist', 'crash-first', 'contract-lawyer', 'migrationist']
+
 
   test('valid persona sentinel is detected', () => {
     for (const name of PERSONA_NAMES) {

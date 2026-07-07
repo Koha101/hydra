@@ -16,6 +16,8 @@ import { reviewCriticPrompt } from '../prompts/review-critic.js'
 // DISTINCT; only singleton roles share the uniform read-everything-first line.
 
 const base = { sessionId: 'sid-1', tmuxName: 'hydra-x', topic: 'test topic', threadId: 't1' }
+// mechanicsBlock takes no topic — spread `mech`, not `base`, into direct calls
+const mech = { sessionId: base.sessionId, tmuxName: base.tmuxName, threadId: base.threadId }
 const names = PERSONA_NAMES
 
 function personaPrompts(): Array<{ role: string; tag: string; text: string }> {
@@ -94,9 +96,9 @@ describe('shared mechanics — uniform across all protocol seeds', () => {
   })
 
   test('cadence renders per option', () => {
-    const one = mechanicsBlock({ ...base, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'one-message' })
-    const round = mechanicsBlock({ ...base, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-round' })
-    const phase = mechanicsBlock({ ...base, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-phase' })
+    const one = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'one-message' })
+    const round = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-round' })
+    const phase = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-phase' })
     expect(one).toContain('Post exactly ONE protocol message.')
     expect(round).toContain('One protocol message per round.')
     expect(phase).toContain('Exactly ONE protocol message per phase.')

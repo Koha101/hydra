@@ -1,5 +1,7 @@
 import { mechanicsBlock } from './mechanics.js'
 
+export const SYNTHESIZER_TAG = '[synthesizer→thread]'
+
 export function designSynthesizerPrompt(opts: {
   sessionId: string
   tmuxName: string
@@ -15,7 +17,7 @@ export function designSynthesizerPrompt(opts: {
       protocol: 'design',
       sessionId,
       threadId,
-      tag: '[synthesizer→thread]',
+      tag: SYNTHESIZER_TAG,
       cadence: 'one-message',
     }),
     ``,

@@ -1,5 +1,7 @@
 import { mechanicsBlock } from './mechanics.js'
 
+export const AUDITOR_TAG = '[auditor→thread]'
+
 export function designAuditorPrompt(opts: {
   sessionId: string
   tmuxName: string
@@ -15,7 +17,7 @@ export function designAuditorPrompt(opts: {
       protocol: 'design',
       sessionId,
       threadId,
-      tag: '[auditor→thread]',
+      tag: AUDITOR_TAG,
       cadence: 'one-message',
     }),
     ``,
