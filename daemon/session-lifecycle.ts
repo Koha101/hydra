@@ -406,7 +406,6 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--fork-session`,
       `--model ${shq(model)}`,
       `--channels ${shq(channelFlag)}`,
-      `--dangerously-skip-permissions`,
       shq(prompt),
     ].join(' ')
   } else if (isResume) {
@@ -415,10 +414,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--resume ${shq(opts!.resumeFrom!)}`,
       `--model ${shq(model)}`,
       `--channels ${shq(channelFlag)}`,
-      `--dangerously-skip-permissions`,
     ].join(' ')
   } else {
-    claudeArgs = `claude --model ${shq(model)} --channels ${shq(channelFlag)} --dangerously-skip-permissions ${shq(prompt)}`
+    claudeArgs = `claude --model ${shq(model)} --channels ${shq(channelFlag)} ${shq(prompt)}`
   }
 
   const inner = [
