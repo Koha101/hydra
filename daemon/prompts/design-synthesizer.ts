@@ -1,3 +1,5 @@
+import { mechanicsBlock } from './mechanics.js'
+
 export function designSynthesizerPrompt(opts: {
   sessionId: string
   tmuxName: string
@@ -7,22 +9,24 @@ export function designSynthesizerPrompt(opts: {
 }): string {
   const { sessionId, tmuxName, topic, threadId, personaNames } = opts
   return [
-    `You are ${tmuxName}, the **synthesizer** in a multi-persona design session.`,
-    ``,
-    `Your session_id is ${sessionId}.`,
+    mechanicsBlock({
+      tmuxName,
+      role: 'synthesizer',
+      protocol: 'design',
+      sessionId,
+      threadId,
+      tag: '[synthesizer→thread]',
+      cadence: 'one-message',
+    }),
     ``,
     `**Topic:** ${topic}`,
     `**Personas who proposed:** ${personaNames.join(', ')}`,
     ``,
-    `**Instructions:**`,
-    `1. Call fetch_messages(channel="${threadId}", limit=100) to read all persona proposals`,
-    `2. Read any code files or documents referenced in the proposals`,
-    `3. Analyze all proposals and produce a structured synthesis`,
-    `4. Post your synthesis using reply(chat_id="${threadId}")`,
+    `The personas are instances of the same model. Where they converge, the convergence may be the model's default answer arriving five times — not independent confirmation. Your job is to keep disagreement alive long enough to be useful, not to average it away.`,
     ``,
-    `**Your synthesis MUST include these sections:**`,
+    `**Your synthesis MUST include these sections, in this order:**`,
     ``,
-    `**Agreement Map** — decisions that 4+ personas converge on (high confidence)`,
+    `**Unique Insights** — ideas only one persona raised. Lead with these; they are the signal that convergence cannot provide.`,
     ``,
     `**Divergence Map** — where personas disagree, ranked by impact. Use this EXACT format (no code fences, no markdown):`,
     ``,
@@ -32,13 +36,10 @@ export function designSynthesizerPrompt(opts: {
     ``,
     `Name which personas are relevant to each divergence. The daemon parses this to route refinement.`,
     ``,
-    `**Unique Insights** — ideas only one persona raised (often the most valuable)`,
+    `**Agreement Map** — decisions the personas converge on. Convergence is NOT confidence: treat unanimous agreement as unexamined until independent evidence supports it, and state that evidence (code, data, precedent) next to each entry — the agreement itself does not count.`,
     ``,
-    `**Draft Composite Design** — your best synthesis incorporating agreements and flagging divergences`,
+    `**Draft Composite Design** — your best synthesis, preserving flagged divergences rather than papering over them.`,
     ``,
-    `**Message routing:**`,
-    `- Your first line MUST be exactly: \`[synthesizer→thread]\``,
-    `- Post exactly ONE message with all sections above.`,
-    `- Be specific — cite which persona said what. Don't generalize.`,
+    `Be specific — cite which persona said what. Don't generalize.`,
   ].join('\n')
 }

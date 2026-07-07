@@ -4,7 +4,7 @@ import { doSpawnSession, killSession, killsInProgress } from './session-lifecycl
 import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { createStateMachine } from './state-machine.js'
-import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
+import { designPersonaPrompt, PERSONA_NAMES, personaQuestionsTag, personaProposalTag, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
 import { designAuditorPrompt } from './prompts/design-auditor.js'
 import { designBriefPrompt } from './prompts/design-brief.js'
@@ -267,7 +267,7 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
         ``,
         answerText,
         ``,
-        `Now post your proposal. Tag with \`[${persona.name}→thread]\`. Be INDEPENDENT — do not read other proposals.`,
+        `Now post your proposal. Tag with \`${personaProposalTag(persona.name)}\`. Be INDEPENDENT — do not read other proposals.`,
       ].join('\n'),
       meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
@@ -600,7 +600,7 @@ async function processNextDivergence(state: DesignState): Promise<void> {
         `Critique the synthesized composite design from your lens (${persona.name}).`,
         `Suggest specific modifications — don't argue with other personas, critique the proposal.`,
         ``,
-        `Post your response with: \`[${persona.name}→thread]\``,
+        `Post your response with: \`${personaProposalTag(persona.name)}\``,
       ].join('\n'),
       meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
@@ -722,7 +722,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Persona posting questions
     if (persona && state.phase === 'questioning') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→questions]`
+      const expectedTag = personaQuestionsTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return
 
       const bodyText = text.slice(text.indexOf('\n') + 1).trim()
@@ -743,7 +743,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Persona posting a proposal
     if (persona && state.phase === 'independent') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→thread]`
+      const expectedTag = personaProposalTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return  // conversational, ignore
 
       if (persona.proposed) return  // already proposed, ignore duplicate
@@ -791,7 +791,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Refinement responses from personas
     if (persona && state.phase === 'refinement') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→thread]`
+      const expectedTag = personaProposalTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return
 
       // Dedup: skip if this persona already responded for current divergence

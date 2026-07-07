@@ -8,7 +8,7 @@ process.stderr.write = (() => true) as any
 // proposal tracking logic directly.
 
 describe('design proposal sentinel parsing', () => {
-  const PERSONA_NAMES = ['pragmatist', 'systems_thinker', 'adversary', 'operator', 'historian']
+  const PERSONA_NAMES = ['subtractor', 'archaeologist', 'crash-first', 'contract-lawyer', 'migrationist']
 
   test('valid persona sentinel is detected', () => {
     for (const name of PERSONA_NAMES) {
@@ -28,16 +28,16 @@ describe('design proposal sentinel parsing', () => {
   })
 
   test('wrong persona sentinel does not match', () => {
-    const text = '[adversary→thread]\nMy proposal...'
+    const text = '[contract-lawyer→thread]\nMy proposal...'
     const firstLine = text.split('\n')[0].trim()
-    expect(firstLine.startsWith('[pragmatist→thread]')).toBe(false)
-    expect(firstLine.startsWith('[adversary→thread]')).toBe(true)
+    expect(firstLine.startsWith('[subtractor→thread]')).toBe(false)
+    expect(firstLine.startsWith('[contract-lawyer→thread]')).toBe(true)
   })
 
   test('sentinel with extra text on same line still matches', () => {
-    const text = '[pragmatist→thread] extra stuff\nDetails...'
+    const text = '[subtractor→thread] extra stuff\nDetails...'
     const firstLine = text.split('\n')[0].trim()
-    expect(firstLine.startsWith('[pragmatist→thread]')).toBe(true)
+    expect(firstLine.startsWith('[subtractor→thread]')).toBe(true)
   })
 })
 
@@ -48,9 +48,9 @@ describe('design proposal tracking logic', () => {
     return {
       phase: 'independent' as string,
       personas: [
-        { name: 'pragmatist', sessionId: 's1', proposed: false },
-        { name: 'systems_thinker', sessionId: 's2', proposed: false },
-        { name: 'adversary', sessionId: 's3', proposed: false },
+        { name: 'subtractor', sessionId: 's1', proposed: false },
+        { name: 'archaeologist', sessionId: 's2', proposed: false },
+        { name: 'contract-lawyer', sessionId: 's3', proposed: false },
       ] as MockPersona[],
       proposalsExpected: 3,
       proposalsReceived: 0,
@@ -73,7 +73,7 @@ describe('design proposal tracking logic', () => {
 
   test('valid proposal increments counter and marks proposed', () => {
     const state = createMockState()
-    const result = simulateProposal(state, 's1', '[pragmatist→thread]\nMy proposal')
+    const result = simulateProposal(state, 's1', '[subtractor→thread]\nMy proposal')
     expect(result).toBe(true)
     expect(state.proposalsReceived).toBe(1)
     expect(state.personas[0].proposed).toBe(true)
@@ -81,8 +81,8 @@ describe('design proposal tracking logic', () => {
 
   test('duplicate proposal is ignored', () => {
     const state = createMockState()
-    simulateProposal(state, 's1', '[pragmatist→thread]\nFirst')
-    const result = simulateProposal(state, 's1', '[pragmatist→thread]\nDuplicate')
+    simulateProposal(state, 's1', '[subtractor→thread]\nFirst')
+    const result = simulateProposal(state, 's1', '[subtractor→thread]\nDuplicate')
     expect(result).toBe(false)
     expect(state.proposalsReceived).toBe(1)
   })
@@ -96,30 +96,30 @@ describe('design proposal tracking logic', () => {
 
   test('unknown session is ignored', () => {
     const state = createMockState()
-    const result = simulateProposal(state, 'unknown', '[pragmatist→thread]\nProposal')
+    const result = simulateProposal(state, 'unknown', '[subtractor→thread]\nProposal')
     expect(result).toBe(false)
   })
 
   test('wrong phase is ignored', () => {
     const state = createMockState()
     state.phase = 'waiting'
-    const result = simulateProposal(state, 's1', '[pragmatist→thread]\nProposal')
+    const result = simulateProposal(state, 's1', '[subtractor→thread]\nProposal')
     expect(result).toBe(false)
   })
 
   test('all proposals received triggers completion', () => {
     const state = createMockState()
-    simulateProposal(state, 's1', '[pragmatist→thread]\nP1')
-    simulateProposal(state, 's2', '[systems_thinker→thread]\nP2')
-    simulateProposal(state, 's3', '[adversary→thread]\nP3')
+    simulateProposal(state, 's1', '[subtractor→thread]\nP1')
+    simulateProposal(state, 's2', '[archaeologist→thread]\nP2')
+    simulateProposal(state, 's3', '[contract-lawyer→thread]\nP3')
     expect(state.proposalsReceived).toBe(3)
     expect(state.proposalsReceived >= state.proposalsExpected).toBe(true)
   })
 
   test('partial proposals do not trigger completion', () => {
     const state = createMockState()
-    simulateProposal(state, 's1', '[pragmatist→thread]\nP1')
-    simulateProposal(state, 's2', '[systems_thinker→thread]\nP2')
+    simulateProposal(state, 's1', '[subtractor→thread]\nP1')
+    simulateProposal(state, 's2', '[archaeologist→thread]\nP2')
     expect(state.proposalsReceived).toBe(2)
     expect(state.proposalsReceived >= state.proposalsExpected).toBe(false)
   })

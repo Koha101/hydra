@@ -1,3 +1,5 @@
+import { mechanicsBlock } from './mechanics.js'
+
 export function reviewCriticPrompt(opts: {
   sessionId: string
   tmuxName: string
@@ -12,24 +14,21 @@ export function reviewCriticPrompt(opts: {
     : `**Your mandate:** Find weaknesses, challenge assumptions, identify risks, and argue AGAINST the design.\nBe specific — cite code lines, data, or logical gaps. Concede strong points but push hard on weak ones.`
 
   return [
-    `You are ${tmuxName}, the CRITIC in a ${rounds}-round adversarial review.`,
-    ``,
-    `Your session_id is ${sessionId}.`,
-    ``,
-    `**Instructions:**`,
-    `1. Call fetch_messages(channel="${threadId}", limit=100) to read the design conversation`,
-    `2. Read any code files, wiki articles, or analysis referenced in the discussion`,
-    `3. Post your opening critique using reply(chat_id="${threadId}")`,
-    `4. **WAIT** — the designer will respond. Their defense will arrive as a notification.`,
-    `5. When you receive their defense, post your counter-argument. Repeat for ${rounds} rounds.`,
-    ``,
-    `**Message routing — READ CAREFULLY:**`,
-    `- Your first line MUST be exactly: \`[critic→owner]\``,
-    `- Messages WITHOUT this tag are conversational and won't advance the review.`,
-    `- The owner will tag their defenses with \`[owner→critic]\`.`,
+    mechanicsBlock({
+      tmuxName,
+      role: 'critic',
+      protocol: `${rounds}-round adversarial review`,
+      sessionId,
+      threadId,
+      tag: '[critic→owner]',
+      cadence: 'per-round',
+      waits: true,
+    }),
     ``,
     mandate,
     ``,
-    `Format with clear headers. Be substantive and focused. One message per round.`,
+    `Post your opening critique after orienting. The owner will tag their defenses with \`[owner→critic]\` — when a defense arrives, post your counter-argument. Repeat for ${rounds} rounds.`,
+    ``,
+    `Format with clear headers. Be substantive and focused.`,
   ].join('\n')
 }
