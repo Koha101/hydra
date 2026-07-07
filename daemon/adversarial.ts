@@ -6,6 +6,7 @@ import { transport } from './bridge-transport.js'
 import { getBuildByThread } from './build.js'
 import { getDesignByThread } from './design.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
+import { reviewModel, resolveModelAlias } from '../shared/constants.js'
 import { createStateMachine } from './state-machine.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 
@@ -36,6 +37,7 @@ export type ReviewState = {
   _finalizing?: boolean
   _cleanupNudged?: boolean
   statusMessageId?: string
+  model?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +110,7 @@ export async function startReview(
   ownerSessionId: string,
   rounds: number,
   topic?: string,
+  model?: string,
 ): Promise<ReviewState> {
   if (threadToReview.has(ownerThreadId)) {
     throw new Error('A review is already in progress in this thread')
@@ -132,6 +135,7 @@ export async function startReview(
     currentRound: 1,
     phase: 'critic_turn',
     messageIds: [],
+    model,
   }
 
   reviews.set(reviewId, state)
@@ -489,10 +493,11 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   const statusMsg = await gateway.send(state.ownerThreadId, `Spawning critic...`)
   state.messageIds.push(statusMsg.id)
 
-  // Intentionally omits model — critics always use SPAWN_MODEL (strongest available)
+  const criticModel = state.model ?? reviewModel()
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
       joinThread: state.ownerThreadId,
+      model: criticModel,
       promptBuilder: (sessionId, tmuxName) =>
         reviewCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, topic: state.topic }),
     })

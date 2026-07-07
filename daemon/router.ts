@@ -7,7 +7,7 @@ import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
-import { resolveModelAlias, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
+import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
 import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
@@ -399,9 +399,22 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (reviewMatch) {
-        void handleReviewIntercept(msg, parseInt(reviewMatch[1] ?? '3'), reviewMatch[2]?.trim())
+        const preModel = reviewMatch[1] ? resolveModelAlias(reviewMatch[1]) : undefined
+        const postModel = reviewMatch[3] ? resolveModelAlias(reviewMatch[3]) : undefined
+        const modelId = preModel ?? postModel
+        const rounds = parseInt(reviewMatch[2] ?? '3')
+        const topic = reviewMatch[4]?.trim()
+        // Detect wrong order: "review fable 3 topic" (alias without colon)
+        if (!modelId && topic) {
+          const badOrder = topic.match(/^(\S+)\s+(\d+)\b/)
+          if (badOrder && resolveModelAlias(badOrder[1])) {
+            void gateway.send(msg.channelId, `_Model syntax: \`/review ${badOrder[2]} ${badOrder[1]}: topic\` or \`/review ${badOrder[1]}: ${badOrder[2]} topic\`_`, { replyTo: msg.id }).catch(() => {})
+            return
+          }
+        }
+        void handleReviewIntercept(msg, rounds, topic, modelId)
         return
       }
 
@@ -413,7 +426,9 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const buildWtMatch = msg.content.match(/^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i)
       if (buildWtMatch) {
-        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), buildWtMatch[3]?.trim(), buildWtMatch[1].trim())
+        const rawWtTask = buildWtMatch[3]?.trim()
+        const { model: wtModelId, rest: wtTask } = rawWtTask ? extractModelPrefix(rawWtTask) : { model: undefined, rest: rawWtTask }
+        void handleBuildIntercept(msg, parseInt(buildWtMatch[2] ?? '3'), wtTask, buildWtMatch[1].trim(), wtModelId)
         return
       }
       // Catch malformed build-wt (missing repo)
@@ -422,9 +437,21 @@ gateway.onMessage(async (msg: InboundMessage) => {
         return
       }
 
-      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i)
+      const buildMatch = msg.content.match(/^(?:\/build|build)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (buildMatch) {
-        void handleBuildIntercept(msg, parseInt(buildMatch[1] ?? '3'), buildMatch[2]?.trim())
+        const preModel = buildMatch[1] ? resolveModelAlias(buildMatch[1]) : undefined
+        const postModel = buildMatch[3] ? resolveModelAlias(buildMatch[3]) : undefined
+        const buildModelId = preModel ?? postModel
+        const buildRounds = parseInt(buildMatch[2] ?? '3')
+        const buildTask = buildMatch[4]?.trim()
+        if (!buildModelId && buildTask) {
+          const badOrder = buildTask.match(/^(\S+)\s+(\d+)\b/)
+          if (badOrder && resolveModelAlias(badOrder[1])) {
+            void gateway.send(msg.channelId, `_Model syntax: \`build ${badOrder[2]} ${badOrder[1]}: task\` or \`build ${badOrder[1]}: ${badOrder[2]} task\`_`, { replyTo: msg.id }).catch(() => {})
+            return
+          }
+        }
+        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId)
         return
       }
 
