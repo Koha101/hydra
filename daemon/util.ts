@@ -2,6 +2,7 @@ import { realpathSync, writeFileSync, renameSync } from 'fs'
 import { join, sep } from 'path'
 import { execSync } from 'child_process'
 import { gateway, STATE_DIR } from './config.js'
+import { formatDiscordTables } from '../discord-table-format.js'
 
 export function atomicWriteFileSync(filePath: string, data: string, mode?: number): void {
   const tmp = filePath + '.tmp'
@@ -187,7 +188,8 @@ export async function reportError(
 export async function safeSend(
   channelId: string, text: string, opts?: { replyTo?: string },
 ): Promise<string[]> {
-  const chunks = chunk(text, gateway.maxMessageLength, 'markdown')
+  const formatted = gateway.platform === 'discord' ? formatDiscordTables(text) : text
+  const chunks = chunk(formatted, gateway.maxMessageLength, 'markdown')
   const sentIds: string[] = []
   for (let i = 0; i < chunks.length; i++) {
     try {
