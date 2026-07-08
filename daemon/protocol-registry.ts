@@ -39,6 +39,16 @@ export function isThreadOccupied(threadId: string, exclude?: ProtocolName): Prot
   return null
 }
 
+// True only when the session is a participant AND the same protocol occupies
+// chatId — a role's posts to unrelated channels (DMs, other threads) are not
+// protocol posts and must not leak session names there.
+export function isProtocolPost(sessionId: string, chatId: string): boolean {
+  for (const hooks of protocols.values()) {
+    if (hooks.isParticipant(sessionId) && hooks.getByThread(chatId)) return true
+  }
+  return false
+}
+
 export function getExpectedTag(sessionId: string, chatId: string): string | null {
   for (const hooks of protocols.values()) {
     if (hooks.isParticipant(sessionId)) return hooks.expectedTag?.(sessionId, chatId) ?? null
