@@ -1,11 +1,11 @@
 import { statSync } from 'fs'
 import { execSync } from 'child_process'
 import { gateway, INBOX_DIR } from './config.js'
-import { registry } from './sessions.js'
+import { registry, sessionEmoji } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, maxChunkLimit, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
-import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession, appendSenderTag, senderTagWidth } from './util.js'
+import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession, renderCastHeader } from './util.js'
 import { isProtocolPost } from './protocol-registry.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
@@ -74,19 +74,24 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const mode = access.chunkMode ?? 'markdown'
         const replyMode = access.replyToMode ?? 'first'
 
-        // Protocol role posts carry sender identity — display-only: dispatchReply
-        // (bridge-server) hands protocols the original args.text, never this text.
-        // Only posts INTO the protocol's own thread are tagged (no name leaks to
-        // DMs/other channels). Chunk limit reserves the tag's width so appending
-        // to the first chunk can never push a line past the platform cap.
-        let senderName: string | undefined
+        // Protocol role posts open with a rendered cast header — display-only:
+        // dispatchReply (bridge-server) hands protocols the original args.text,
+        // never this text. Only posts INTO the protocol's own thread are
+        // transformed (no session names leak to DMs/other channels). The
+        // transform happens before chunking, so lengths need no special care.
+        let outText = text
         if (callerSessionId && isProtocolPost(callerSessionId, chat_id)) {
-          senderName = registry.get(callerSessionId)?.tmuxName
+          const info = registry.get(callerSessionId)
+          if (info) {
+            outText = renderCastHeader(text, {
+              name: info.tmuxName,
+              emoji: sessionEmoji(info.tmuxName),
+              guest: !!info.isJoinMember,
+            })
+          }
         }
 
-        const chunkLimit = senderName ? limit - senderTagWidth(senderName) : limit
-        const chunks = chunk(text, Math.max(1, chunkLimit), mode)
-        if (senderName) chunks[0] = appendSenderTag(chunks[0], senderName)
+        const chunks = chunk(outText, limit, mode)
         const sentIds: string[] = []
 
         try {

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription, appendSenderTag, senderTagWidth } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, renderCastHeader } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -253,38 +253,46 @@ describe('fallbackDescription', () => {
 })
 
 // ---------------------------------------------------------------------------
-// appendSenderTag()
+// renderCastHeader()
 // ---------------------------------------------------------------------------
 
-describe('appendSenderTag', () => {
-  test('appends to a single-line message', () => {
-    expect(appendSenderTag('[owner→critic]', 'flint')).toBe('[owner→critic] · [from: flint]')
+const drift = { name: 'drift', emoji: '🌊', guest: true }
+const pixel = { name: 'pixel', emoji: '🟦', guest: false }
+
+describe('renderCastHeader', () => {
+  test('routing tag becomes a cast header, guest annotated', () => {
+    expect(renderCastHeader('[critic→owner]\nFinding 1: bug', drift))
+      .toBe('[ The Critic • 🌊 drift ]\n↳ guest in thread\nFinding 1: bug')
   })
 
-  test('appends to the first line only, body untouched', () => {
-    expect(appendSenderTag('[critic→owner]\nFinding 1: bug', 'drift'))
-      .toBe('[critic→owner] · [from: drift]\nFinding 1: bug')
+  test('self (thread-owning session) gets no annotation', () => {
+    expect(renderCastHeader('[owner→critic]\nRebuttal…', pixel))
+      .toBe('[ The Owner • 🟦 pixel ]\nRebuttal…')
   })
 
-  test('preserves startsWith for sentinel parsers', () => {
-    const tagged = appendSenderTag('[subtractor→questions]\nQ1', 'atlas')
-    expect(tagged.split('\n')[0].startsWith('[subtractor→questions]')).toBe(true)
+  test('multiword roles title-case per segment', () => {
+    expect(renderCastHeader('[contract-lawyer→questions]\nQ1', { name: 'atlas', emoji: '🗺️', guest: true }))
+      .toBe('[ The Contract-Lawyer • 🗺️ atlas ]\n↳ guest in thread\nQ1')
   })
 
-  test('leaves empty and whitespace-only text unchanged', () => {
-    expect(appendSenderTag('', 'flint')).toBe('')
-    expect(appendSenderTag('  \n ', 'flint')).toBe('  \n ')
+  test('content on the tag line survives on its own line', () => {
+    expect(renderCastHeader('[builder→critic] done with round', pixel))
+      .toBe('[ The Builder • 🟦 pixel ]\ndone with round')
+  })
+
+  test('move sentinels without an arrow are untouched', () => {
+    expect(renderCastHeader('[summary]\nAll good.', pixel)).toBe('[summary]\nAll good.')
+    expect(renderCastHeader('[done]', pixel)).toBe('[done]')
+  })
+
+  test('free-form posts are untouched', () => {
+    expect(renderCastHeader('just chatting here', drift)).toBe('just chatting here')
+  })
+
+  test('sender names are sanitized', () => {
+    expect(renderCastHeader('[critic→owner]\nx', { name: 'bad]nm\ne', emoji: '🌊', guest: false }))
+      .toBe('[ The Critic • 🌊 bad_nm_e ]\nx')
   })
 })
 
-describe('appendSenderTag hardening', () => {
-  test('sanitizes ] and newline out of sender names', () => {
-    expect(appendSenderTag('[owner→critic]', 'bad]name\nx')).toBe('[owner→critic] · [from: bad_name_x]')
-  })
 
-  test('senderTagWidth matches the appended width', () => {
-    const before = '[owner→critic]'
-    const after = appendSenderTag(before, 'flint')
-    expect(after.length - before.length).toBe(senderTagWidth('flint'))
-  })
-})

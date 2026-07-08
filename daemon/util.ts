@@ -51,21 +51,36 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
-// Sender tag lands on the first line as a suffix, not as a new first line:
-// protocol tag parsers key on firstLine.startsWith(sentinel), which a prepended
-// line would break for every protocol at once.
+// Cast header: protocol role posts open with a stage direction instead of raw
+// routing grammar. The machine tag ([critic→owner]) stays in the PARSED text —
+// protocols receive the original via dispatchReply — only the displayed first
+// line is transformed:
+//   [ The Critic • 🌊 drift ]
+//   ↳ guest in thread
+// Move sentinels without an arrow ([summary], [done]) and free-form posts are
+// left untouched. Only guests get the annotation — an unmarked post is the
+// thread's own session.
+const ROLE_TAG_RE = /^\[([a-z][\w-]*)→[\w-]+\]\s*/i
+
 const sanitizeSenderName = (name: string): string => name.replace(/[\]\n]/g, '_')
 
-export function senderTagWidth(senderName: string): number {
-  return ` · [from: ${sanitizeSenderName(senderName)}]`.length
-}
+const titleCaseRole = (role: string): string =>
+  role.split('-').map(w => (w ? w[0].toUpperCase() + w.slice(1) : w)).join('-')
 
-export function appendSenderTag(text: string, senderName: string): string {
-  if (!text.trim()) return text
+export function renderCastHeader(
+  text: string,
+  sender: { name: string; emoji: string; guest: boolean },
+): string {
   const nl = text.indexOf('\n')
-  const firstLine = nl === -1 ? text : text.slice(0, nl)
+  const firstLine = (nl === -1 ? text : text.slice(0, nl)).trim()
+  const m = firstLine.match(ROLE_TAG_RE)
+  if (!m) return text
   const rest = nl === -1 ? '' : text.slice(nl)
-  return `${firstLine} · [from: ${sanitizeSenderName(senderName)}]${rest}`
+  const remainder = firstLine.replace(ROLE_TAG_RE, '')
+  const header = `[ The ${titleCaseRole(m[1])} • ${sender.emoji} ${sanitizeSenderName(sender.name)} ]`
+  const annotation = sender.guest ? `\n↳ guest in thread` : ''
+  const tail = remainder ? `\n${remainder}` : ''
+  return `${header}${annotation}${tail}${rest}`
 }
 
 export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
