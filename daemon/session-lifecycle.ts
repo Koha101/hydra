@@ -754,16 +754,27 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     claudeArgs = `claude --model ${shq(model)} --dangerously-skip-permissions ${shq(prompt)} --channels ${shq(channelFlag)}`
   }
 
+  // Detached sessions can't unlock the macOS keychain, so auth via a long-lived
+  // CLAUDE_CODE_OAUTH_TOKEN (from .env) instead. Written to a file to keep the
+  // secret out of the tmux command string; same convention as the byte.
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  let authExport: string | null = null
+  if (oauthToken) {
+    const tokenFile = join(STATE_DIR, '.byte-token')
+    try { writeFileSync(tokenFile, oauthToken, { mode: 0o600 }) } catch {}
+    authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})"`
+  }
   const inner = [
     `cd ${shq(effectiveCwd)}`,
     `export PATH="$HOME/.bun/bin:$PATH"`,
+    authExport,
     `export HYDRA_SESSION_ID=${shq(sessionId)}`,
     `export HYDRA_SESSION_NAME=${shq(tmuxName)}`,
     `export DAEMON_SOCK=${shq(SOCK_PATH)}`,
     `export CLAUDE_CONFIG_DIR=${shq(CLAUDE_CONFIG)}`,
     `export CHAT_PLATFORM=${shq(PLATFORM)}`,
     claudeArgs,
-  ].join(' && ')
+  ].filter(Boolean).join(' && ')
 
   process.stderr.write(`daemon: spawn ${tmuxName}: running tmux new-session\n`)
   process.stderr.write(`daemon: spawn ${tmuxName}: inner cmd = ${inner.slice(0, 300)}...\n`)
