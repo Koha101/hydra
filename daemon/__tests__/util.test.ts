@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, appendSenderTag } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -249,5 +249,30 @@ describe('fallbackDescription', () => {
 
   test('empty string', () => {
     expect(fallbackDescription('')).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// appendSenderTag()
+// ---------------------------------------------------------------------------
+
+describe('appendSenderTag', () => {
+  test('appends to a single-line message', () => {
+    expect(appendSenderTag('[owner→critic]', 'flint')).toBe('[owner→critic] · [from: flint]')
+  })
+
+  test('appends to the first line only, body untouched', () => {
+    expect(appendSenderTag('[critic→owner]\nFinding 1: bug', 'drift'))
+      .toBe('[critic→owner] · [from: drift]\nFinding 1: bug')
+  })
+
+  test('preserves startsWith for sentinel parsers', () => {
+    const tagged = appendSenderTag('[subtractor→questions]\nQ1', 'atlas')
+    expect(tagged.split('\n')[0].startsWith('[subtractor→questions]')).toBe(true)
+  })
+
+  test('leaves empty and whitespace-only text unchanged', () => {
+    expect(appendSenderTag('', 'flint')).toBe('')
+    expect(appendSenderTag('  \n ', 'flint')).toBe('  \n ')
   })
 })

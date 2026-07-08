@@ -5,7 +5,8 @@ import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, maxChunkLimit, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
-import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession } from './util.js'
+import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession, appendSenderTag } from './util.js'
+import { isProtocolParticipant } from './protocol-registry.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
 
@@ -72,7 +73,16 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? maxChunkLimit(), maxChunkLimit()))
         const mode = access.chunkMode ?? 'markdown'
         const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
+
+        // Protocol role posts carry sender identity — display-only: dispatchReply
+        // (bridge-server) hands protocols the original args.text, never this text.
+        let outText = text
+        if (callerSessionId && isProtocolParticipant(callerSessionId)) {
+          const senderName = registry.get(callerSessionId)?.tmuxName
+          if (senderName) outText = appendSenderTag(text, senderName)
+        }
+
+        const chunks = chunk(outText, limit, mode)
         const sentIds: string[] = []
 
         try {

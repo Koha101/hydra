@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
-  registerProtocol, isThreadOccupied,
+  registerProtocol, isThreadOccupied, isProtocolParticipant,
   dispatchReply, dispatchDisconnect, dispatchReconnect,
   _resetForTesting,
 } from '../protocol-registry.js'
@@ -91,5 +91,22 @@ describe('dispatch', () => {
     registerProtocol('build', makeHooks({ onReply: () => calls.push('build') }))
     dispatchReply('unclaimed', 'text', 'chat', [])
     expect(calls).toEqual([])
+  })
+})
+
+describe('isProtocolParticipant', () => {
+  test('true when any protocol claims the session', () => {
+    registerProtocol('review', makeHooks())
+    registerProtocol('design', makeHooks({ isParticipant: (id) => id === 'persona-1' }))
+    expect(isProtocolParticipant('persona-1')).toBe(true)
+  })
+
+  test('false when no protocol claims the session', () => {
+    registerProtocol('review', makeHooks())
+    expect(isProtocolParticipant('byte-main')).toBe(false)
+  })
+
+  test('false with no protocols registered', () => {
+    expect(isProtocolParticipant('anyone')).toBe(false)
   })
 })

@@ -33,6 +33,13 @@ export function isThreadOccupied(threadId: string, exclude?: ProtocolName): Prot
   return null
 }
 
+export function isProtocolParticipant(sessionId: string): boolean {
+  for (const hooks of protocols.values()) {
+    if (hooks.isParticipant(sessionId)) return true
+  }
+  return false
+}
+
 // Session IDs are unique across protocols — at most one handler fires per dispatch.
 export function dispatchReconnect(sessionId: string): void {
   for (const hooks of protocols.values()) {
