@@ -405,8 +405,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
       `--fork-session`,
       `--model ${shq(model)}`,
-      `--channels ${shq(channelFlag)}`,
       shq(prompt),
+      `--channels ${shq(channelFlag)}`,
     ].join(' ')
   } else if (isResume) {
     claudeArgs = [
@@ -416,7 +416,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--channels ${shq(channelFlag)}`,
     ].join(' ')
   } else {
-    claudeArgs = `claude --model ${shq(model)} --channels ${shq(channelFlag)} ${shq(prompt)}`
+    claudeArgs = `claude --model ${shq(model)} ${shq(prompt)} --channels ${shq(channelFlag)}`
   }
 
   const inner = [
