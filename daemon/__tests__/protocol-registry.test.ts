@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
-  registerProtocol, isThreadOccupied,
+  registerProtocol, isThreadOccupied, getExpectedTag,
   dispatchReply, dispatchDisconnect, dispatchReconnect,
   _resetForTesting,
 } from '../protocol-registry.js'
@@ -91,5 +91,27 @@ describe('dispatch', () => {
     registerProtocol('build', makeHooks({ onReply: () => calls.push('build') }))
     dispatchReply('unclaimed', 'text', 'chat', [])
     expect(calls).toEqual([])
+  })
+})
+
+describe('getExpectedTag', () => {
+  test('null when no protocol claims the session', () => {
+    registerProtocol('review', makeHooks())
+    expect(getExpectedTag('nobody', 'thread-1')).toBeNull()
+  })
+
+  test('null when the claiming protocol has no expectedTag hook', () => {
+    registerProtocol('review', makeHooks({ isParticipant: () => true }))
+    expect(getExpectedTag('s1', 'thread-1')).toBeNull()
+  })
+
+  test('delegates to the claiming protocol with sessionId and chatId', () => {
+    const seen: string[] = []
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 's1',
+      expectedTag: (id, chat) => { seen.push(`${id}:${chat}`); return '[x→questions]' },
+    }))
+    expect(getExpectedTag('s1', 'thread-9')).toBe('[x→questions]')
+    expect(seen).toEqual(['s1:thread-9'])
   })
 })

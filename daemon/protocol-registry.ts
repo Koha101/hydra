@@ -16,6 +16,12 @@ type ProtocolHooks = {
   onReply: (sessionId: string, text: string, chatId: string, sentIds: string[]) => void
   onDisconnect: (sessionId: string) => void
   onReconnect: (sessionId: string) => void
+  // Liveness grammar: the first-line tag currently owed by this session when
+  // posting to chatId, or null when nothing is owed (already satisfied this
+  // phase, wrong thread, or a phase with no expectation). The nudge check
+  // consuming this lives in the daemon (sentinel-nudge.ts) and never moves;
+  // protocols-as-documents (step ③) migrates only this data source to cards.
+  expectedTag?: (sessionId: string, chatId: string) => string | null
 }
 
 const protocols = new Map<ProtocolName, ProtocolHooks>()
@@ -29,6 +35,13 @@ export function isThreadOccupied(threadId: string, exclude?: ProtocolName): Prot
   for (const [name, hooks] of protocols) {
     if (name === exclude) continue
     if (hooks.getByThread(threadId)) return name
+  }
+  return null
+}
+
+export function getExpectedTag(sessionId: string, chatId: string): string | null {
+  for (const hooks of protocols.values()) {
+    if (hooks.isParticipant(sessionId)) return hooks.expectedTag?.(sessionId, chatId) ?? null
   }
   return null
 }

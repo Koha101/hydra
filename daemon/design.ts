@@ -860,4 +860,25 @@ registerProtocol('design', {
   onReply: onDesignReply,
   onDisconnect: onDesignParticipantDisconnect,
   onReconnect: onDesignParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    for (const state of designs.values()) {
+      if (chatId !== state.ownerThreadId) continue
+      const persona = state.personas.find(p => p.sessionId === sessionId)
+      if (persona) {
+        if (state.phase === 'questioning' && !state.questions.some(q => q.persona === persona.name)) {
+          return personaQuestionsTag(persona.name)
+        }
+        if (state.phase === 'independent' && !persona.proposed) {
+          return personaProposalTag(persona.name)
+        }
+        // refinement: only divergence-relevant personas owe a post, and that
+        // relevance set is transient — nudging the full cast would misfire.
+        return null
+      }
+      if (sessionId === state.synthesizerSessionId && state.phase === 'synthesis') return SYNTHESIZER_TAG
+      if (sessionId === state.auditorSessionId && state.phase === 'audit') return AUDITOR_TAG
+      if (sessionId === state.briefSessionId && state.phase === 'brief') return BRIEF_TAG
+    }
+    return null
+  },
 })
