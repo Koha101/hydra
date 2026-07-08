@@ -8,6 +8,8 @@ import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { reviewModel, resolveModelAlias } from '../shared/constants.js'
 import { createStateMachine } from './state-machine.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
+import { loadAccess } from './access.js'
+import { resolveSummaryFormat } from './prompts/summary-formats.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -422,6 +424,7 @@ function completeReview(state: ReviewState): void {
     finalizeReview(state)
   }, 5 * 60 * 1000)
 
+  const format = resolveSummaryFormat(loadAccess().summaryFormat)
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
     content: [
@@ -430,15 +433,10 @@ function completeReview(state: ReviewState): void {
       ``,
       `**Message routing:** Your first line MUST be \`${SUMMARY_SENTINEL}\`. Messages without this tag won't complete the review.`,
       ``,
-      `Use this format — six short sections, each answering the reader's real question. Skip none; write "nothing" where empty:`,
+      format.preamble,
       `${SUMMARY_SENTINEL}`,
       `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
-      `**Tensions** — what was actually contested`,
-      `**Changed** — what changed because of the review, with refs (commits, PRs, files)`,
-      `**Pushed back** — what was resisted, and why it survived or died`,
-      `**Emerged** — what surfaced that nobody asked for`,
-      `**Juice** — the sharpest insight; how to think about done vs next`,
-      `**Asks** — what needs the human, exactly now`,
+      ...format.lines,
     ].join('\n'),
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
   })
