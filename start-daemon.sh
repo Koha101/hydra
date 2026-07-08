@@ -56,6 +56,7 @@ rm -f "$STATE_DIR/daemon.sock"
 ENVS="PATH='$PATH' HYDRA_STATE_DIR='$STATE_DIR' SPAWN_CWD='$SPAWN_CWD'"
 [ -n "$CHAT_PLATFORM" ] && ENVS="$ENVS CHAT_PLATFORM='$CHAT_PLATFORM'"
 [ -n "$CLAUDE_CONFIG_DIR" ] && ENVS="$ENVS CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'"
+ENVS="$ENVS HYDRA_MARKETPLACE='${HYDRA_MARKETPLACE:-claude-plugins-official}'"
 tmux new-session -d -s "$SESSION" \
   "cd '$SCRIPT_DIR' && $ENVS bun run daemon.ts 2>&1 | tee -a $LOG"
 
