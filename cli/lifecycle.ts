@@ -94,7 +94,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model ${shq(cfg.byteModel)} --channels plugin:discord@hydra-plugins ${shq(prompt)}`,
+    `caffeinate -i claude --model ${shq(cfg.byteModel)} ${shq(prompt)} --channels plugin:discord@hydra-plugins`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)
