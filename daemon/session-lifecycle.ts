@@ -565,7 +565,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
-  const channelFlag = `plugin:discord@claude-plugins-official`
+  const channelFlag = `plugin:discord@hydra-plugins`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required -- set it to the working directory for spawned sessions')
 
