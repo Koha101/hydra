@@ -42,7 +42,7 @@ export type DesignState = {
   ownerThreadId: string
   topic: string
   phase: DesignPhase
-  personas: Array<{ name: string; sessionId: string; proposed: boolean }>
+  personas: Array<{ name: string; sessionId: string; sessionName: string; proposed: boolean }>
   synthesizerSessionId?: string
   auditorSessionId?: string
   briefSessionId?: string
@@ -174,7 +174,7 @@ export async function startDesign(
         memberLabel: name,
         promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, cutoffTs }),
       })
-      state.personas.push({ name, sessionId: result.sessionId, proposed: false })
+      state.personas.push({ name, sessionId: result.sessionId, sessionName: result.name, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)
       if (name !== PERSONA_NAMES[PERSONA_NAMES.length - 1]) {
         await new Promise(r => setTimeout(r, 2000))
@@ -199,7 +199,7 @@ export async function startDesign(
   const spawnResult = designMachine.transition(state.phase, 'all_spawned')
   if (spawnResult.ok) state.phase = spawnResult.to
 
-  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned. Waiting for questions..._`)
+  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned: ${state.personas.map(p => `${p.name} → ${p.sessionName}`).join(' · ')}. Waiting for questions..._`)
 
   // Timeout for questions — advance even if some personas don't ask
   state.timeout = setTimeout(async () => {
@@ -638,7 +638,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
     // Personas are expendable — adjust expectations immediately (no grace timer)
     if (persona) {
       process.stderr.write(`daemon: design: ${label} disconnected/died\n`)
-      void gateway.send(threadId, `_${label} disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(() => {})
+      void gateway.send(threadId, `_💀 ${label} (${persona.sessionName}) disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(err => process.stderr.write(`daemon: design: death notice send failed: ${err}\n`))
 
       if (state.phase === 'questioning') {
         state.questionsExpected--
