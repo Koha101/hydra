@@ -51,6 +51,64 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
+// Cast header: protocol role posts open with a stage direction instead of raw
+// routing grammar. The machine tag ([critic→owner]) stays in the PARSED text —
+// protocols receive the original via dispatchReply — only the displayed first
+// line is transformed:
+//   [ The Critic • 🌊 drift ]
+//   ↳ guest in thread
+// Move sentinels without an arrow ([summary], [done]) and free-form posts are
+// left untouched. Only guests get the annotation — an unmarked post is the
+// thread's own session.
+const ROLE_TAG_RE = /^\[([a-z][\w-]*)→[\w-]+\]\s*/i
+
+const sanitizeSenderName = (name: string): string => name.replace(/[\]\n]/g, '_')
+
+const titleCaseRole = (role: string): string =>
+  role.split('-').map(w => (w ? w[0].toUpperCase() + w.slice(1) : w)).join('-')
+
+export function renderCastHeader(
+  text: string,
+  sender: { name: string; emoji: string; guest: boolean },
+): string {
+  const nl = text.indexOf('\n')
+  const firstLine = (nl === -1 ? text : text.slice(0, nl)).trim()
+  const m = firstLine.match(ROLE_TAG_RE)
+  if (!m) return text
+  const rest = nl === -1 ? '' : text.slice(nl)
+  const remainder = firstLine.replace(ROLE_TAG_RE, '')
+  const header = `[ The ${titleCaseRole(m[1])} • ${sender.emoji} ${sanitizeSenderName(sender.name)} ]`
+  const annotation = sender.guest ? `\n↳ guest in thread` : ''
+  const tail = remainder ? `\n${remainder}` : ''
+  return `${header}${annotation}${tail}${rest}`
+}
+
+// Bounded to 24h: a zero duration is meaningless for any timer this feeds,
+// and values past 2^31-1 ms overflow setTimeout (fires immediately). Out of
+// range → null, same visible-failure contract as unparseable input.
+export const MAX_DURATION_MS = 24 * 3_600_000
+
+export function parseDuration(s: string): number | null {
+  const m = s.trim().match(/^(\d+)(s|m|h)$/i)
+  if (!m) return null
+  const n = parseInt(m[1], 10)
+  const unit = m[2].toLowerCase()
+  const ms = n * (unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000)
+  if (ms <= 0 || ms > MAX_DURATION_MS) return null
+  return ms
+}
+
+// Strips a spawn-level `--phase-budget <dur>` flag from a topic string.
+// An unparseable duration is left in the topic on purpose — it surfaces in
+// the thread name instead of being silently dropped.
+export function extractPhaseBudget(topic: string): { topic: string; budgetMs?: number } {
+  const m = topic.match(/(^|\s)--phase-budget[= ](\d+[smh])(?=\s|$)/i)
+  if (!m) return { topic }
+  const budgetMs = parseDuration(m[2])
+  if (budgetMs == null) return { topic }
+  return { topic: topic.replace(m[0], m[1] ? ' ' : '').replace(/\s+/g, ' ').trim(), budgetMs }
+}
+
 export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
   if (text.length <= limit) return [text]
 
