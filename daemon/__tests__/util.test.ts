@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription, appendSenderTag } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, appendSenderTag, senderTagWidth } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -274,5 +274,17 @@ describe('appendSenderTag', () => {
   test('leaves empty and whitespace-only text unchanged', () => {
     expect(appendSenderTag('', 'flint')).toBe('')
     expect(appendSenderTag('  \n ', 'flint')).toBe('  \n ')
+  })
+})
+
+describe('appendSenderTag hardening', () => {
+  test('sanitizes ] and newline out of sender names', () => {
+    expect(appendSenderTag('[owner→critic]', 'bad]name\nx')).toBe('[owner→critic] · [from: bad_name_x]')
+  })
+
+  test('senderTagWidth matches the appended width', () => {
+    const before = '[owner→critic]'
+    const after = appendSenderTag(before, 'flint')
+    expect(after.length - before.length).toBe(senderTagWidth('flint'))
   })
 })

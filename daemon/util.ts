@@ -54,12 +54,18 @@ export function getContextPercent(tmuxName: string): string {
 // Sender tag lands on the first line as a suffix, not as a new first line:
 // protocol tag parsers key on firstLine.startsWith(sentinel), which a prepended
 // line would break for every protocol at once.
+const sanitizeSenderName = (name: string): string => name.replace(/[\]\n]/g, '_')
+
+export function senderTagWidth(senderName: string): number {
+  return ` · [from: ${sanitizeSenderName(senderName)}]`.length
+}
+
 export function appendSenderTag(text: string, senderName: string): string {
   if (!text.trim()) return text
   const nl = text.indexOf('\n')
   const firstLine = nl === -1 ? text : text.slice(0, nl)
   const rest = nl === -1 ? '' : text.slice(nl)
-  return `${firstLine} · [from: ${senderName}]${rest}`
+  return `${firstLine} · [from: ${sanitizeSenderName(senderName)}]${rest}`
 }
 
 export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
