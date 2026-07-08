@@ -36,7 +36,7 @@ export function designSynthesizerPrompt(opts: {
     `1. description here | persona1, persona2 | high`,
     `2. description here | persona1, persona2, persona3 | medium`,
     ``,
-    `Name which personas are relevant to each divergence. The daemon parses this to route refinement.`,
+    `Name which personas are relevant to each divergence, using these exact names: ${personaNames.join(', ')}. The daemon parses this to route refinement.`,
     ``,
     `**Agreement Map** — decisions the personas converge on. Convergence is NOT confidence: treat unanimous agreement as unexamined until independent evidence supports it, and state that evidence (code, data, precedent) next to each entry — the agreement itself does not count.`,
     ``,

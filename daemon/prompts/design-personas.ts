@@ -1,7 +1,5 @@
 import { mechanicsBlock } from './mechanics.js'
 
-export type PersonaName = 'subtractor' | 'archaeologist' | 'crash-first' | 'contract-lawyer' | 'migrationist'
-
 // Sentinel tags — single source of truth for both the seeds below and the
 // daemon's routing in design.ts. Design routes per-phase: questions on
 // [name→questions], proposals and refinements on [name→thread].
@@ -16,7 +14,7 @@ export const personaProposalTag = (name: string): string => `[${name}→thread]`
 // different steering question; two personas that share first move, evidence
 // type, and deliverable form are the same persona.
 export type PersonaSpec = {
-  name: PersonaName
+  name: string
   region: string             // one sentence: where this mind stands — a stance someone could dispute
   stanceVerbs: string        // what it DOES to a design question — verbs, not adjectives
   orient: string             // this region's reading order — what it opens first and why.
@@ -31,7 +29,7 @@ export type PersonaSpec = {
   concession: string         // what its region systematically undervalues — owed at the end
 }
 
-export const PERSONA_SPECS: readonly PersonaSpec[] = [
+export const PERSONA_SPECS = [
   {
     name: 'subtractor',
     region: 'Most design requests are additions proposed where a removal or a reframing would serve better; you assume this one is too, until the thread proves otherwise.',
@@ -112,7 +110,11 @@ export const PERSONA_SPECS: readonly PersonaSpec[] = [
     form: 'a staged rollout plan — numbered shippable steps, each with revert story and adoption owner, and only as much end-state as step-sequencing requires',
     concession: 'incrementalism can compound into incoherence — name where the stepwise path risks never reaching a design worth having.',
   },
-]
+] as const satisfies readonly PersonaSpec[]
+
+// The union is derived from the spec array — PERSONA_SPECS is the single source
+// of truth for both the type and the runtime list; a name cannot exist without a spec.
+export type PersonaName = (typeof PERSONA_SPECS)[number]['name']
 
 export const PERSONA_NAMES: readonly PersonaName[] = PERSONA_SPECS.map(s => s.name)
 
