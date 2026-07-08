@@ -24,6 +24,11 @@ export function maybeNudgeMissingSentinel(
 
   const last = lastNudgeAt.get(sessionId) ?? 0
   if (now - last < NUDGE_COOLDOWN_MS) return false
+  // Self-pruning: entries whose cooldown has lapsed are dead weight (sessions
+  // come and go; nothing else cleans this map).
+  for (const [id, at] of lastNudgeAt) {
+    if (now - at >= NUDGE_COOLDOWN_MS) lastNudgeAt.delete(id)
+  }
   lastNudgeAt.set(sessionId, now)
 
   const name = registry.get(sessionId)?.tmuxName ?? sessionId
