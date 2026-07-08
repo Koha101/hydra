@@ -22,14 +22,12 @@ export function maybeNudgeMissingSentinel(
   if (!expected) return false
   if (text.split('\n')[0].trim().startsWith(expected)) return false
 
-  const last = lastNudgeAt.get(sessionId) ?? 0
+  // Keyed per session+thread: a session in two concurrent protocols must not
+  // have a nudge in one thread suppress a legitimate nudge in the other.
+  const cooldownKey = `${sessionId}:${chatId}`
+  const last = lastNudgeAt.get(cooldownKey) ?? 0
   if (now - last < NUDGE_COOLDOWN_MS) return false
-  // Self-pruning: entries whose cooldown has lapsed are dead weight (sessions
-  // come and go; nothing else cleans this map).
-  for (const [id, at] of lastNudgeAt) {
-    if (now - at >= NUDGE_COOLDOWN_MS) lastNudgeAt.delete(id)
-  }
-  lastNudgeAt.set(sessionId, now)
+  lastNudgeAt.set(cooldownKey, now)
 
   const name = registry.get(sessionId)?.tmuxName ?? sessionId
   process.stderr.write(`daemon: liveness: ${name} posted without expected tag ${expected}, nudging\n`)
@@ -40,8 +38,15 @@ export function maybeNudgeMissingSentinel(
       `This phase expects your first line to start with \`${expected}\`.`,
       `If that post was just a status note, ignore this; otherwise repost with that exact first line.`,
     ].join('\n'),
-    meta: { chat_id: chatId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+    meta: { chat_id: chatId, message_id: '', user: 'system', user_id: 'system', ts: new Date(now).toISOString() },
   })
+
+  // Self-pruning after the send (off the decision path): lapsed entries are
+  // dead weight — nothing else cleans this map. Deleting during iteration is
+  // spec-legal for Map.
+  for (const [key, at] of lastNudgeAt) {
+    if (now - at >= NUDGE_COOLDOWN_MS) lastNudgeAt.delete(key)
+  }
   return true
 }
 
