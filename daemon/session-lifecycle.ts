@@ -423,6 +423,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   const inner = [
     `cd ${shq(effectiveCwd)}`,
+    `export PATH="$HOME/.bun/bin:$PATH"`,
     `export HYDRA_SESSION_ID=${shq(sessionId)}`,
     `export HYDRA_SESSION_NAME=${shq(tmuxName)}`,
     `export DAEMON_SOCK=${shq(SOCK_PATH)}`,
