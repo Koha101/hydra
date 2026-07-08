@@ -177,7 +177,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
         const model = (args.model as string | undefined)?.trim() || undefined
         if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
-        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, model ? { model } : undefined)
+        const spawnerName = callerSessionId ? registry.get(callerSessionId)?.tmuxName ?? 'main' : 'main'
+        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, { ...(model ? { model } : {}), trigger: 'spawn_session', initiator: spawnerName })
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }
 

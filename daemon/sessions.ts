@@ -102,6 +102,7 @@ export type SpawnOpts = {
   initiator?: string
   ephemeral?: boolean    // auto-kill on [done] sentinel, skip death visuals
   model?: string         // per-spawn model override (falls back to spawnModel() / HYDRA_MODEL)
+  trigger?: string       // what caused this spawn, for the announce line (e.g. 'spawn:', 'review 2:', 'CLI'); falls back to originType
 }
 
 // ---------------------------------------------------------------------------

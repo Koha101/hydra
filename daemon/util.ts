@@ -51,6 +51,24 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
+// One spawn, one line, one grammar — emitted from doSpawnSession itself so no
+// spawn path (chat, template, protocol role, CLI, bridge tool, fork, respawn)
+// can forget to announce. Scaffolding is blockquoted; performance is not.
+export function formatSpawnLine(p: {
+  roleLabel?: string
+  emoji: string
+  name: string
+  model: string
+  trigger: string
+  initiator?: string
+}): string {
+  const title = p.roleLabel
+    ? `The ${p.roleLabel.split('-').map(w => (w ? w[0].toUpperCase() + w.slice(1) : w)).join('-')} • `
+    : ''
+  const by = p.initiator ? `${p.trigger} from ${p.initiator}` : p.trigger
+  return `> ⚡ spawned [ ${title}${p.emoji} ${p.name} ] · model \`${p.model}\` · by ${by}`
+}
+
 export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
   if (text.length <= limit) return [text]
 

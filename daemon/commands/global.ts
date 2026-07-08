@@ -52,10 +52,12 @@ async function spawnAndNotify(
   const spawnOpts = {
     ...(template && { promptPrefix: template.template.prompt }),
     ...(resolvedModel && { model: resolvedModel }),
+    trigger: template ? `${template.name}:` : 'spawn:',
+    initiator: msg.authorUsername,
   }
 
   try {
-    const result = await doSpawnSession(topic, chatId, msg.id, Object.keys(spawnOpts).length > 0 ? spawnOpts : undefined)
+    const result = await doSpawnSession(topic, chatId, msg.id, spawnOpts)
 
     if (label || resolvedModel) {
       const parts: string[] = []

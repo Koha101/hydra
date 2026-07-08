@@ -170,6 +170,7 @@ export async function startDesign(
   for (const name of PERSONA_NAMES) {
     try {
       const result = await doSpawnSession(`Design persona: ${name}`, undefined, undefined, {
+        trigger: 'design',
         joinThread: threadId,
         memberLabel: name,
         promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, cutoffTs }),
@@ -392,6 +393,7 @@ async function autoCompleteDesign(state: DesignState): Promise<void> {
 async function spawnBriefWriter(state: DesignState): Promise<void> {
   try {
     const result = await doSpawnSession(`Design brief writer`, undefined, undefined, {
+        trigger: 'design',
       joinThread: state.ownerThreadId,
       memberLabel: 'brief',
       promptBuilder: (sessionId, tmuxName) => designBriefPrompt({
@@ -438,6 +440,7 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
 
   try {
     const result = await doSpawnSession(`Design synthesizer`, undefined, undefined, {
+        trigger: 'design',
       joinThread: state.ownerThreadId,
       memberLabel: 'synthesizer',
       promptBuilder: (sessionId, tmuxName) => designSynthesizerPrompt({
@@ -482,6 +485,7 @@ async function spawnAuditor(state: DesignState): Promise<void> {
 
   try {
     const result = await doSpawnSession(`Design auditor`, undefined, undefined, {
+        trigger: 'design',
       joinThread: state.ownerThreadId,
       memberLabel: 'auditor',
       promptBuilder: (sessionId, tmuxName) => designAuditorPrompt({
