@@ -4,10 +4,10 @@ import { doSpawnSession, killSession, killsInProgress } from './session-lifecycl
 import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { createStateMachine } from './state-machine.js'
-import { designPersonaPrompt, PERSONA_NAMES, type PersonaName } from './prompts/design-personas.js'
-import { designSynthesizerPrompt } from './prompts/design-synthesizer.js'
-import { designAuditorPrompt } from './prompts/design-auditor.js'
-import { designBriefPrompt } from './prompts/design-brief.js'
+import { designPersonaPrompt, PERSONA_NAMES, normalizePersonaName, personaQuestionsTag, personaProposalTag, type PersonaName } from './prompts/design-personas.js'
+import { designSynthesizerPrompt, SYNTHESIZER_TAG } from './prompts/design-synthesizer.js'
+import { designAuditorPrompt, AUDITOR_TAG } from './prompts/design-auditor.js'
+import { designBriefPrompt, BRIEF_TAG } from './prompts/design-brief.js'
 import { refreshSessionVisual, registerProtocolBadge, formatPhaseBadge } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ export type DesignState = {
   ownerThreadId: string
   topic: string
   phase: DesignPhase
-  personas: Array<{ name: string; sessionId: string; proposed: boolean }>
+  personas: Array<{ name: string; sessionId: string; sessionName: string; proposed: boolean }>
   synthesizerSessionId?: string
   auditorSessionId?: string
   briefSessionId?: string
@@ -174,7 +174,7 @@ export async function startDesign(
         memberLabel: name,
         promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, cutoffTs }),
       })
-      state.personas.push({ name, sessionId: result.sessionId, proposed: false })
+      state.personas.push({ name, sessionId: result.sessionId, sessionName: result.name, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)
       if (name !== PERSONA_NAMES[PERSONA_NAMES.length - 1]) {
         await new Promise(r => setTimeout(r, 2000))
@@ -199,7 +199,7 @@ export async function startDesign(
   const spawnResult = designMachine.transition(state.phase, 'all_spawned')
   if (spawnResult.ok) state.phase = spawnResult.to
 
-  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned. Waiting for questions..._`)
+  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned: ${state.personas.map(p => `${p.name} → ${p.sessionName}`).join(' · ')}. Waiting for questions..._`)
 
   // Timeout for questions — advance even if some personas don't ask
   state.timeout = setTimeout(async () => {
@@ -267,7 +267,7 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
         ``,
         answerText,
         ``,
-        `Now post your proposal. Tag with \`[${persona.name}→thread]\`. Be INDEPENDENT — do not read other proposals.`,
+        `Now post your proposal. Tag with \`${personaProposalTag(persona.name)}\`. Be INDEPENDENT — do not read other proposals.`,
       ].join('\n'),
       meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
@@ -575,7 +575,7 @@ async function processNextDivergence(state: DesignState): Promise<void> {
 
   // Find relevant personas
   const relevant = state.personas.filter(p =>
-    divergence.personas.some(name => name === p.name || name === p.name.replace('_', ' '))
+    divergence.personas.some(name => normalizePersonaName(name) === normalizePersonaName(p.name))
   )
   state.refinementExpected = relevant.length
 
@@ -600,7 +600,7 @@ async function processNextDivergence(state: DesignState): Promise<void> {
         `Critique the synthesized composite design from your lens (${persona.name}).`,
         `Suggest specific modifications — don't argue with other personas, critique the proposal.`,
         ``,
-        `Post your response with: \`[${persona.name}→thread]\``,
+        `Post your response with: \`${personaProposalTag(persona.name)}\``,
       ].join('\n'),
       meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
     })
@@ -638,7 +638,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
     // Personas are expendable — adjust expectations immediately (no grace timer)
     if (persona) {
       process.stderr.write(`daemon: design: ${label} disconnected/died\n`)
-      void gateway.send(threadId, `_${label} disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(() => {})
+      void gateway.send(threadId, `_💀 ${label} (${persona.sessionName}) disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(err => process.stderr.write(`daemon: design: death notice send failed: ${err}\n`))
 
       if (state.phase === 'questioning') {
         state.questionsExpected--
@@ -722,7 +722,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Persona posting questions
     if (persona && state.phase === 'questioning') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→questions]`
+      const expectedTag = personaQuestionsTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return
 
       const bodyText = text.slice(text.indexOf('\n') + 1).trim()
@@ -743,7 +743,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Persona posting a proposal
     if (persona && state.phase === 'independent') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→thread]`
+      const expectedTag = personaProposalTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return  // conversational, ignore
 
       if (persona.proposed) return  // already proposed, ignore duplicate
@@ -766,7 +766,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Synthesizer posting
     if (state.synthesizerSessionId === sessionId && state.phase === 'synthesis') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[synthesizer→thread]')) return
+      if (!firstLine.startsWith(SYNTHESIZER_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
 
@@ -791,7 +791,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Refinement responses from personas
     if (persona && state.phase === 'refinement') {
       const firstLine = text.split('\n')[0].trim()
-      const expectedTag = `[${persona.name}→thread]`
+      const expectedTag = personaProposalTag(persona.name)
       if (!firstLine.startsWith(expectedTag)) return
 
       // Dedup: skip if this persona already responded for current divergence
@@ -810,7 +810,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Brief writer posting
     if (state.briefSessionId === sessionId && state.phase === 'brief') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[brief→thread]')) return
+      if (!firstLine.startsWith(BRIEF_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
       if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
@@ -832,7 +832,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
     // Auditor posting
     if (state.auditorSessionId === sessionId && state.phase === 'audit') {
       const firstLine = text.split('\n')[0].trim()
-      if (!firstLine.startsWith('[auditor→thread]')) return
+      if (!firstLine.startsWith(AUDITOR_TAG)) return
 
       if (state.timeout) clearTimeout(state.timeout)
       process.stderr.write(`daemon: design: auditor posted findings\n`)
