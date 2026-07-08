@@ -1,8 +1,9 @@
 // Chat commands that reconfigure a running session by typing Claude Code's own
 // slash commands into its tmux pane: /model, /effort, /context.
 // Targets the thread's live session when used in a thread, else the main byte.
-import { resolve } from 'path'
-import { gateway, PLATFORM } from '../config.js'
+import { readFileSync, writeFileSync } from 'fs'
+import { join, resolve } from 'path'
+import { gateway, PLATFORM, CLAUDE_CONFIG } from '../config.js'
 import { registry } from '../sessions.js'
 import { resolveModelAlias, EFFORT_LEVELS } from '../../shared/constants.js'
 import type { InboundMessage } from '../../gateway.js'
@@ -68,13 +69,9 @@ export async function handleClearIntercept(msg: InboundMessage): Promise<void> {
   await gateway.send(msg.channelId, `🧹 context cleared — fresh conversation, memory reloads on the next message.`, { replyTo: msg.id }).catch(() => {})
 }
 
-/** /reboot — FULL restart: daemon + a fresh byte process (down then up).
- * (`hydra restart` is daemon-only, so it wouldn't give the byte a fresh process.) */
-export async function handleRebootIntercept(msg: InboundMessage): Promise<void> {
-  await gateway.react(msg.channelId, msg.id, '♻️').catch(() => {})
-  await gateway.send(msg.channelId, `♻️ rebooting hydra (daemon + fresh byte) — back in ~15s...`, { replyTo: msg.id }).catch(() => {})
-  // Detached so it outlives the daemon+byte it is about to stop. Inherits the
-  // daemon's env (which sourced .env at startup), so up() gets the right config.
+/** Detached full down+up so it outlives the daemon+byte it stops. Inherits the
+ * daemon's env (which sourced .env at startup), so up() gets the right config. */
+function rebootDetached(): void {
   const hydraDir = resolve(import.meta.dir, '..', '..')
   const bun = process.execPath
   const cmd = `cd '${hydraDir}' && '${bun}' cli/hydra.ts down ${PLATFORM} && '${bun}' cli/hydra.ts up ${PLATFORM}`
@@ -83,4 +80,37 @@ export async function handleRebootIntercept(msg: InboundMessage): Promise<void> 
   } catch (err) {
     process.stderr.write(`daemon: reboot spawn failed: ${err}\n`)
   }
+}
+
+/** /reboot — FULL restart: daemon + a fresh byte process (down then up).
+ * (`hydra restart` is daemon-only, so it wouldn't give the byte a fresh process.) */
+export async function handleRebootIntercept(msg: InboundMessage): Promise<void> {
+  await gateway.react(msg.channelId, msg.id, '♻️').catch(() => {})
+  await gateway.send(msg.channelId, `♻️ rebooting hydra (daemon + fresh byte) — back in ~15s...`, { replyTo: msg.id }).catch(() => {})
+  rebootDetached()
+}
+
+/** /ultracode on|off — toggle the persistent ultracode mode (xhigh + auto workflows); reboots to apply.
+ * Keyword trigger stays on regardless, so "ultracode" in any message opts that one turn in. */
+export async function handleUltracodeIntercept(msg: InboundMessage, arg: string): Promise<void> {
+  const a = arg.trim().toLowerCase()
+  if (a !== 'on' && a !== 'off') {
+    await gateway.send(msg.channelId, `usage: \`/ultracode on\` or \`/ultracode off\``, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+  const on = a === 'on'
+  const settingsPath = join(CLAUDE_CONFIG, 'settings.json')
+  try {
+    const s = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    s.ultracode = on
+    writeFileSync(settingsPath, JSON.stringify(s, null, 2) + '\n')
+  } catch (err) {
+    await gateway.send(msg.channelId, `failed to update settings: ${err}`, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+  await gateway.react(msg.channelId, msg.id, on ? '🚀' : '🐢').catch(() => {})
+  await gateway.send(msg.channelId,
+    `ultracode → **${on ? 'ON' : 'OFF'}** ${on ? '(xhigh effort + auto multi-agent workflows)' : '(normal)'} — rebooting byte to apply (~15s).\n_Tip: include the word "ultracode" in any message to trigger it for that one request without flipping this._`,
+    { replyTo: msg.id }).catch(() => {})
+  rebootDetached()
 }
