@@ -455,6 +455,8 @@ async function requestBuildSummary(state: BuildState, lastCriticText: string, ap
     state.criticSessionId = undefined
   }
 
+  // The critic heartbeat is moot once the critic is gone — stop the no-op ticks.
+  if (state._heartbeat) clearInterval(state._heartbeat)
   state._approved = approved
   state._lastCriticText = lastCriticText
 
