@@ -444,22 +444,21 @@ function completeReview(state: ReviewState): void {
 }
 
 async function deleteReviewMessages(state: ReviewState): Promise<void> {
-  // Preserve-then-strike: no deletion without a raw dump on disk first.
+  if (state.messageIds.length === 0) return
+
+  // Preserve-then-strike: no deletion without a complete dump on disk first.
   // Covers cancel and completion alike — both paths land here.
-  if (state.messageIds.length > 0) {
-    const owner = registry.get(state.ownerSessionId)?.tmuxName ?? state.ownerSessionId
-    const critic = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName ?? state.criticSessionId : 'unknown'
-    const dumpPath = await dumpTranscript(state.ownerThreadId, 'review', state.messageIds, {
-      topic: state.topic ?? '(none)',
-      rounds: `${state.currentRound}/${state.rounds}`,
-      cast: `owner ${owner} · critic ${critic}`,
-      outcome: state.phase,
-    })
-    if (!dumpPath) {
-      process.stderr.write(`daemon: review cleanup: transcript dump failed — leaving ${state.messageIds.length} messages in place (no strike without preserve)\n`)
-      return
-    }
-    void safeSend(state.ownerThreadId, `_📼 transcript saved: \`${dumpPath}\`_`)
+  const owner = registry.get(state.ownerSessionId)?.tmuxName ?? state.ownerSessionId
+  const critic = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName ?? state.criticSessionId : 'unknown'
+  const dumpPath = await dumpTranscript(state.ownerThreadId, 'review', state.messageIds, {
+    topic: state.topic ?? '(none)',
+    rounds: `${state.currentRound}/${state.rounds}`,
+    cast: `owner ${owner} · critic ${critic}`,
+    outcome: state.phase,
+  })
+  if (!dumpPath) {
+    process.stderr.write(`daemon: review cleanup: transcript dump failed — leaving ${state.messageIds.length} messages in place (no strike without preserve)\n`)
+    return
   }
 
   let failures = 0
@@ -477,6 +476,11 @@ async function deleteReviewMessages(state: ReviewState): Promise<void> {
   if (failures > 0) {
     process.stderr.write(`daemon: review cleanup: ${failures}/${state.messageIds.length} message deletes failed\n`)
   }
+
+  // Posted after the strike so the one status line reports the whole outcome.
+  const struck = state.messageIds.length - failures
+  const failNote = failures > 0 ? ` · ⚠️ ${failures} delete${failures > 1 ? 's' : ''} failed (still in thread)` : ''
+  void safeSend(state.ownerThreadId, `_📼 transcript saved: \`${dumpPath}\` · ${struck}/${state.messageIds.length} messages struck${failNote}_`)
 }
 
 function finalizeReview(state: ReviewState): void {

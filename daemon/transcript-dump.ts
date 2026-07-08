@@ -15,10 +15,12 @@ export type TranscriptEntry = { ts: string; author: string; content: string }
 // A sentinel-tagged first line marks substance; short italic one-liners are
 // protocol scaffolding (status edits, banners). Both are preserved — the
 // split just puts the exchange where a reader starts.
+const MAX_SCAFFOLDING_LENGTH = 200
+
 function isScaffolding(content: string): boolean {
   const firstLine = content.split('\n')[0].trim()
   if (firstLine.startsWith('[')) return false
-  return content.length < 200 && (firstLine.startsWith('_') || firstLine.startsWith('**'))
+  return content.length < MAX_SCAFFOLDING_LENGTH && (firstLine.startsWith('_') || firstLine.startsWith('**'))
 }
 
 export function formatTranscript(
@@ -47,7 +49,7 @@ export function formatTranscript(
 }
 
 /** Dump the tracked messages to disk. Returns the file path, or null if the
- *  dump failed or captured nothing — callers must NOT delete on null. */
+ *  dump failed or was incomplete — callers must NOT delete on null. */
 export async function dumpTranscript(
   threadId: string,
   protocol: string,
@@ -60,7 +62,14 @@ export async function dumpTranscript(
     const entries = msgs
       .filter(m => wanted.has(m.id))
       .map(m => ({ ts: m.createdAt.toISOString(), author: m.authorUsername, content: m.content }))
-    if (entries.length === 0) return null
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+    if (entries.length < messageIds.length) {
+      // Fetch window too small (busy thread: >100 messages since the first
+      // tracked one) or messages already gone. A partial dump must not
+      // authorize deletion — refuse loudly, leave everything in place.
+      process.stderr.write(`daemon: transcript dump for ${threadId}: captured ${entries.length}/${messageIds.length} tracked messages — refusing (partial dump cannot authorize deletion)\n`)
+      return null
+    }
     mkdirSync(TRANSCRIPTS_DIR, { recursive: true })
     const path = join(TRANSCRIPTS_DIR, `${protocol}-${threadId}-${Date.now()}.md`)
     atomicWriteFileSync(path, formatTranscript(protocol, threadId, entries, messageIds.length, meta))
