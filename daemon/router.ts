@@ -18,7 +18,7 @@ import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { isThreadOccupied } from './protocol-registry.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
-import { handleModelIntercept, handleEffortIntercept, handleContextIntercept } from './commands/session-config.js'
+import { handleModelIntercept, handleEffortIntercept, handleContextIntercept, handleClearIntercept, handleRebootIntercept } from './commands/session-config.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { pendingPermissions } from './permission.js'
@@ -365,6 +365,18 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const contextMatch = msg.content.match(/^\/context\s*$/i)
     if (contextMatch) {
       void handleContextIntercept(msg)
+      return
+    }
+
+    const clearMatch = msg.content.match(/^\/clear\s*$/i)
+    if (clearMatch) {
+      void handleClearIntercept(msg)
+      return
+    }
+
+    const rebootMatch = msg.content.match(/^\/reboot\s*$/i)
+    if (rebootMatch) {
+      void handleRebootIntercept(msg)
       return
     }
 
