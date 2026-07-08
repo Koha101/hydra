@@ -5,6 +5,10 @@ export type PersonaName = 'subtractor' | 'archaeologist' | 'crash-first' | 'cont
 // Sentinel tags — single source of truth for both the seeds below and the
 // daemon's routing in design.ts. Design routes per-phase: questions on
 // [name→questions], proposals and refinements on [name→thread].
+// Canonical name normalization — persona names are hyphenated; prose may space or case them.
+// Any name-matching site must compare through this, or hyphenated casts silently fail to match.
+export const normalizePersonaName = (s: string) => s.toLowerCase().replaceAll(/[-_ ]/g, '')
+
 export const personaQuestionsTag = (name: string): string => `[${name}→questions]`
 export const personaProposalTag = (name: string): string => `[${name}→thread]`
 

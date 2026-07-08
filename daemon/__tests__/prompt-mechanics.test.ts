@@ -7,6 +7,7 @@ import { designAuditorPrompt } from '../prompts/design-auditor.js'
 import { designBriefPrompt } from '../prompts/design-brief.js'
 import { buildCriticPrompt } from '../prompts/build-critic.js'
 import { reviewCriticPrompt } from '../prompts/review-critic.js'
+import { buildOwnerPrompt } from '../prompts/build-owner.js'
 
 // Drift guard, in both directions. Routing mechanics (sentinel, untagged rule,
 // reply(), wait) must be byte-identical across every protocol seed — a seed
@@ -38,6 +39,9 @@ function singletonPrompts(): Array<{ role: string; tag: string; text: string }> 
   ]
 }
 
+// buildOwnerPrompt is deliberately absent: it is a mode-switch message to an
+// already-running session (no threadId/tmuxName), not a spawn seed, so it does
+// not consume mechanicsBlock. Its sentinel is frozen by its own test below.
 function allPrompts(): Array<{ role: string; tag: string; text: string }> {
   return [...personaPrompts(), ...singletonPrompts()]
 }
@@ -138,6 +142,13 @@ describe('persona specs — counter-steering invariants', () => {
 
   test('unknown persona is rejected at the boundary', () => {
     expect(() => designPersonaPrompt({ ...base, persona: 'ghost' as never })).toThrow('unknown persona')
+  })
+})
+
+describe('build-owner mode-switch — sentinel frozen against build.ts routing', () => {
+  test('owner summary tag is exactly [builder→critic]', () => {
+    const text = buildOwnerPrompt({ rounds: 3, buildId: 'b1' })
+    expect(text).toContain('your first line MUST be exactly: `[builder→critic]`')
   })
 })
 

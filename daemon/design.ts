@@ -4,7 +4,7 @@ import { doSpawnSession, killSession, killsInProgress } from './session-lifecycl
 import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { createStateMachine } from './state-machine.js'
-import { designPersonaPrompt, PERSONA_NAMES, personaQuestionsTag, personaProposalTag, type PersonaName } from './prompts/design-personas.js'
+import { designPersonaPrompt, PERSONA_NAMES, normalizePersonaName, personaQuestionsTag, personaProposalTag, type PersonaName } from './prompts/design-personas.js'
 import { designSynthesizerPrompt, SYNTHESIZER_TAG } from './prompts/design-synthesizer.js'
 import { designAuditorPrompt, AUDITOR_TAG } from './prompts/design-auditor.js'
 import { designBriefPrompt, BRIEF_TAG } from './prompts/design-brief.js'
@@ -574,9 +574,8 @@ async function processNextDivergence(state: DesignState): Promise<void> {
   state.refinementRespondedIds = new Set()
 
   // Find relevant personas
-  const normName = (s: string) => s.toLowerCase().replaceAll(/[-_ ]/g, '')
   const relevant = state.personas.filter(p =>
-    divergence.personas.some(name => normName(name) === normName(p.name))
+    divergence.personas.some(name => normalizePersonaName(name) === normalizePersonaName(p.name))
   )
   state.refinementExpected = relevant.length
 
