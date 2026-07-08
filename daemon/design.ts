@@ -253,6 +253,7 @@ function armQuorumNudge(state: DesignState, phase: 'questioning' | 'independent'
 
 async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
 
   if (state.questions.length === 0) {
     // No questions — skip straight to proposals
@@ -690,6 +691,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
         state.proposalsExpected--
         if (state.proposalsExpected > 0 && state.proposalsReceived >= state.proposalsExpected) {
           if (state.timeout) clearTimeout(state.timeout)
+          if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
           const result = designMachine.transition(state.phase, 'all_proposed')
           if (result.ok) {
             state.phase = result.to
@@ -790,6 +792,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
 
       if (state.proposalsReceived >= state.proposalsExpected) {
         if (state.timeout) clearTimeout(state.timeout)
+        if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
         const result = designMachine.transition(state.phase, 'all_proposed')
         if (result.ok) {
           state.phase = result.to
