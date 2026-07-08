@@ -68,6 +68,10 @@ if (existsSync(SOCK_PATH)) {
 startBridgeServer()
 initEphemeralTimers()
 
+import { initPhaseBudgets } from './daemon/phase-budget.js'
+import { killSession } from './daemon/session-lifecycle.js'
+initPhaseBudgets(killSession)
+
 import { refreshDashboard, refreshDashboardNow } from './daemon/dashboard.js'
 registry.onPersist = refreshDashboard
 
