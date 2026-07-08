@@ -39,6 +39,7 @@ process.on('exit', () => { try { unlinkSync(PID_FILE) } catch {} })
 
 import { gateway, TOKEN, PLATFORM, STATE_DIR, CLAUDE_CONFIG, SOCK_PATH, heartbeatPath } from './daemon/config.js'
 import { registry, threadRegistry } from './daemon/sessions.js'
+import { marketplaceName } from './shared/constants.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
@@ -135,7 +136,7 @@ setupPermissionHandler(gateway)
 
 try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
-  const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'hydra-plugins', 'discord')
+  const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', marketplaceName(), 'discord')
   const daemonConfig = JSON.stringify({ socket: SOCK_PATH, platform: PLATFORM })
   const mcpJson = JSON.stringify({
     mcpServers: {

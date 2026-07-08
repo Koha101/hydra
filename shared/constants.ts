@@ -56,6 +56,14 @@ export function spawnModel(): string {
   return process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
 }
 
+// Late-bound (reads env per call). Marketplace that serves the bridge plugin — sets both
+// the `--channels plugin:discord@<name>` flag and the cache path `plugins/cache/<name>/discord`.
+// Defaults to Anthropic's official marketplace; override with HYDRA_MARKETPLACE when the plugin
+// is served from a local marketplace (e.g. `hydra-plugins`) rather than the published one.
+export function marketplaceName(): string {
+  return process.env.HYDRA_MARKETPLACE?.trim() || 'claude-plugins-official'
+}
+
 /** Extract a model alias prefix from text using colon syntax (e.g. "fable: topic").
  *  Colon is required to disambiguate from English words like "opus" or "fable".
  *  Returns the resolved full model ID and remaining text. */

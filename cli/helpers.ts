@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileS
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
-import { spawnModel } from '../shared/constants.js'
+import { spawnModel, marketplaceName } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Config resolution (replaces env-setup.sh)
@@ -118,7 +118,7 @@ export function resolveConfig(platform?: string): HydraConfig {
 // Avoids hardcoding a version that breaks on the next plugin release. Prefers a
 // dir that already holds server.ts; otherwise the newest by numeric sort.
 export function pluginVersionDir(configDir: string, plugin = 'discord'): string | null {
-  const base = join(configDir, 'plugins', 'cache', 'hydra-plugins', plugin)
+  const base = join(configDir, 'plugins', 'cache', marketplaceName(), plugin)
   try {
     const versions = readdirSync(base).filter(v => {
       try { return statSync(join(base, v)).isDirectory() } catch { return false }
@@ -429,5 +429,6 @@ export function buildDaemonEnvs(cfg: HydraConfig): string {
     `SPAWN_CWD=${shq(cfg.spawnCwd)}`,
     `CHAT_PLATFORM=${shq(cfg.platform)}`,
     `CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
+    `HYDRA_MARKETPLACE=${shq(marketplaceName())}`,
   ].join(' ')
 }
