@@ -52,12 +52,15 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files to orient, then wait silently for incoming messages — do NOT post anything proactively. When a message arrives, reply with the reply tool using the chat_id from the incoming message.`
   }
 
-  // Auth token setup
+  // Auth token setup. Prefer CLAUDE_CODE_OAUTH_TOKEN from env (refreshing the persisted
+  // file); else reuse the persisted .byte-token so a launchd-revived byte — whose plist
+  // env lacks the token, and which can't unlock the login keychain while detached — still
+  // authenticates on reboot without any secret living in the LaunchAgents plist.
   let authExport = ''
   const tokenFile = join(cfg.stateDir, '.byte-token')
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
-  if (oauthToken) {
-    writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
+  if (oauthToken) writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
+  if (oauthToken || existsSync(tokenFile)) {
     authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})"`
   } else {
     const angellistToken = join(homedir(), '.angellist-claude-token')

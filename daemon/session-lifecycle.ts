@@ -425,10 +425,14 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   // CLAUDE_CODE_OAUTH_TOKEN (from .env) instead. Written to a file to keep the
   // secret out of the tmux command string; same convention as the byte.
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  const tokenFile = join(STATE_DIR, '.byte-token')
   let authExport: string | null = null
   if (oauthToken) {
-    const tokenFile = join(STATE_DIR, '.byte-token')
     try { writeFileSync(tokenFile, oauthToken, { mode: 0o600 }) } catch {}
+  }
+  // Fall back to the persisted token file so spawns from a launchd-revived daemon (whose
+  // env lacks CLAUDE_CODE_OAUTH_TOKEN) still authenticate — same reboot-survival path as byte.
+  if (oauthToken || existsSync(tokenFile)) {
     authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})"`
   }
   const inner = [
