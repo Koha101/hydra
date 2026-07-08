@@ -118,7 +118,7 @@ export function resolveConfig(platform?: string): HydraConfig {
 // Avoids hardcoding a version that breaks on the next plugin release. Prefers a
 // dir that already holds server.ts; otherwise the newest by numeric sort.
 export function pluginVersionDir(configDir: string, plugin = 'discord'): string | null {
-  const base = join(configDir, 'plugins', 'cache', 'claude-plugins-official', plugin)
+  const base = join(configDir, 'plugins', 'cache', 'hydra-plugins', plugin)
   try {
     const versions = readdirSync(base).filter(v => {
       try { return statSync(join(base, v)).isDirectory() } catch { return false }

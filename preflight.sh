@@ -58,11 +58,11 @@ fi
   || wrn "access.json missing — no users are allowlisted yet ($STATE_DIR/access.json)"
 
 # --- bridge plugin must live in the config dir the daemon spawns under ---
-BRIDGE_DIR="$CONFIG_DIR/plugins/cache/claude-plugins-official/discord"
+BRIDGE_DIR="$CONFIG_DIR/plugins/cache/hydra-plugins/discord"
 if ls "$BRIDGE_DIR"/*/server.ts >/dev/null 2>&1; then
   ok "bridge plugin present in config dir"
 else
-  bad "bridge plugin NOT in $CONFIG_DIR — sessions can't reach the daemon. Install: claude plugin install discord@claude-plugins-official"
+  bad "bridge plugin NOT in $CONFIG_DIR — sessions can't reach the daemon. Install: claude plugin install discord@hydra-plugins"
 fi
 
 # --- channels feature gate (claude.ai Team/Enterprise: blocked unless managed-settings opts in) ---

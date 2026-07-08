@@ -1,0 +1,14 @@
+{
+  "name": "hydra-plugins",
+  "owner": {
+    "name": "local"
+  },
+  "plugins": [
+    {
+      "name": "discord",
+      "source": "./",
+      "description": "Discord channel for Claude Code — messaging bridge with built-in access control.",
+      "version": "0.0.4"
+    }
+  ]
+}

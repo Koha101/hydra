@@ -135,7 +135,7 @@ setupPermissionHandler(gateway)
 
 try {
   const bridgeSrc = join(import.meta.dir, 'bridge.ts')
-  const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'claude-plugins-official', 'discord')
+  const discordCache = join(CLAUDE_CONFIG, 'plugins', 'cache', 'hydra-plugins', 'discord')
   const daemonConfig = JSON.stringify({ socket: SOCK_PATH, platform: PLATFORM })
   const mcpJson = JSON.stringify({
     mcpServers: {

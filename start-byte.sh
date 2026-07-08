@@ -48,7 +48,7 @@ _kill_orphan_bytes "force-killing surviving" "-9"
 
 # Symlink bridge.ts into the plugin cache so it always runs from source
 SRC="$SCRIPT_DIR/bridge.ts"
-DEST="$CONFIG_DIR/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts"
+DEST="$CONFIG_DIR/plugins/cache/hydra-plugins/discord/0.0.4/server.ts"
 if [ ! -f "$SRC" ]; then
   echo "ERROR: bridge.ts missing at $SRC" >&2
   exit 1
@@ -81,7 +81,7 @@ fi
 
 # Start byte
 tmux new-session -d -s "$SESSION" \
-  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR='$CONFIG_DIR' && export CHAT_PLATFORM=$CHAT_PLATFORM && $AUTH_EXPORT caffeinate -i claude --model 'claude-opus-4-8[1m]' --channels plugin:discord@claude-plugins-official \
+  "cd '$CWD' && export DAEMON_SOCK='$SOCK' && export CLAUDE_CONFIG_DIR='$CONFIG_DIR' && export CHAT_PLATFORM=$CHAT_PLATFORM && $AUTH_EXPORT caffeinate -i claude --model 'claude-opus-4-8[1m]' --channels plugin:discord@hydra-plugins \
   \"$PROMPT\""
 
 echo "$(date): ${CHAT_PLATFORM} byte started (daemon+bridge)" >> "$LOG"
