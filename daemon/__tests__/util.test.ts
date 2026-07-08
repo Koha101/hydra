@@ -269,6 +269,14 @@ describe('parseDuration', () => {
     expect(parseDuration('m20')).toBeNull()
     expect(parseDuration('')).toBeNull()
   })
+
+  test('rejects zero and setTimeout-overflowing values', () => {
+    expect(parseDuration('0m')).toBeNull()
+    expect(parseDuration('0s')).toBeNull()
+    expect(parseDuration('25h')).toBeNull()
+    expect(parseDuration('999999h')).toBeNull()
+    expect(parseDuration('24h')).toBe(86_400_000)
+  })
 })
 
 describe('extractPhaseBudget', () => {

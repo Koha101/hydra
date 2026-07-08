@@ -180,7 +180,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const budgetRaw = (args.phase_budget as string | undefined)?.trim() || undefined
         const phaseBudgetMs = budgetRaw ? parseDuration(budgetRaw) ?? undefined : undefined
         if (budgetRaw && !phaseBudgetMs) throw new Error(`invalid phase_budget "${budgetRaw}" — use e.g. "90s", "20m", "1h"`)
-        const opts = model || phaseBudgetMs ? { ...(model ? { model } : {}), ...(phaseBudgetMs ? { phaseBudgetMs } : {}) } : undefined
+        const opts = (model || phaseBudgetMs) ? { ...(model ? { model } : {}), ...(phaseBudgetMs ? { phaseBudgetMs } : {}) } : undefined
         const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, opts)
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }

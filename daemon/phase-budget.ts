@@ -5,10 +5,10 @@
 // deadline persists in the session registry, so a daemon restart re-arms
 // every budget instead of forgetting it (the ephemeral TTL's known flaw).
 //
-// The reaper is injected at boot (daemon.ts) rather than imported —
-// session-lifecycle imports this module to arm budgets on spawn, and
-// importing killSession back would recreate the exact import cycle that
-// PR #88 removed from this layer.
+// The reaper is injected at boot rather than imported: the invariant is that
+// THIS module must never import session-lifecycle (which imports us to arm
+// budgets on spawn — importing back would be a cycle, the class PR #88
+// removed from this layer). daemon.ts, outside the cycle, does the wiring.
 import { registry, type SessionInfo } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { safeSend } from './util.js'

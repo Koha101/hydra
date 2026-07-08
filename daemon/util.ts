@@ -51,12 +51,19 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
+// Bounded to 24h: a zero duration is meaningless for any timer this feeds,
+// and values past 2^31-1 ms overflow setTimeout (fires immediately). Out of
+// range → null, same visible-failure contract as unparseable input.
+export const MAX_DURATION_MS = 24 * 3_600_000
+
 export function parseDuration(s: string): number | null {
   const m = s.trim().match(/^(\d+)(s|m|h)$/i)
   if (!m) return null
   const n = parseInt(m[1], 10)
   const unit = m[2].toLowerCase()
-  return n * (unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000)
+  const ms = n * (unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000)
+  if (ms <= 0 || ms > MAX_DURATION_MS) return null
+  return ms
 }
 
 // Strips a spawn-level `--phase-budget <dur>` flag from a topic string.
