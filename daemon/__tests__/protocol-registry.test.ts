@@ -1,8 +1,6 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
-  registerProtocol, isThreadOccupied, getExpectedTag,
-
-  registerProtocol, isThreadOccupied, isProtocolPost,
+  registerProtocol, isThreadOccupied, isProtocolPost, getExpectedTag,
   dispatchReply, dispatchDisconnect, dispatchReconnect,
   _resetForTesting,
 } from '../protocol-registry.js'
@@ -145,3 +143,4 @@ describe('isProtocolPost', () => {
     expect(isProtocolPost('anyone', 'anywhere')).toBe(false)
   })
 })
+

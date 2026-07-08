@@ -60,6 +60,7 @@ export type DesignState = {
   refinementResponses: number
   refinementRespondedIds: Set<string>
   timeout?: ReturnType<typeof setTimeout>
+  _quorumNudgeTimer?: ReturnType<typeof setTimeout>
   _synthesizerDisconnectTimer?: ReturnType<typeof setTimeout>
   _auditorDisconnectTimer?: ReturnType<typeof setTimeout>
   _briefDisconnectTimer?: ReturnType<typeof setTimeout>
@@ -88,6 +89,7 @@ const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
 
 const designs = new Map<string, DesignState>()  // keyed by threadId
 
+const QUESTION_TIMEOUT_MS = 5 * 60 * 1000  // shorter than proposals
 const PERSONA_TIMEOUT_MS = 15 * 60 * 1000
 const SYNTHESIS_TIMEOUT_MS = 20 * 60 * 1000
 
@@ -209,9 +211,41 @@ export async function startDesign(
     const r = designMachine.transition(state.phase, 'timeout')
     if (r.ok) state.phase = r.to
     await aggregateAndPostQuestions(state)
-  }, 5 * 60 * 1000)  // 5 min for questions (shorter than proposals)
+  }, QUESTION_TIMEOUT_MS)
+  armQuorumNudge(state, 'questioning', QUESTION_TIMEOUT_MS)
 
   return state
+}
+
+// ---------------------------------------------------------------------------
+// Quorum-silence nudge — at half-window, remind personas that haven't posted.
+// Pure nudge: the timeout backstop above is untouched, and nothing advances
+// here. Live evidence (2026-07-08 smoke run): one silent persona burned the
+// entire question window, and its post landed 90s after the gavel — a
+// half-window reminder converts that from a lost window into a caught one.
+// ---------------------------------------------------------------------------
+
+function armQuorumNudge(state: DesignState, phase: 'questioning' | 'independent', windowMs: number): void {
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
+  state._quorumNudgeTimer = setTimeout(() => {
+    if (state.phase !== phase) return
+    const silent = state.personas.filter(p => (phase === 'questioning' ? !p.asked : !p.proposed))
+    if (silent.length === 0) return
+    const what = phase === 'questioning' ? 'question' : 'proposal'
+    process.stderr.write(`daemon: design: half-window nudge → ${silent.map(p => p.name).join(', ')} silent (${what} phase)\n`)
+    for (const p of silent) {
+      const tag = phase === 'questioning' ? personaQuestionsTag(p.name) : personaProposalTag(p.name)
+      const noQuestionsHint = phase === 'questioning' ? ` (or that tag followed by "No questions.")` : ''
+      transport.sendOrQueue(p.sessionId, {
+        type: 'notification',
+        content: [
+          `[system] Half the ${what} window has passed and your post hasn't arrived.`,
+          `Post now with first line \`${tag}\`${noQuestionsHint} — the phase advances without you otherwise.`,
+        ].join('\n'),
+        meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+  }, Math.floor(windowMs / 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +254,7 @@ export async function startDesign(
 
 async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
 
   if (state.questions.length === 0) {
     // No questions — skip straight to proposals
@@ -286,6 +321,7 @@ async function startProposalPhase(state: DesignState): Promise<void> {
     await safeSend(state.ownerThreadId, `Design timed out waiting for proposals. Cancelling.`)
     await cancelDesign(state.ownerThreadId)
   }, PERSONA_TIMEOUT_MS)
+  armQuorumNudge(state, 'independent', PERSONA_TIMEOUT_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +365,7 @@ export async function cancelDesign(threadId: string): Promise<void> {
 
   state.phase = 'cancelled'
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
   if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
   if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
   if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
@@ -655,6 +692,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
         state.proposalsExpected--
         if (state.proposalsExpected > 0 && state.proposalsReceived >= state.proposalsExpected) {
           if (state.timeout) clearTimeout(state.timeout)
+          if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
           const result = designMachine.transition(state.phase, 'all_proposed')
           if (result.ok) {
             state.phase = result.to
@@ -755,6 +793,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
 
       if (state.proposalsReceived >= state.proposalsExpected) {
         if (state.timeout) clearTimeout(state.timeout)
+        if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
         const result = designMachine.transition(state.phase, 'all_proposed')
         if (result.ok) {
           state.phase = result.to
