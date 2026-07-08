@@ -10,6 +10,7 @@ import { buildCriticPrompt } from './prompts/build-critic.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 import { createStateMachine } from './state-machine.js'
 import { buildModel, resolveModelAlias } from '../shared/constants.js'
+import { safeSend } from './util.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -194,11 +195,11 @@ export async function startBuild(
   try {
     const taskLine = task ? `\nTask: **${task}**` : ''
     const wtLine = worktreePath ? `\nWorktree: \`${worktreePath}\`` : ''
-    const ann = await gateway.send(ownerThreadId, [
+    const annIds = await safeSend(ownerThreadId, [
       `**Build** — ${rounds} round${rounds > 1 ? 's' : ''}`,
       `Owner implements, critic reviews.${taskLine}${wtLine}`,
     ].join('\n'))
-    state.messageIds.push(ann.id)
+    state.messageIds.push(...annIds)
 
     // Tell owner to start implementing
     transport.sendOrQueue(ownerSessionId, {
@@ -245,7 +246,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
   }
 
   refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `Build cancelled.`)
+  await safeSend(state.ownerThreadId, `Build cancelled.`)
 
   cleanupWorktree(state)
 }
@@ -516,7 +517,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: build critic spawn failed: ${msg}\n`)
-    await gateway.send(state.ownerThreadId, `Failed to spawn build critic: ${msg}. Build cancelled.`)
+    await safeSend(state.ownerThreadId, `Failed to spawn build critic: ${msg}. Build cancelled.`)
     void cancelBuild(state.buildId)
   }
 }
@@ -560,7 +561,7 @@ function resetTimeout(state: BuildState): void {
     process.stderr.write(`daemon: build turn timed out (${whose})\n`)
     const ci = state.criticSessionId ? registry.get(state.criticSessionId) : undefined
     const debugHint = ci ? ` Check \`tmux attach -t ${ci.tmuxName}\` to see what happened.` : ''
-    await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
+    await safeSend(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
     await cancelBuild(state.buildId)
   }, timeoutMs)
 }
@@ -571,5 +572,13 @@ registerProtocol('build', {
   onReply: onBuildReply,
   onDisconnect: onBuildParticipantDisconnect,
   onReconnect: onBuildParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
+    const state = buildId ? builds.get(buildId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'implementing' && sessionId === state.ownerSessionId) return BUILDER_SENTINEL
+    if (state.phase === 'reviewing' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    return null
+  },
 })
 

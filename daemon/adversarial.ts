@@ -144,11 +144,11 @@ export async function startReview(
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
-    const ann = await gateway.send(ownerThreadId, [
+    const annIds = await safeSend(ownerThreadId, [
       `**Adversarial Review** — ${rounds} round${rounds > 1 ? 's' : ''}`,
       `A critic will challenge the design. You defend.${topicLine}`,
     ].join('\n'))
-    state.messageIds.push(ann.id)
+    state.messageIds.push(...annIds)
 
     transport.sendOrQueue(ownerSessionId, {
       type: 'notification',
@@ -198,7 +198,7 @@ export async function cancelReview(reviewId: string): Promise<void> {
   }
 
   refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `Review cancelled.`)
+  await safeSend(state.ownerThreadId, `Review cancelled.`)
 
   void deleteReviewMessages(state).catch(err => {
     process.stderr.write(`daemon: cancel cleanup failed: ${err}\n`)
@@ -530,7 +530,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: critic spawn failed: ${msg}\n`)
-    await gateway.send(state.ownerThreadId, `Failed to spawn critic: ${msg}. Review cancelled.`)
+    await safeSend(state.ownerThreadId, `Failed to spawn critic: ${msg}. Review cancelled.`)
     void cancelReview(state.reviewId)
   }
 }
@@ -546,7 +546,7 @@ function resetTimeout(state: ReviewState): void {
   const timeoutMs = whose === 'critic' ? CRITIC_TIMEOUT_MS : OWNER_TIMEOUT_MS
   state.timeout = setTimeout(async () => {
     process.stderr.write(`daemon: review turn timed out (${whose})\n`)
-    await gateway.send(state.ownerThreadId, `Review timed out waiting for ${whose}. Cancelling.`)
+    await safeSend(state.ownerThreadId, `Review timed out waiting for ${whose}. Cancelling.`)
     await cancelReview(state.reviewId)
   }, timeoutMs)
 }
@@ -557,4 +557,13 @@ registerProtocol('review', {
   onReply: onReviewReply,
   onDisconnect: onParticipantDisconnect,
   onReconnect: onParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
+    const state = reviewId ? reviews.get(reviewId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'critic_turn' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    if (state.phase === 'owner_turn' && sessionId === state.ownerSessionId) return OWNER_SENTINEL
+    if (state.phase === 'cleanup' && sessionId === state.criticSessionId) return SUMMARY_SENTINEL
+    return null
+  },
 })

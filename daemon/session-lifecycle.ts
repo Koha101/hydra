@@ -10,6 +10,8 @@ import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { computeToolsForSession } from './bridge-tools.js'
+import { extractPhaseBudget } from './util.js'
+import { startPhaseBudget, clearPhaseBudget } from './phase-budget.js'
 import { isKnownModel, resolveModelAlias, spawnModel } from '../shared/constants.js'
 import { buildSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
@@ -90,6 +92,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     } catch {}
 
     transport.disconnect(info.sessionId)
+    clearPhaseBudget(info.sessionId)
 
     if (info.worktreePath && info.worktreeRepo) {
       const branch = `wt/${info.tmuxName}`
@@ -174,6 +177,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     worktreeTarget = worktreeMatch[1]
     topic = topic.slice(worktreeMatch[0].length)
   }
+
+  // Parse --phase-budget from the topic (works for every spawn form); an
+  // explicit opts value (bridge tool) wins over the inline flag.
+  const budgetExtract = extractPhaseBudget(topic)
+  topic = budgetExtract.topic || 'session'
+  const phaseBudgetMs = opts?.phaseBudgetMs ?? budgetExtract.budgetMs
 
   const sessionId = randomUUID()
   const tmuxName = registry.pickSessionName()
@@ -469,7 +478,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     ...(isJoin ? { isJoinMember: true } : {}),
     initiator: opts?.initiator,
     ephemeral: opts?.ephemeral,
+    ...(phaseBudgetMs ? { budgetDeadline: now + phaseBudgetMs } : {}),
   })
+  if (phaseBudgetMs) startPhaseBudget(sessionId)
   // Don't register in threadToSession for join members — owner keeps that mapping
   if (!isJoin) {
     registry.setThread(threadId!, sessionId)

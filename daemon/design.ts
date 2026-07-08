@@ -9,6 +9,7 @@ import { designSynthesizerPrompt, SYNTHESIZER_TAG } from './prompts/design-synth
 import { designAuditorPrompt, AUDITOR_TAG } from './prompts/design-auditor.js'
 import { designBriefPrompt, BRIEF_TAG } from './prompts/design-brief.js'
 import { refreshSessionVisual, registerProtocolBadge, formatPhaseBadge } from './anchor-state.js'
+import { safeSend } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +43,7 @@ export type DesignState = {
   ownerThreadId: string
   topic: string
   phase: DesignPhase
-  personas: Array<{ name: string; sessionId: string; sessionName: string; proposed: boolean }>
+  personas: Array<{ name: string; sessionId: string; sessionName: string; asked: boolean; proposed: boolean }>
   synthesizerSessionId?: string
   auditorSessionId?: string
   briefSessionId?: string
@@ -59,6 +60,7 @@ export type DesignState = {
   refinementResponses: number
   refinementRespondedIds: Set<string>
   timeout?: ReturnType<typeof setTimeout>
+  _quorumNudgeTimer?: ReturnType<typeof setTimeout>
   _synthesizerDisconnectTimer?: ReturnType<typeof setTimeout>
   _auditorDisconnectTimer?: ReturnType<typeof setTimeout>
   _briefDisconnectTimer?: ReturnType<typeof setTimeout>
@@ -87,6 +89,7 @@ const designMachine = createStateMachine<DesignPhase, DesignEvent>('design', {
 
 const designs = new Map<string, DesignState>()  // keyed by threadId
 
+const QUESTION_TIMEOUT_MS = 5 * 60 * 1000  // shorter than proposals
 const PERSONA_TIMEOUT_MS = 15 * 60 * 1000
 const SYNTHESIS_TIMEOUT_MS = 20 * 60 * 1000
 
@@ -156,7 +159,7 @@ export async function startDesign(
   designs.set(threadId, state)
   refreshSessionVisual(threadId, { badge: '🎨' })
 
-  await gateway.send(threadId, [
+  await safeSend(threadId, [
     `**Design Session** — ${PERSONA_NAMES.length} personas`,
     `Topic: **${topic}**`,
     `Spawning ${PERSONA_NAMES.join(', ')}...`,
@@ -174,7 +177,7 @@ export async function startDesign(
         memberLabel: name,
         promptBuilder: (sessionId, tmuxName) => designPersonaPrompt({ sessionId, tmuxName, persona: name, topic, threadId, cutoffTs }),
       })
-      state.personas.push({ name, sessionId: result.sessionId, sessionName: result.name, proposed: false })
+      state.personas.push({ name, sessionId: result.sessionId, sessionName: result.name, asked: false, proposed: false })
       process.stderr.write(`daemon: design: spawned ${name} as ${result.name}\n`)
       if (name !== PERSONA_NAMES[PERSONA_NAMES.length - 1]) {
         await new Promise(r => setTimeout(r, 2000))
@@ -187,7 +190,7 @@ export async function startDesign(
   // Adjust expected count for failed spawns
   state.proposalsExpected = state.personas.length
   if (state.proposalsExpected === 0) {
-    await gateway.send(threadId, `No personas could be spawned. Design cancelled.`)
+    await safeSend(threadId, `No personas could be spawned. Design cancelled.`)
     designs.delete(threadId)
     refreshSessionVisual(threadId)
     state.phase = 'cancelled'
@@ -199,7 +202,7 @@ export async function startDesign(
   const spawnResult = designMachine.transition(state.phase, 'all_spawned')
   if (spawnResult.ok) state.phase = spawnResult.to
 
-  await gateway.send(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned: ${state.personas.map(p => `${p.name} → ${p.sessionName}`).join(' · ')}. Waiting for questions..._`)
+  await safeSend(threadId, `_${state.personas.length} persona${state.personas.length > 1 ? 's' : ''} spawned: ${state.personas.map(p => `${p.name} → ${p.sessionName}`).join(' · ')}. Waiting for questions..._`)
 
   // Timeout for questions — advance even if some personas don't ask
   state.timeout = setTimeout(async () => {
@@ -208,9 +211,41 @@ export async function startDesign(
     const r = designMachine.transition(state.phase, 'timeout')
     if (r.ok) state.phase = r.to
     await aggregateAndPostQuestions(state)
-  }, 5 * 60 * 1000)  // 5 min for questions (shorter than proposals)
+  }, QUESTION_TIMEOUT_MS)
+  armQuorumNudge(state, 'questioning', QUESTION_TIMEOUT_MS)
 
   return state
+}
+
+// ---------------------------------------------------------------------------
+// Quorum-silence nudge — at half-window, remind personas that haven't posted.
+// Pure nudge: the timeout backstop above is untouched, and nothing advances
+// here. Live evidence (2026-07-08 smoke run): one silent persona burned the
+// entire question window, and its post landed 90s after the gavel — a
+// half-window reminder converts that from a lost window into a caught one.
+// ---------------------------------------------------------------------------
+
+function armQuorumNudge(state: DesignState, phase: 'questioning' | 'independent', windowMs: number): void {
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
+  state._quorumNudgeTimer = setTimeout(() => {
+    if (state.phase !== phase) return
+    const silent = state.personas.filter(p => (phase === 'questioning' ? !p.asked : !p.proposed))
+    if (silent.length === 0) return
+    const what = phase === 'questioning' ? 'question' : 'proposal'
+    process.stderr.write(`daemon: design: half-window nudge → ${silent.map(p => p.name).join(', ')} silent (${what} phase)\n`)
+    for (const p of silent) {
+      const tag = phase === 'questioning' ? personaQuestionsTag(p.name) : personaProposalTag(p.name)
+      const noQuestionsHint = phase === 'questioning' ? ` (or that tag followed by "No questions.")` : ''
+      transport.sendOrQueue(p.sessionId, {
+        type: 'notification',
+        content: [
+          `[system] Half the ${what} window has passed and your post hasn't arrived.`,
+          `Post now with first line \`${tag}\`${noQuestionsHint} — the phase advances without you otherwise.`,
+        ].join('\n'),
+        meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+      })
+    }
+  }, Math.floor(windowMs / 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +254,11 @@ export async function startDesign(
 
 async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
 
   if (state.questions.length === 0) {
     // No questions — skip straight to proposals
-    await gateway.send(state.ownerThreadId, `_No questions from personas. Proceeding to proposals..._`)
+    await safeSend(state.ownerThreadId, `_No questions from personas. Proceeding to proposals..._`)
     const r = designMachine.transition(state.phase, 'answers_provided')
     if (r.ok) state.phase = r.to
     await startProposalPhase(state)
@@ -233,7 +269,7 @@ async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
     `**${q.persona}:**\n${q.questions}`
   ).join('\n\n')
 
-  await gateway.send(state.ownerThreadId, [
+  await safeSend(state.ownerThreadId, [
     `**Personas have questions before proposing:**`,
     ``,
     questionList,
@@ -245,7 +281,7 @@ async function aggregateAndPostQuestions(state: DesignState): Promise<void> {
   state.timeout = setTimeout(async () => {
     if (state.phase !== 'answering') return
     process.stderr.write(`daemon: design: answer timeout\n`)
-    await gateway.send(state.ownerThreadId, `Design timed out waiting for answers. Cancelling.`)
+    await safeSend(state.ownerThreadId, `Design timed out waiting for answers. Cancelling.`)
     await cancelDesign(state.ownerThreadId)
   }, 30 * 60 * 1000)
 }
@@ -277,14 +313,15 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
 }
 
 async function startProposalPhase(state: DesignState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Waiting for proposals..._`)
+  await safeSend(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Waiting for proposals..._`)
 
   state.timeout = setTimeout(async () => {
     if (state.phase !== 'independent') return
     process.stderr.write(`daemon: design: proposal timeout\n`)
-    await gateway.send(state.ownerThreadId, `Design timed out waiting for proposals. Cancelling.`)
+    await safeSend(state.ownerThreadId, `Design timed out waiting for proposals. Cancelling.`)
     await cancelDesign(state.ownerThreadId)
   }, PERSONA_TIMEOUT_MS)
+  armQuorumNudge(state, 'independent', PERSONA_TIMEOUT_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +365,7 @@ export async function cancelDesign(threadId: string): Promise<void> {
 
   state.phase = 'cancelled'
   if (state.timeout) clearTimeout(state.timeout)
+  if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
   if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
   if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
   if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
@@ -346,7 +384,7 @@ const MAX_REFINEMENT_ROUNDS = 2
 
 async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
   if (state.divergences.length === 0) {
-    await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} No divergences found. Proceeding to audit._`)
+    await safeSend(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} No divergences found. Proceeding to audit._`)
     state.phase = 'audit'
     await spawnAuditor(state)
     return
@@ -360,13 +398,13 @@ async function autoAdvanceAfterSynthesis(state: DesignState): Promise<void> {
     : state.divergences.filter(d => d.impact === 'high')
 
   if (toRefine.length === 0 || state.refinementRound > MAX_REFINEMENT_ROUNDS) {
-    await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
+    await safeSend(state.ownerThreadId, `_${formatPhaseBadge('🎨', 'audit')} Refinement complete (${state.refinementRound - 1} round${state.refinementRound - 1 !== 1 ? 's' : ''}). Proceeding to audit._`)
     state.phase = 'audit'
     await spawnAuditor(state)
     return
   }
 
-  await gateway.send(state.ownerThreadId, `_Refinement round ${state.refinementRound}: ${toRefine.length} divergence${toRefine.length !== 1 ? 's' : ''} (${toRefine.map(d => d.impact).join(', ')})_`)
+  await safeSend(state.ownerThreadId, `_Refinement round ${state.refinementRound}: ${toRefine.length} divergence${toRefine.length !== 1 ? 's' : ''} (${toRefine.map(d => d.impact).join(', ')})_`)
 
   const result = designMachine.transition(state.phase, 'synthesized')
   if (result.ok) state.phase = result.to
@@ -380,12 +418,12 @@ async function autoAdvanceAfterRefinement(state: DesignState): Promise<void> {
   const result = designMachine.transition(state.phase, 'refined')
   if (result.ok) state.phase = result.to
 
-  await gateway.send(state.ownerThreadId, `_Re-synthesizing with refinement feedback..._`)
+  await safeSend(state.ownerThreadId, `_Re-synthesizing with refinement feedback..._`)
   await spawnSynthesizer(state)
 }
 
 async function autoCompleteDesign(state: DesignState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `_Audit complete. Generating design brief..._`)
+  await safeSend(state.ownerThreadId, `_Audit complete. Generating design brief..._`)
   await spawnBriefWriter(state)
 }
 
@@ -409,7 +447,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
     state.timeout = setTimeout(async () => {
       if (state.phase !== 'brief') return
       process.stderr.write(`daemon: design: brief writer timeout\n`)
-      await gateway.send(state.ownerThreadId, `Brief writer timed out. Design complete without brief.`)
+      await safeSend(state.ownerThreadId, `Brief writer timed out. Design complete without brief.`)
       if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
       if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
       if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
@@ -419,7 +457,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: brief writer spawn failed: ${err}\n`)
-    await gateway.send(state.ownerThreadId, `Brief writer failed. Design complete without brief.`)
+    await safeSend(state.ownerThreadId, `Brief writer failed. Design complete without brief.`)
     if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
     if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
     if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
@@ -434,7 +472,7 @@ async function spawnBriefWriter(state: DesignState): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function spawnSynthesizer(state: DesignState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Spawning synthesizer..._`)
+  await safeSend(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Spawning synthesizer..._`)
 
   try {
     const result = await doSpawnSession(`Design synthesizer`, undefined, undefined, {
@@ -463,12 +501,12 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
         }
         state.synthesizerSessionId = undefined
       }
-      await gateway.send(state.ownerThreadId, `_Synthesizer timed out. Retrying..._`)
+      await safeSend(state.ownerThreadId, `_Synthesizer timed out. Retrying..._`)
       await spawnSynthesizer(state)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: synthesizer spawn failed: ${err}\n`)
-    await gateway.send(state.ownerThreadId, `Synthesizer failed to spawn. Cancelling design.`)
+    await safeSend(state.ownerThreadId, `Synthesizer failed to spawn. Cancelling design.`)
     await cancelDesign(state.ownerThreadId)
   }
 }
@@ -478,7 +516,7 @@ async function spawnSynthesizer(state: DesignState): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function spawnAuditor(state: DesignState): Promise<void> {
-  await gateway.send(state.ownerThreadId, `_Spawning auditor for final review..._`)
+  await safeSend(state.ownerThreadId, `_Spawning auditor for final review..._`)
 
   try {
     const result = await doSpawnSession(`Design auditor`, undefined, undefined, {
@@ -501,14 +539,14 @@ async function spawnAuditor(state: DesignState): Promise<void> {
       process.stderr.write(`daemon: design: auditor timeout\n`)
       const r = designMachine.transition(state.phase, 'timeout')
       if (r.ok) state.phase = r.to
-      await gateway.send(state.ownerThreadId, `Auditor timed out. Cancelling design.`)
+      await safeSend(state.ownerThreadId, `Auditor timed out. Cancelling design.`)
       await cancelDesign(state.ownerThreadId)
     }, SYNTHESIS_TIMEOUT_MS)
   } catch (err) {
     process.stderr.write(`daemon: design: auditor spawn failed: ${err}\n`)
     // Fall back to complete without audit
     state.phase = 'complete'
-    await gateway.send(state.ownerThreadId, `Auditor failed to spawn. Design complete without audit.`)
+    await safeSend(state.ownerThreadId, `Auditor failed to spawn. Design complete without audit.`)
     if (state._synthesizerDisconnectTimer) clearTimeout(state._synthesizerDisconnectTimer)
     if (state._auditorDisconnectTimer) clearTimeout(state._auditorDisconnectTimer)
     if (state._briefDisconnectTimer) clearTimeout(state._briefDisconnectTimer)
@@ -580,12 +618,12 @@ async function processNextDivergence(state: DesignState): Promise<void> {
   state.refinementExpected = relevant.length
 
   if (relevant.length === 0) {
-    await gateway.send(state.ownerThreadId, `_Divergence ${state.currentDivergence}: no matching personas found. Skipping._`)
+    await safeSend(state.ownerThreadId, `_Divergence ${state.currentDivergence}: no matching personas found. Skipping._`)
     await processNextDivergence(state)
     return
   }
 
-  await gateway.send(state.ownerThreadId, [
+  await safeSend(state.ownerThreadId, [
     `_Refining divergence ${state.currentDivergence}: **${divergence.description}** (${divergence.impact})_`,
     `_Asking: ${relevant.map(p => p.name).join(', ')}_`,
   ].join('\n'))
@@ -654,6 +692,7 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
         state.proposalsExpected--
         if (state.proposalsExpected > 0 && state.proposalsReceived >= state.proposalsExpected) {
           if (state.timeout) clearTimeout(state.timeout)
+          if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
           const result = designMachine.transition(state.phase, 'all_proposed')
           if (result.ok) {
             state.phase = result.to
@@ -729,6 +768,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       if (bodyText.toLowerCase() !== 'no questions.') {
         state.questions.push({ persona: persona.name, questions: bodyText })
       }
+      persona.asked = true
       state.questionsReceived++
       process.stderr.write(`daemon: design: ${persona.name} asked questions (${state.questionsReceived}/${state.questionsExpected})\n`)
 
@@ -753,6 +793,7 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
 
       if (state.proposalsReceived >= state.proposalsExpected) {
         if (state.timeout) clearTimeout(state.timeout)
+        if (state._quorumNudgeTimer) clearTimeout(state._quorumNudgeTimer)
         const result = designMachine.transition(state.phase, 'all_proposed')
         if (result.ok) {
           state.phase = result.to
@@ -777,11 +818,11 @@ export function onDesignReply(sessionId: string, text: string, chatId: string, s
       const divList = state.divergences.length > 0
         ? state.divergences.map((d, i) => `  ${i + 1}. ${d.description} (${d.impact})`).join('\n')
         : '  (none identified)'
-      void gateway.send(threadId, [
+      void safeSend(threadId, [
         `_Synthesis complete. ${state.divergences.length} divergence${state.divergences.length !== 1 ? 's' : ''} found._`,
         ``,
         divList,
-      ].join('\n')).catch(() => {})
+      ].join('\n'))
 
       // Auto-advance to refinement or audit
       void autoAdvanceAfterSynthesis(state)
@@ -860,4 +901,25 @@ registerProtocol('design', {
   onReply: onDesignReply,
   onDisconnect: onDesignParticipantDisconnect,
   onReconnect: onDesignParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    for (const state of designs.values()) {
+      if (chatId !== state.ownerThreadId) continue
+      const persona = state.personas.find(p => p.sessionId === sessionId)
+      if (persona) {
+        if (state.phase === 'questioning' && !persona.asked) {
+          return personaQuestionsTag(persona.name)
+        }
+        if (state.phase === 'independent' && !persona.proposed) {
+          return personaProposalTag(persona.name)
+        }
+        // refinement: only divergence-relevant personas owe a post, and that
+        // relevance set is transient — nudging the full cast would misfire.
+        return null
+      }
+      if (sessionId === state.synthesizerSessionId && state.phase === 'synthesis') return SYNTHESIZER_TAG
+      if (sessionId === state.auditorSessionId && state.phase === 'audit') return AUDITOR_TAG
+      if (sessionId === state.briefSessionId && state.phase === 'brief') return BRIEF_TAG
+    }
+    return null
+  },
 })
