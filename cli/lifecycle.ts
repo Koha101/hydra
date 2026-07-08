@@ -9,7 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs, pluginVersionDir,
 } from './helpers.js'
-import { isKnownModel } from '../shared/constants.js'
+import { isKnownModel, marketplaceName } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)
@@ -36,7 +36,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   const pluginDir = pluginVersionDir(cfg.configDir)
   if (!pluginDir) {
     console.error(`error: discord bridge plugin not found under ${cfg.configDir}`)
-    console.error(`Install it: claude plugin install discord@hydra-plugins`)
+    console.error(`Install it: claude plugin install discord@${marketplaceName()}`)
     process.exit(1)
   }
   const bridgeDest = join(pluginDir, 'server.ts')
@@ -98,7 +98,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model ${shq(cfg.byteModel)} --dangerously-skip-permissions ${shq(prompt)} --channels plugin:discord@hydra-plugins`,
+    `caffeinate -i claude --model ${shq(cfg.byteModel)} --dangerously-skip-permissions ${shq(prompt)} --channels plugin:discord@${marketplaceName()}`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)
@@ -410,13 +410,13 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
     wrn(`access.json missing — no users are allowlisted yet (${join(cfg.stateDir, 'access.json')})`)
   }
 
-  const bridgeDir = join(cfg.configDir, 'plugins', 'cache', 'hydra-plugins', 'discord')
+  const bridgeDir = join(cfg.configDir, 'plugins', 'cache', marketplaceName(), 'discord')
   try {
     const versions = readdirSync(bridgeDir)
     const hasServer = versions.some(v => existsSync(join(bridgeDir, v, 'server.ts')))
     if (hasServer) ok('bridge plugin present in config dir'); else bad(`bridge plugin NOT in ${cfg.configDir}`)
   } catch {
-    bad(`bridge plugin NOT in ${cfg.configDir} — sessions can't reach the daemon. Install: claude plugin install discord@hydra-plugins`)
+    bad(`bridge plugin NOT in ${cfg.configDir} — sessions can't reach the daemon. Install: claude plugin install discord@${marketplaceName()}`)
   }
 
   const managedSettings = '/Library/Application Support/ClaudeCode/managed-settings.json'

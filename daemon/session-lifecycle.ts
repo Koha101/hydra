@@ -4,6 +4,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import { EventEmitter } from 'events'
+import { marketplaceName } from '../shared/constants.js'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH, STATE_DIR } from './config.js'
 import { safeSend, formatSpawnLine, tmuxHasSession } from './util.js'
@@ -565,7 +566,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     }
   }
 
-  const channelFlag = `plugin:discord@hydra-plugins`
+  const channelFlag = `plugin:discord@${marketplaceName()}`
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required -- set it to the working directory for spawned sessions')
 
