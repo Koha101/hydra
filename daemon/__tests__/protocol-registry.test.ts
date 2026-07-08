@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
   registerProtocol, isThreadOccupied, getExpectedTag,
+
+  registerProtocol, isThreadOccupied, isProtocolPost,
   dispatchReply, dispatchDisconnect, dispatchReconnect,
   _resetForTesting,
 } from '../protocol-registry.js'
@@ -113,5 +115,33 @@ describe('getExpectedTag', () => {
     }))
     expect(getExpectedTag('s1', 'thread-9')).toBe('[x→questions]')
     expect(seen).toEqual(['s1:thread-9'])
+  })
+})
+
+describe('isProtocolPost', () => {
+  test('true when the claiming protocol also occupies the target thread', () => {
+    registerProtocol('review', makeHooks())
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 'persona-1',
+      getByThread: (t) => t === 'design-thread',
+    }))
+    expect(isProtocolPost('persona-1', 'design-thread')).toBe(true)
+  })
+
+  test('false when the participant posts to an unrelated channel', () => {
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 'persona-1',
+      getByThread: (t) => t === 'design-thread',
+    }))
+    expect(isProtocolPost('persona-1', 'some-dm')).toBe(false)
+  })
+
+  test('false when no protocol claims the session', () => {
+    registerProtocol('review', makeHooks({ getByThread: () => true }))
+    expect(isProtocolPost('byte-main', 'any-thread')).toBe(false)
+  })
+
+  test('false with no protocols registered', () => {
+    expect(isProtocolPost('anyone', 'anywhere')).toBe(false)
   })
 })
