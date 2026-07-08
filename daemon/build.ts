@@ -1,13 +1,13 @@
 import { execSync, execFileSync } from 'child_process'
 import { resolve } from 'path'
 import { gateway } from './config.js'
-import { registry } from './sessions.js'
+import { registry, sessionEmoji } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
-import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
+import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge, formatStateLine } from './anchor-state.js'
 import { createStateMachine } from './state-machine.js'
 import { buildModel, resolveModelAlias } from '../shared/constants.js'
 
@@ -381,7 +381,9 @@ function onOwnerPosted(state: BuildState, text: string): void {
   const badge = formatRoundBadge('🔨', 'bottom', state.currentRound, state.rounds)
 
   // Post visible status
-  void gateway.send(state.ownerThreadId, `_${badge} Critic reviewing (${roundLabel})..._`).then(msg => {
+  const criticName = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName : undefined
+  void gateway.send(state.ownerThreadId, formatStateLine('🔨', 'build', formatRoundBadge('', 'bottom', state.currentRound, state.rounds),
+    criticName ? `${sessionEmoji(criticName)} ${criticName} (critic) is reviewing` : 'critic is reviewing')).then(msg => {
     state.messageIds.push(msg.id)
   }).catch(() => {})
 
@@ -409,7 +411,9 @@ function onCriticFeedback(state: BuildState, text: string): void {
   const badge = formatRoundBadge('🔨', 'top', state.currentRound, state.rounds)
 
   // Post visible status so the human knows it's the builder's turn
-  void gateway.send(state.ownerThreadId, `_${badge} Critic found issues. Builder's turn to fix (${roundLabel})._`).catch(() => {})
+  const builderName = registry.get(state.ownerSessionId)?.tmuxName
+  void gateway.send(state.ownerThreadId, formatStateLine('🔨', 'build', formatRoundBadge('', 'top', state.currentRound, state.rounds),
+    builderName ? `critic found issues — ${sessionEmoji(builderName)} ${builderName} (builder) is fixing` : "critic found issues — builder is fixing")).catch(() => {})
 
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',

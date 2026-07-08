@@ -1,13 +1,13 @@
 import { randomUUID } from 'crypto'
 import { gateway } from './config.js'
-import { registry } from './sessions.js'
+import { registry, sessionEmoji } from './sessions.js'
 import { doSpawnSession, killSession, killsInProgress } from './session-lifecycle.js'
 import { transport } from './bridge-transport.js'
 import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { reviewModel, resolveModelAlias } from '../shared/constants.js'
 import { createStateMachine } from './state-machine.js'
-import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
+import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge, formatStateLine } from './anchor-state.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -343,7 +343,9 @@ function onCriticPosted(state: ReviewState, text: string): void {
 
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
   const badge = formatRoundBadge('⚔️', 'top', state.currentRound, state.rounds)
-  const statusText = `_${badge} Critic posted (${roundLabel}). Owner defending..._`
+  const ownerName = registry.get(state.ownerSessionId)?.tmuxName
+  const statusText = formatStateLine('⚔️', 'review', formatRoundBadge('', 'top', state.currentRound, state.rounds),
+    ownerName ? `${sessionEmoji(ownerName)} ${ownerName} (owner) is defending` : 'owner is defending')
   if (state.statusMessageId) {
     void gateway.edit(state.ownerThreadId, state.statusMessageId, statusText).catch(() => {})
   } else {
@@ -364,7 +366,9 @@ function onOwnerPosted(state: ReviewState, text: string): void {
   state.currentRound++
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
   const badge = formatRoundBadge('⚔️', 'bottom', state.currentRound, state.rounds)
-  const statusText = `_${badge} Owner defended (${roundLabel}). Critic reviewing..._`
+  const criticName = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName : undefined
+  const statusText = formatStateLine('⚔️', 'review', formatRoundBadge('', 'bottom', state.currentRound, state.rounds),
+    criticName ? `${sessionEmoji(criticName)} ${criticName} (critic) is reviewing the defense` : 'critic is reviewing the defense')
   if (state.statusMessageId) {
     void gateway.edit(state.ownerThreadId, state.statusMessageId, statusText).catch(() => {})
   } else {
