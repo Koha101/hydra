@@ -572,5 +572,13 @@ registerProtocol('build', {
   onReply: onBuildReply,
   onDisconnect: onBuildParticipantDisconnect,
   onReconnect: onBuildParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
+    const state = buildId ? builds.get(buildId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'implementing' && sessionId === state.ownerSessionId) return BUILDER_SENTINEL
+    if (state.phase === 'reviewing' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    return null
+  },
 })
 

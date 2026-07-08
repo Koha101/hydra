@@ -534,4 +534,13 @@ registerProtocol('review', {
   onReply: onReviewReply,
   onDisconnect: onParticipantDisconnect,
   onReconnect: onParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
+    const state = reviewId ? reviews.get(reviewId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'critic_turn' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    if (state.phase === 'owner_turn' && sessionId === state.ownerSessionId) return OWNER_SENTINEL
+    if (state.phase === 'cleanup' && sessionId === state.criticSessionId) return SUMMARY_SENTINEL
+    return null
+  },
 })
