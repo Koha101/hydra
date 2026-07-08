@@ -10,6 +10,7 @@ import { createStateMachine } from './state-machine.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
 import { safeSend } from './util.js'
 import { dumpTranscript } from './transcript-dump.js'
+import { reviewSummaryFormat } from './prompts/review-summary.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -434,10 +435,7 @@ function completeReview(state: ReviewState): void {
       ``,
       `Use this format:`,
       `${SUMMARY_SENTINEL}`,
-      `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
-      `- ✅ issue — fixed/will fix`,
-      `- ⚠️ issue — acknowledged, deferred`,
-      `- ❌ issue — rebutted`,
+      ...reviewSummaryFormat(state.rounds),
     ].join('\n'),
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
   })
