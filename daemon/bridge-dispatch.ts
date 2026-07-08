@@ -5,7 +5,7 @@ import { registry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, maxChunkLimit, MAX_ATTACHMENT_BYTES } from './access.js'
 import { doSpawnSession, killSession } from './session-lifecycle.js'
-import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession } from './util.js'
+import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSendable, isAlive, tmuxHasSession, parseDuration } from './util.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
 
@@ -177,7 +177,11 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
         const model = (args.model as string | undefined)?.trim() || undefined
         if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
-        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, model ? { model } : undefined)
+        const budgetRaw = (args.phase_budget as string | undefined)?.trim() || undefined
+        const phaseBudgetMs = budgetRaw ? parseDuration(budgetRaw) ?? undefined : undefined
+        if (budgetRaw && !phaseBudgetMs) throw new Error(`invalid phase_budget "${budgetRaw}" — use e.g. "90s", "20m", "1h"`)
+        const opts = model || phaseBudgetMs ? { ...(model ? { model } : {}), ...(phaseBudgetMs ? { phaseBudgetMs } : {}) } : undefined
+        const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, opts)
         return { content: [{ type: 'text', text: `session spawned (name: ${result.name}, session_id: ${result.sessionId}, thread_id: ${result.threadId}${result.url ? `, url: ${result.url}` : ''})` }] }
       }
 

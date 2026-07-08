@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, parseDuration, extractPhaseBudget } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -249,5 +249,47 @@ describe('fallbackDescription', () => {
 
   test('empty string', () => {
     expect(fallbackDescription('')).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseDuration() / extractPhaseBudget()
+// ---------------------------------------------------------------------------
+
+describe('parseDuration', () => {
+  test('parses s/m/h units', () => {
+    expect(parseDuration('90s')).toBe(90_000)
+    expect(parseDuration('20m')).toBe(1_200_000)
+    expect(parseDuration('1h')).toBe(3_600_000)
+  })
+
+  test('rejects garbage', () => {
+    expect(parseDuration('banana')).toBeNull()
+    expect(parseDuration('20')).toBeNull()
+    expect(parseDuration('m20')).toBeNull()
+    expect(parseDuration('')).toBeNull()
+  })
+})
+
+describe('extractPhaseBudget', () => {
+  test('strips the flag and returns ms', () => {
+    expect(extractPhaseBudget('fix the bug --phase-budget 20m off main'))
+      .toEqual({ topic: 'fix the bug off main', budgetMs: 1_200_000 })
+  })
+
+  test('flag at start and equals form', () => {
+    expect(extractPhaseBudget('--phase-budget 90s quick check'))
+      .toEqual({ topic: 'quick check', budgetMs: 90_000 })
+    expect(extractPhaseBudget('audit logs --phase-budget=1h'))
+      .toEqual({ topic: 'audit logs', budgetMs: 3_600_000 })
+  })
+
+  test('no flag → topic unchanged', () => {
+    expect(extractPhaseBudget('plain topic')).toEqual({ topic: 'plain topic' })
+  })
+
+  test('unparseable duration stays in the topic (visible, not swallowed)', () => {
+    expect(extractPhaseBudget('task --phase-budget banana'))
+      .toEqual({ topic: 'task --phase-budget banana' })
   })
 })

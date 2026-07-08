@@ -51,6 +51,25 @@ export function getContextPercent(tmuxName: string): string {
   } catch { return '?' }
 }
 
+export function parseDuration(s: string): number | null {
+  const m = s.trim().match(/^(\d+)(s|m|h)$/i)
+  if (!m) return null
+  const n = parseInt(m[1], 10)
+  const unit = m[2].toLowerCase()
+  return n * (unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000)
+}
+
+// Strips a spawn-level `--phase-budget <dur>` flag from a topic string.
+// An unparseable duration is left in the topic on purpose — it surfaces in
+// the thread name instead of being silently dropped.
+export function extractPhaseBudget(topic: string): { topic: string; budgetMs?: number } {
+  const m = topic.match(/(^|\s)--phase-budget[= ](\d+[smh])(?=\s|$)/i)
+  if (!m) return { topic }
+  const budgetMs = parseDuration(m[2])
+  if (budgetMs == null) return { topic }
+  return { topic: topic.replace(m[0], m[1] ? ' ' : '').replace(/\s+/g, ' ').trim(), budgetMs }
+}
+
 export function chunk(text: string, limit: number, mode: 'length' | 'newline' | 'markdown'): string[] {
   if (text.length <= limit) return [text]
 
