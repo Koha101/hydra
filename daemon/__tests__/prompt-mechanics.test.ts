@@ -95,8 +95,9 @@ describe('shared mechanics — uniform across all protocol seeds', () => {
   test('cutoff line renders only when cutoffTs given', () => {
     const withCutoff = designPersonaPrompt({ ...base, persona: 'subtractor', cutoffTs: '2026-01-01T00:00:00Z' })
     const without = designPersonaPrompt({ ...base, persona: 'subtractor' })
-    expect(withCutoff).toContain('Only read messages posted BEFORE 2026-01-01T00:00:00Z.')
-    expect(without).not.toContain('Only read messages posted BEFORE')
+    expect(withCutoff).toContain('only read messages posted BEFORE 2026-01-01T00:00:00Z')
+    expect(withCutoff).toContain('This cutoff ends if you are later asked to critique a synthesized composite')
+    expect(without).not.toContain('only read messages posted BEFORE')
   })
 
   test('cadence renders per option', () => {
@@ -113,6 +114,11 @@ describe('persona specs — counter-steering invariants', () => {
   test('five personas, unique names', () => {
     expect(PERSONA_SPECS.length).toBe(5)
     expect(new Set(PERSONA_SPECS.map(s => s.name)).size).toBe(5)
+  })
+
+  test('names are unique after normalization — collisions double-include in refinement routing', () => {
+    const normed = PERSONA_SPECS.map(s => normalizePersonaName(s.name))
+    expect(new Set(normed).size).toBe(PERSONA_SPECS.length)
   })
 
   test('no two personas share orient, first move, evidence, or form', () => {

@@ -54,7 +54,10 @@ export function mechanicsBlock(opts: MechanicsOpts): string {
     `Your session_id is ${sessionId}.`,
     ``,
     `**Orient:** fetch_messages(channel="${threadId}", limit=100) is your window into this thread. ${orientTail}`,
-    ...(cutoffTs ? [`Only read messages posted BEFORE ${cutoffTs}. Later messages belong to other roles — reading them contaminates your independence.`] : []),
+    // The cutoff's grammar is per-phase: binding while forming your independent view
+    // (questions/proposal), void in refinement — the composite you are asked to
+    // critique is posted AFTER it. An unscoped cutoff forbids the refinement task.
+    ...(cutoffTs ? [`While forming your own questions and proposal: only read messages posted BEFORE ${cutoffTs} — later messages are other roles' work, and reading them contaminates your independence. This cutoff ends if you are later asked to critique a synthesized composite: that composite is posted after the cutoff and is your assigned reading.`] : []),
     ``,
     `**Speak:** post to the thread with reply(chat_id="${threadId}").`,
     ...sentinelLines,
