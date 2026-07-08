@@ -12,6 +12,9 @@ export const KNOWN_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
 ])
 
+/** Valid reasoning-effort levels for `/effort` (per `claude --help`). */
+export const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+
 /** Short aliases for chat commands like `spawn sonnet: topic`. */
 export const MODEL_ALIASES: Record<string, string> = {
   'sonnet': 'claude-sonnet-4-6[1m]',

@@ -368,11 +368,9 @@ export class DiscordGateway implements ChatGateway {
     if (botReaction) await botReaction.users.remove(this.client.user!.id)
   }
 
-  async typing(channelId: string): Promise<void> {
-    const ch = await this.fetchTextChannel(channelId)
-    if ('sendTyping' in ch) {
-      await (ch as any).sendTyping()
-    }
+  async typing(_channelId: string): Promise<void> {
+    // Disabled: the bot typing indicator can trip Discord error 40062 and a
+    // retry storm that rate-limits/locks the bot. Ack is done via reactions.
   }
 
   async fetchChannel(id: string): Promise<ChannelInfo> {
