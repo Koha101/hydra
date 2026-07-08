@@ -507,7 +507,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     initiator: opts?.initiator,
   })
   void safeSend(threadId!, spawnLine)
-  if (chatId && chatId !== threadId) void safeSend(chatId, spawnLine)
+  // Echo to the causing thread — but only when it IS a thread we track
+  // (a session or protocol thread). A plain channel already shows the new
+  // thread's anchor; echoing there would double-announce.
+  if (chatId && chatId !== threadId && (registry.getByThread(chatId) || threadRegistry.get(chatId))) {
+    void safeSend(chatId, spawnLine)
+  }
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
 }
