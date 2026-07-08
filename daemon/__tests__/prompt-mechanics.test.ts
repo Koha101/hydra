@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 
 import { mechanicsBlock } from '../prompts/mechanics.js'
-import { designPersonaPrompt, PERSONA_SPECS, PERSONA_NAMES, personaQuestionsTag, personaProposalTag } from '../prompts/design-personas.js'
+import { designPersonaPrompt, PERSONA_SPECS, PERSONA_NAMES, normalizePersonaName, personaQuestionsTag, personaProposalTag } from '../prompts/design-personas.js'
 import { designSynthesizerPrompt } from '../prompts/design-synthesizer.js'
 import { designAuditorPrompt } from '../prompts/design-auditor.js'
 import { designBriefPrompt } from '../prompts/design-brief.js'
@@ -102,7 +102,7 @@ describe('shared mechanics — uniform across all protocol seeds', () => {
   test('cadence renders per option', () => {
     const one = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'one-message' })
     const round = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-round' })
-    const phase = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-phase' })
+    const phase = mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-phase', orient: 'Read X first.' })
     expect(one).toContain('Post exactly ONE protocol message.')
     expect(round).toContain('One protocol message per round.')
     expect(phase).toContain('Exactly ONE protocol message per phase.')
@@ -142,6 +142,21 @@ describe('persona specs — counter-steering invariants', () => {
 
   test('unknown persona is rejected at the boundary', () => {
     expect(() => designPersonaPrompt({ ...base, persona: 'ghost' as never })).toThrow('unknown persona')
+  })
+})
+
+describe('normalizePersonaName — contract frozen', () => {
+  test('collapses case, hyphens, underscores, and spaces', () => {
+    for (const v of ['Crash First', 'crash_first', 'CRASH-FIRST', 'crash first']) {
+      expect(normalizePersonaName(v)).toBe('crashfirst')
+    }
+    expect(normalizePersonaName('subtractor')).toBe('subtractor')
+  })
+})
+
+describe('mechanicsBlock — pool roles must supply orient', () => {
+  test('per-phase cadence without orient throws', () => {
+    expect(() => mechanicsBlock({ ...mech, role: 'r', protocol: 'p', tag: '[a→b]', cadence: 'per-phase' })).toThrow('requires an orient')
   })
 })
 

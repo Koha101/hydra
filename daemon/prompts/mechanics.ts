@@ -34,6 +34,11 @@ export function mechanicsBlock(opts: MechanicsOpts): string {
       ? 'One protocol message per round.'
       : 'Exactly ONE protocol message per phase.'
 
+  // Pool roles (per-phase cadence) must position themselves — uniform illumination
+  // is the amplification precondition; the default is singleton-only by contract.
+  if (cadence === 'per-phase' && !orient) {
+    throw new Error(`mechanicsBlock: pool role '${role}' requires an orient (illumination order is position)`)
+  }
   const orientTail = orient
     ?? 'Read every code file, wiki article, config, or document it references before forming a view.'
 
