@@ -14,8 +14,43 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ActionRowBuilder,
+  ApplicationCommandOptionType,
   type Message,
+  type ChatInputCommandInteraction,
 } from 'discord.js'
+
+// Native Discord slash commands (registered per-guild for instant availability).
+// Each maps to hydra's existing text command via slashToText() below.
+const STR = ApplicationCommandOptionType.String
+const HYDRA_SLASH_COMMANDS = [
+  { name: 'sessions', description: 'List active sessions' },
+  { name: 'context', description: 'Show the session\'s context usage' },
+  { name: 'clear', description: 'Wipe the session\'s conversation context (in place)' },
+  { name: 'restart', description: 'Restart the daemon (byte keeps its context)' },
+  { name: 'reboot', description: 'Full restart: daemon + a fresh byte process' },
+  { name: 'health', description: 'Daemon health' },
+  { name: 'model', description: 'Switch the session model', options: [
+    { name: 'model', description: 'Model or alias', type: STR, required: true,
+      choices: ['fable', 'opus', 'sonnet', 'haiku'].map(m => ({ name: m, value: m })) }] },
+  { name: 'effort', description: 'Set reasoning effort', options: [
+    { name: 'level', description: 'Effort level', type: STR, required: true,
+      choices: ['low', 'medium', 'high', 'xhigh', 'max'].map(m => ({ name: m, value: m })) }] },
+  { name: 'ultracode', description: 'Toggle ultracode mode (xhigh + auto workflows)', options: [
+    { name: 'mode', description: 'on or off', type: STR, required: true,
+      choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] }] },
+  { name: 'kill', description: 'Kill a session by name', options: [
+    { name: 'name', description: 'Session name (e.g. pulse)', type: STR, required: true }] },
+  { name: 'spawn', description: 'Spawn an isolated session', options: [
+    { name: 'topic', description: 'What the session should work on', type: STR, required: true }] },
+]
+
+/** Translate a slash interaction into hydra's text-command form. */
+function slashToText(interaction: ChatInputCommandInteraction): string {
+  const name = interaction.commandName
+  if (name === 'spawn') return `spawn: ${interaction.options.getString('topic') ?? ''}`
+  const arg = interaction.options.data[0]?.value
+  return arg !== undefined ? `/${name} ${arg}` : `/${name}`
+}
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { sanitizeFilename, COUNT_EMOJI, SUPERSCRIPT } from './gateway.js'
 import { GatewayHealth } from './daemon/gateway-health.js'
@@ -149,6 +184,10 @@ export class DiscordGateway implements ChatGateway {
     })
 
     this.client.on('interactionCreate', async interaction => {
+      if (interaction.isChatInputCommand()) {
+        await this.handleSlashCommand(interaction)
+        return
+      }
       if (!interaction.isButton()) return
       if (!this.buttonClickHandler) return
 
@@ -235,6 +274,7 @@ export class DiscordGateway implements ChatGateway {
     await new Promise<void>((resolve) => {
       this.client.once(Events.ClientReady, c => {
         process.stderr.write(`discord gateway: connected as ${c.user.tag}\n`)
+        void this.registerSlashCommands(c)
         resolve()
       })
       this.client.login(token).catch(err => {
@@ -688,6 +728,50 @@ export class DiscordGateway implements ChatGateway {
       effectiveThreadId: msg.channel.isThread() ? msg.channelId : (msg.thread?.id ?? null),
       attachments: atts,
       createdAt: msg.createdAt,
+    }
+  }
+
+  private async registerSlashCommands(c: Client<true>): Promise<void> {
+    try {
+      let n = 0
+      for (const guild of c.guilds.cache.values()) {
+        await guild.commands.set(HYDRA_SLASH_COMMANDS as never)
+        n++
+      }
+      process.stderr.write(`discord gateway: registered ${HYDRA_SLASH_COMMANDS.length} slash commands in ${n} guild(s)\n`)
+    } catch (err) {
+      process.stderr.write(`discord gateway: slash registration failed: ${err}\n`)
+    }
+  }
+
+  private async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const text = slashToText(interaction)
+    // Ack within Discord's 3s window; the real result is posted by the command handler.
+    await interaction.reply({ content: `▶️ \`${text}\``, ephemeral: true }).catch(() => {})
+    if (!this.messageHandler) return
+    void this.messageHandler(this.interactionToInbound(interaction, text)).catch(e =>
+      process.stderr.write(`discord gateway: slash handler error: ${e}\n`))
+  }
+
+  private interactionToInbound(interaction: ChatInputCommandInteraction, content: string): InboundMessage {
+    const ch = interaction.channel
+    const isThread = ch?.isThread?.() ?? false
+    return {
+      id: interaction.id,
+      channelId: interaction.channelId,
+      authorId: interaction.user.id,
+      authorUsername: interaction.user.username,
+      content,
+      isDM: ch?.isDMBased?.() ?? false,
+      isThread,
+      isBot: false,
+      parentChannelId: isThread ? ((ch as { parentId?: string }).parentId ?? null) : null,
+      hasExistingThread: false,
+      existingThreadId: null,
+      referenceMessageId: null,
+      effectiveThreadId: isThread ? interaction.channelId : null,
+      attachments: [],
+      createdAt: interaction.createdAt,
     }
   }
 }
