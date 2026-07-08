@@ -516,7 +516,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
 
     state.criticSessionId = result.sessionId
     sessionToBuild.set(result.sessionId, state.buildId)
-    void gateway.edit(state.ownerThreadId, statusMsg.id, `_Critic (**${result.name}**) reviewing..._`).catch(() => {})
+    void gateway.edit(state.ownerThreadId, statusMsg.id, formatStateLine('🔨', 'build', formatRoundBadge('', 'bottom', state.currentRound, state.rounds), `${sessionEmoji(result.name)} ${result.name} (critic) is reviewing`)).catch(() => {})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: build critic spawn failed: ${msg}\n`)
