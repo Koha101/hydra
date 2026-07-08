@@ -18,6 +18,7 @@ import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { isThreadOccupied } from './protocol-registry.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
+import { handleModelIntercept, handleEffortIntercept, handleContextIntercept } from './commands/session-config.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { pendingPermissions } from './permission.js'
@@ -346,6 +347,24 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const recoverMatch = msg.content.match(/^(?:recover|\/recover)(?:\s+(.+))?$/i)
     if (recoverMatch) {
       void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
+      return
+    }
+
+    const modelMatch = msg.content.match(/^\/model\s+(\S+)\s*$/i)
+    if (modelMatch) {
+      void handleModelIntercept(msg, modelMatch[1])
+      return
+    }
+
+    const effortMatch = msg.content.match(/^\/effort\s+(\S+)\s*$/i)
+    if (effortMatch) {
+      void handleEffortIntercept(msg, effortMatch[1])
+      return
+    }
+
+    const contextMatch = msg.content.match(/^\/context\s*$/i)
+    if (contextMatch) {
+      void handleContextIntercept(msg)
       return
     }
 

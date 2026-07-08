@@ -90,6 +90,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
   const inner = [
     `cd ${shq(cfg.byteCwd)}`,
+    `export PATH="$HOME/.bun/bin:$PATH"`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
