@@ -5,6 +5,7 @@ import { join, resolve } from 'path'
 import { homedir } from 'os'
 import { EventEmitter } from 'events'
 import { marketplaceName } from '../shared/constants.js'
+import { isGoneError } from '../shared/discord-errors.js'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH, STATE_DIR } from './config.js'
 import { registry, sessionEmoji, threadRegistry } from './sessions.js'
@@ -67,7 +68,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
       try {
         await gateway.send(info.threadId, `_${reason}_`)
       } catch (err) {
-        process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
+        if (!isGoneError(err)) process.stderr.write(`daemon: failed to post session end message: ${err}\n`)
       }
 
       refreshSessionVisual(info.threadId, { state: 'killed' })
@@ -249,7 +250,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
             anchorMessageId = messageId
             anchorChannelId = targetChannelId!
             process.stderr.write(`daemon: joined existing thread ${threadId} on message ${messageId}\n`)
-          } else {
+          } else if (!isGoneError(err)) {
             process.stderr.write(`daemon: createThread on message failed: ${err}\n`)
           }
         }

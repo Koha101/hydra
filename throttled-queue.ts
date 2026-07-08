@@ -17,6 +17,10 @@ export class ThrottledQueue<V> {
     private action: (key: string, value: V) => Promise<void>,
     private drainMs: number,
     private maxRetries: number = 3,
+    // Classifies an error as permanent (e.g. the target was deleted) so it's dropped
+    // immediately — no retry, no log — instead of churning through maxRetries on a
+    // target that will never come back.
+    private isPermanent?: (err: unknown) => boolean,
   ) {}
 
   enqueue(key: string, value: V, priority: 'high' | 'normal' = 'normal'): void {
@@ -40,6 +44,10 @@ export class ThrottledQueue<V> {
     this.queue.delete(nextKey)
 
     this.action(nextKey, value).catch(err => {
+      if (this.isPermanent?.(err)) {
+        this.retries.delete(nextKey!)
+        return
+      }
       const attempts = (this.retries.get(nextKey!) ?? 0) + 1
       if (attempts < this.maxRetries && !this.queue.has(nextKey!)) {
         process.stderr.write(`throttled-queue: action failed (retry ${attempts}/${this.maxRetries}): ${err instanceof Error ? err.message : String(err)}\n`)

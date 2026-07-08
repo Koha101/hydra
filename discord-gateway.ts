@@ -69,6 +69,7 @@ import type {
   SessionVisualOpts,
 } from './gateway.js'
 import { ThrottledQueue } from './throttled-queue.js'
+import { isGoneError } from './shared/discord-errors.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200
@@ -597,11 +598,12 @@ export class DiscordGateway implements ChatGateway {
   // In practice, natural gaps between review turns reduce the effective wait.
   // Scope (per-channel vs global to the bot) is unconfirmed empirically.
   // discord.js retries 429s internally. ThrottledQueue coalesces rapid updates
-  // (latest value wins) and retries on non-429 failures (network, deleted thread).
+  // (latest value wins) and retries transient failures (network); permanent ones
+  // (deleted thread → isGoneError) are dropped without retry.
   private renameQueue = new ThrottledQueue<string>(async (threadId, name) => {
     const ch = await this.client.channels.fetch(threadId)
     if (ch?.isThread()) await ch.setName(name.slice(0, 100))
-  }, 1_000)
+  }, 1_000, 3, isGoneError)
 
   private reactionQueue = new ThrottledQueue<{ channelId: string; emoji: string; countEmoji?: string }>(
     async (messageId, { channelId, emoji, countEmoji }) => {
@@ -615,7 +617,7 @@ export class DiscordGateway implements ChatGateway {
       await Promise.allSettled(removePromises)
       await msg.react(emoji).catch((e: unknown) => process.stderr.write(`discord gateway: react failed: ${e}\n`))
       if (countEmoji) await msg.react(countEmoji).catch((e: unknown) => process.stderr.write(`discord gateway: react countEmoji failed: ${e}\n`))
-    }, 500,
+    }, 500, 3, isGoneError,
   )
 
   async renameThread(threadId: string, name: string, priority: 'high' | 'normal' = 'normal'): Promise<void> {
