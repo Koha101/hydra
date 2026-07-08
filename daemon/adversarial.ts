@@ -8,8 +8,7 @@ import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { reviewModel, resolveModelAlias } from '../shared/constants.js'
 import { createStateMachine } from './state-machine.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge } from './anchor-state.js'
-import { loadAccess } from './access.js'
-import { resolveSummaryFormat } from './prompts/summary-formats.js'
+import { reviewSummaryFormat } from './prompts/review-summary.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -424,7 +423,6 @@ function completeReview(state: ReviewState): void {
     finalizeReview(state)
   }, 5 * 60 * 1000)
 
-  const format = resolveSummaryFormat(loadAccess().summaryFormat)
   transport.sendOrQueue(state.ownerSessionId, {
     type: 'notification',
     content: [
@@ -433,10 +431,9 @@ function completeReview(state: ReviewState): void {
       ``,
       `**Message routing:** Your first line MUST be \`${SUMMARY_SENTINEL}\`. Messages without this tag won't complete the review.`,
       ``,
-      format.preamble,
+      `Use this format:`,
       `${SUMMARY_SENTINEL}`,
-      `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
-      ...format.lines,
+      ...reviewSummaryFormat(state.rounds),
     ].join('\n'),
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
   })

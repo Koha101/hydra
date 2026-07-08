@@ -34,7 +34,6 @@ export type Access = {
   replyToMode?: 'off' | 'first' | 'all'
   textChunkLimit?: number
   chunkMode?: 'length' | 'newline' | 'markdown'
-  summaryFormat?: string  // review summary format name (see prompts/summary-formats.ts); default six-questions
   defaultListen?: boolean
 }
 
