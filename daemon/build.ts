@@ -505,6 +505,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
   const criticModel = state.model ?? buildModel()
   try {
     const result = await doSpawnSession(`Build CRITIC (${state.rounds} rounds)`, undefined, undefined, {
+      trigger: 'build',
       joinThread: state.ownerThreadId,
       model: criticModel,
       promptBuilder: (sessionId, tmuxName) =>

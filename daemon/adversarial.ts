@@ -515,6 +515,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   const criticModel = state.model ?? reviewModel()
   try {
     const result = await doSpawnSession(`Adversarial review CRITIC (${state.rounds} rounds)`, undefined, undefined, {
+      trigger: 'review',
       joinThread: state.ownerThreadId,
       model: criticModel,
       promptBuilder: (sessionId, tmuxName) =>

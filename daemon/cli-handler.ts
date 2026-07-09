@@ -89,7 +89,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
   let result
   try {
-    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral })
+    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral, trigger: 'CLI' })
   } catch (err) {
     updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err

@@ -1,6 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription, parseDuration, extractPhaseBudget } from '../util.js'
-import { chunk, formatDuration, fallbackDescription, renderCastHeader } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, renderCastHeader, formatSpawnLine, parseDuration, extractPhaseBudget } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -254,6 +253,25 @@ describe('fallbackDescription', () => {
 })
 
 // ---------------------------------------------------------------------------
+// formatSpawnLine()
+// ---------------------------------------------------------------------------
+
+describe('formatSpawnLine', () => {
+  test('role spawn with initiator', () => {
+    expect(formatSpawnLine({ roleLabel: 'critic', emoji: '🌊', name: 'drift', model: 'claude-x', trigger: 'review', initiator: 'dan' }))
+      .toBe('> ⚡ spawned [ The Critic • 🌊 drift ] · model `claude-x` · by review from dan')
+  })
+
+  test('plain spawn without role', () => {
+    expect(formatSpawnLine({ emoji: '🟦', name: 'pixel', model: 'claude-x', trigger: 'spawn:', initiator: 'dan' }))
+      .toBe('> ⚡ spawned [ 🟦 pixel ] · model `claude-x` · by spawn: from dan')
+  })
+
+  test('no initiator omits from-clause; multiword role title-cases', () => {
+    expect(formatSpawnLine({ roleLabel: 'contract-lawyer', emoji: '🗺️', name: 'atlas', model: 'm', trigger: 'design' }))
+      .toBe('> ⚡ spawned [ The Contract-Lawyer • 🗺️ atlas ] · model `m` · by design')
+  })
+})
 // parseDuration() / extractPhaseBudget()
 // ---------------------------------------------------------------------------
 
@@ -343,5 +361,3 @@ describe('renderCastHeader', () => {
       .toBe('[ The Critic • 🌊 bad_nm_e ]\nx')
   })
 })
-
-

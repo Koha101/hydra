@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { EventEmitter } from 'events'
 
 import { gateway, PLATFORM, DEFAULT_SESSION_CHANNEL, CLAUDE_CONFIG, SOCK_PATH } from './config.js'
+import { safeSend, formatSpawnLine } from './util.js'
 import { registry, sessionEmoji, threadRegistry } from './sessions.js'
 import type { SessionInfo, SessionCapabilities, SpawnOpts, SpawnResult } from './sessions.js'
 import { transport } from './bridge-transport.js'
@@ -506,8 +507,22 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   refreshSessionVisual(threadId!, { state: respawnCount > 0 ? 'zombie' : 'live' })
 
-  if (!isJoin) {
-    void gateway.send(threadId!, `_model: \`${model}\`_`).catch(() => {})
+  // Deterministic spawn visibility: every tmux announces itself, from the one
+  // function all spawn paths share. Echoed to the causing thread when distinct.
+  const spawnLine = formatSpawnLine({
+    roleLabel: opts?.memberLabel,
+    emoji: sessionEmoji(tmuxName),
+    name: tmuxName,
+    model,
+    trigger: opts?.trigger ?? originType,
+    initiator: opts?.initiator,
+  })
+  void safeSend(threadId!, spawnLine)
+  // Echo to the causing thread — but only when it IS a thread we track
+  // (a session or protocol thread). A plain channel already shows the new
+  // thread's anchor; echoing there would double-announce.
+  if (chatId && chatId !== threadId && (registry.getByThread(chatId) || threadRegistry.get(chatId))) {
+    void safeSend(chatId, spawnLine)
   }
 
   return { name: tmuxName, sessionId, threadId: threadId!, url }
