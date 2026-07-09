@@ -11,6 +11,7 @@ import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-registry.js'
+import { maybeNudgeMissingSentinel } from './sentinel-nudge.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
@@ -296,6 +297,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           }
 
           dispatchReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
+          maybeNudgeMissingSentinel(conn.sessionId, replyText, args.chat_id as string)
 
           // Ephemeral session: kill on [done] sentinel
           if (replyInfo?.ephemeral && /^\[done\]$/m.test(replyText)) {

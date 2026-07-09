@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription, formatSpawnLine } from '../util.js'
+import { chunk, formatDuration, fallbackDescription, renderCastHeader, formatSpawnLine, parseDuration, extractPhaseBudget } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -272,3 +272,94 @@ describe('formatSpawnLine', () => {
       .toBe('> ⚡ spawned [ The Contract-Lawyer • 🗺️ atlas ] · model `m` · by design')
   })
 })
+// parseDuration() / extractPhaseBudget()
+// ---------------------------------------------------------------------------
+
+describe('parseDuration', () => {
+  test('parses s/m/h units', () => {
+    expect(parseDuration('90s')).toBe(90_000)
+    expect(parseDuration('20m')).toBe(1_200_000)
+    expect(parseDuration('1h')).toBe(3_600_000)
+  })
+
+  test('rejects garbage', () => {
+    expect(parseDuration('banana')).toBeNull()
+    expect(parseDuration('20')).toBeNull()
+    expect(parseDuration('m20')).toBeNull()
+    expect(parseDuration('')).toBeNull()
+  })
+
+  test('rejects zero and setTimeout-overflowing values', () => {
+    expect(parseDuration('0m')).toBeNull()
+    expect(parseDuration('0s')).toBeNull()
+    expect(parseDuration('25h')).toBeNull()
+    expect(parseDuration('999999h')).toBeNull()
+    expect(parseDuration('24h')).toBe(86_400_000)
+  })
+})
+
+describe('extractPhaseBudget', () => {
+  test('strips the flag and returns ms', () => {
+    expect(extractPhaseBudget('fix the bug --phase-budget 20m off main'))
+      .toEqual({ topic: 'fix the bug off main', budgetMs: 1_200_000 })
+  })
+
+  test('flag at start and equals form', () => {
+    expect(extractPhaseBudget('--phase-budget 90s quick check'))
+      .toEqual({ topic: 'quick check', budgetMs: 90_000 })
+    expect(extractPhaseBudget('audit logs --phase-budget=1h'))
+      .toEqual({ topic: 'audit logs', budgetMs: 3_600_000 })
+  })
+
+  test('no flag → topic unchanged', () => {
+    expect(extractPhaseBudget('plain topic')).toEqual({ topic: 'plain topic' })
+  })
+
+  test('unparseable duration stays in the topic (visible, not swallowed)', () => {
+    expect(extractPhaseBudget('task --phase-budget banana'))
+      .toEqual({ topic: 'task --phase-budget banana' })
+  })
+})
+// renderCastHeader()
+// ---------------------------------------------------------------------------
+
+const drift = { name: 'drift', emoji: '🌊', guest: true }
+const pixel = { name: 'pixel', emoji: '🟦', guest: false }
+
+describe('renderCastHeader', () => {
+  test('routing tag becomes a cast header, guest annotated', () => {
+    expect(renderCastHeader('[critic→owner]\nFinding 1: bug', drift))
+      .toBe('[ The Critic • 🌊 drift ]\n↳ guest in thread\nFinding 1: bug')
+  })
+
+  test('self (thread-owning session) gets no annotation', () => {
+    expect(renderCastHeader('[owner→critic]\nRebuttal…', pixel))
+      .toBe('[ The Owner • 🟦 pixel ]\nRebuttal…')
+  })
+
+  test('multiword roles title-case per segment', () => {
+    expect(renderCastHeader('[contract-lawyer→questions]\nQ1', { name: 'atlas', emoji: '🗺️', guest: true }))
+      .toBe('[ The Contract-Lawyer • 🗺️ atlas ]\n↳ guest in thread\nQ1')
+  })
+
+  test('content on the tag line survives on its own line', () => {
+    expect(renderCastHeader('[builder→critic] done with round', pixel))
+      .toBe('[ The Builder • 🟦 pixel ]\ndone with round')
+  })
+
+  test('move sentinels without an arrow are untouched', () => {
+    expect(renderCastHeader('[summary]\nAll good.', pixel)).toBe('[summary]\nAll good.')
+    expect(renderCastHeader('[done]', pixel)).toBe('[done]')
+  })
+
+  test('free-form posts are untouched', () => {
+    expect(renderCastHeader('just chatting here', drift)).toBe('just chatting here')
+  })
+
+  test('sender names are sanitized', () => {
+    expect(renderCastHeader('[critic→owner]\nx', { name: 'bad]nm\ne', emoji: '🌊', guest: false }))
+      .toBe('[ The Critic • 🌊 bad_nm_e ]\nx')
+  })
+})
+
+
