@@ -1,4 +1,4 @@
-import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
+import { gateway, INBOX_DIR } from './config.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
@@ -656,21 +656,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
         }
       }
     }
-  }
-
-  const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
-  if (permMatch) {
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'permission_response',
-        request_id: permMatch[2]!.toLowerCase(),
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      })
-    }
-    const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
-    void gateway.react(msg.channelId, msg.id, emoji).catch(() => {})
-    return
   }
 
   void gateway.typing(msg.channelId).catch(() => {})

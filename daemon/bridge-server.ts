@@ -7,15 +7,12 @@ import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool } from './bridge-dispatch.js'
 import { computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-tools.js'
 import { spawnModel } from '../shared/constants.js'
-import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
-import { loadAccess } from './access.js'
 import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-registry.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
 import { shouldHoldIncumbentMain } from './main-guard.js'
-import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -320,28 +317,6 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           isError: true,
         })
       })
-      break
-    }
-
-    case 'permission_response': {
-      break
-    }
-
-    case 'permission_request': {
-      const { request_id, tool_name, description, input_preview } = msg
-      pendingPermissions.set(request_id, { tool_name, description, input_preview })
-      const access = loadAccess()
-      const text = `Permission: ${tool_name}`
-      const buttons: ButtonDef[] = [
-        { id: `perm:more:${request_id}`, label: 'See more', style: 'secondary' },
-        { id: `perm:allow:${request_id}`, label: 'Allow', style: 'success', emoji: '✅' },
-        { id: `perm:deny:${request_id}`, label: 'Deny', style: 'danger', emoji: '❌' },
-      ]
-      for (const userId of access.allowFrom) {
-        void gateway.sendDM(userId, text, buttons).catch(e => {
-          process.stderr.write(`daemon: permission_request send to ${userId} failed: ${e}\n`)
-        })
-      }
       break
     }
 
