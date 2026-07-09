@@ -87,6 +87,7 @@ export type ThreadMetadata = {
   totalMessages: number
   sessionHistory: ThreadSessionEntry[]
   listenOverride?: boolean
+  parentChannelId?: string
 }
 
 export type SpawnOpts = {
@@ -366,7 +367,7 @@ export class ThreadRegistry {
     anchorMessageId?: string, threadUrl?: string, topic: string,
     respawnCount: number, sessionId: string, tmuxName: string,
     originType: 'spawn' | 'fork' | 'handoff' | 'resurrect', originFrom?: string,
-    model?: string,
+    model?: string, parentChannelId?: string,
   }): void {
     const now = Date.now()
     let thread = this.threads.get(threadId)
@@ -381,6 +382,7 @@ export class ThreadRegistry {
         lastActive: now,
         totalMessages: 0,
         sessionHistory: [],
+        parentChannelId: opts.parentChannelId,
       }
       this.threads.set(threadId, thread)
     } else {

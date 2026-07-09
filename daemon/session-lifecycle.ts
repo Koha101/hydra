@@ -38,10 +38,18 @@ const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 // Listen state resolution: thread override → channel group → global → false
 // ---------------------------------------------------------------------------
 
-function resolveListenState(threadId: string, channelId?: string, parentChannelId?: string): boolean {
+export function resolveListenState(threadId: string, channelId?: string): boolean {
   const thread = threadRegistry.get(threadId)
-  if (thread?.listenOverride !== undefined) return thread.listenOverride
-  const access = loadAccess()
+  return resolveListenStatePure(channelId, loadAccess(), thread?.listenOverride, thread?.parentChannelId)
+}
+
+export function resolveListenStatePure(
+  channelId: string | undefined,
+  access: { groups: Record<string, { defaultListen?: boolean }>; defaultListen?: boolean },
+  listenOverride?: boolean,
+  parentChannelId?: string,
+): boolean {
+  if (listenOverride !== undefined) return listenOverride
   for (const id of [channelId, parentChannelId]) {
     if (id) {
       const group = access.groups[id]
@@ -476,7 +484,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
-    tmuxName, listening: resolveListenState(threadId!, chatId, parentChannelId), originType, originFrom, capabilities,
+    tmuxName, listening: resolveListenState(threadId!, chatId), originType, originFrom, capabilities,
     threadUrl: url || undefined,
     ...(respawnCount > 0 ? { respawnCount } : {}),
     ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
@@ -506,6 +514,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       originType,
       originFrom,
       model,
+      parentChannelId,
     })
   }
 
