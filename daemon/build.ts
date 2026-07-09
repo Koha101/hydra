@@ -10,6 +10,7 @@ import { buildCriticPrompt } from './prompts/build-critic.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge, formatStateLine } from './anchor-state.js'
 import { createStateMachine } from './state-machine.js'
 import { buildModel, resolveModelAlias } from '../shared/constants.js'
+import { safeSend } from './util.js'
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 
@@ -194,11 +195,11 @@ export async function startBuild(
   try {
     const taskLine = task ? `\nTask: **${task}**` : ''
     const wtLine = worktreePath ? `\nWorktree: \`${worktreePath}\`` : ''
-    const ann = await gateway.send(ownerThreadId, [
+    const annIds = await safeSend(ownerThreadId, [
       `**Build** — ${rounds} round${rounds > 1 ? 's' : ''}`,
       `Owner implements, critic reviews.${taskLine}${wtLine}`,
     ].join('\n'))
-    state.messageIds.push(ann.id)
+    state.messageIds.push(...annIds)
 
     // Tell owner to start implementing
     transport.sendOrQueue(ownerSessionId, {
@@ -245,7 +246,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
   }
 
   refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `Build cancelled.`)
+  await safeSend(state.ownerThreadId, `Build cancelled.`)
 
   cleanupWorktree(state)
 }
@@ -378,7 +379,6 @@ export function onBuildParticipantReconnect(sessionId: string): void {
 function onOwnerPosted(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
-  const badge = formatRoundBadge('🔨', 'bottom', state.currentRound, state.rounds)
 
   // Post visible status
   const criticName = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName : undefined
@@ -408,7 +408,6 @@ function onOwnerPosted(state: BuildState, text: string): void {
 function onCriticFeedback(state: BuildState, text: string): void {
   if (state.timeout) clearTimeout(state.timeout)
   const roundLabel = `Round ${state.currentRound}/${state.rounds}`
-  const badge = formatRoundBadge('🔨', 'top', state.currentRound, state.rounds)
 
   // Post visible status so the human knows it's the builder's turn
   const builderName = registry.get(state.ownerSessionId)?.tmuxName
@@ -516,11 +515,13 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
 
     state.criticSessionId = result.sessionId
     sessionToBuild.set(result.sessionId, state.buildId)
-    void gateway.edit(state.ownerThreadId, statusMsg.id, formatStateLine('🔨', 'build', formatRoundBadge('', 'bottom', state.currentRound, state.rounds), `${sessionEmoji(result.name)} ${result.name} (critic) is reviewing`)).catch(() => {})
+    const reviewingAction = `${sessionEmoji(result.name)} ${result.name} (critic) is reviewing`
+    void gateway.edit(state.ownerThreadId, statusMsg.id,
+      formatStateLine('🔨', 'build', formatRoundBadge('', 'bottom', state.currentRound, state.rounds), reviewingAction)).catch(() => {})
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: build critic spawn failed: ${msg}\n`)
-    await gateway.send(state.ownerThreadId, `Failed to spawn build critic: ${msg}. Build cancelled.`)
+    await safeSend(state.ownerThreadId, `Failed to spawn build critic: ${msg}. Build cancelled.`)
     void cancelBuild(state.buildId)
   }
 }
@@ -564,7 +565,7 @@ function resetTimeout(state: BuildState): void {
     process.stderr.write(`daemon: build turn timed out (${whose})\n`)
     const ci = state.criticSessionId ? registry.get(state.criticSessionId) : undefined
     const debugHint = ci ? ` Check \`tmux attach -t ${ci.tmuxName}\` to see what happened.` : ''
-    await gateway.send(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
+    await safeSend(state.ownerThreadId, `Build timed out waiting for ${whose}.${debugHint} Cancelling.`)
     await cancelBuild(state.buildId)
   }, timeoutMs)
 }
@@ -575,5 +576,13 @@ registerProtocol('build', {
   onReply: onBuildReply,
   onDisconnect: onBuildParticipantDisconnect,
   onReconnect: onBuildParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const buildId = sessionToBuild.get(sessionId) ?? ownerToBuild.get(sessionId)
+    const state = buildId ? builds.get(buildId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'implementing' && sessionId === state.ownerSessionId) return BUILDER_SENTINEL
+    if (state.phase === 'reviewing' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    return null
+  },
 })
 

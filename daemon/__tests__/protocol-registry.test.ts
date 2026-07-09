@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import {
-  registerProtocol, isThreadOccupied,
+  registerProtocol, isThreadOccupied, isProtocolPost, getExpectedTag,
   dispatchReply, dispatchDisconnect, dispatchReconnect,
   _resetForTesting,
 } from '../protocol-registry.js'
@@ -93,3 +93,54 @@ describe('dispatch', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('getExpectedTag', () => {
+  test('null when no protocol claims the session', () => {
+    registerProtocol('review', makeHooks())
+    expect(getExpectedTag('nobody', 'thread-1')).toBeNull()
+  })
+
+  test('null when the claiming protocol has no expectedTag hook', () => {
+    registerProtocol('review', makeHooks({ isParticipant: () => true }))
+    expect(getExpectedTag('s1', 'thread-1')).toBeNull()
+  })
+
+  test('delegates to the claiming protocol with sessionId and chatId', () => {
+    const seen: string[] = []
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 's1',
+      expectedTag: (id, chat) => { seen.push(`${id}:${chat}`); return '[x→questions]' },
+    }))
+    expect(getExpectedTag('s1', 'thread-9')).toBe('[x→questions]')
+    expect(seen).toEqual(['s1:thread-9'])
+  })
+})
+
+describe('isProtocolPost', () => {
+  test('true when the claiming protocol also occupies the target thread', () => {
+    registerProtocol('review', makeHooks())
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 'persona-1',
+      getByThread: (t) => t === 'design-thread',
+    }))
+    expect(isProtocolPost('persona-1', 'design-thread')).toBe(true)
+  })
+
+  test('false when the participant posts to an unrelated channel', () => {
+    registerProtocol('design', makeHooks({
+      isParticipant: (id) => id === 'persona-1',
+      getByThread: (t) => t === 'design-thread',
+    }))
+    expect(isProtocolPost('persona-1', 'some-dm')).toBe(false)
+  })
+
+  test('false when no protocol claims the session', () => {
+    registerProtocol('review', makeHooks({ getByThread: () => true }))
+    expect(isProtocolPost('byte-main', 'any-thread')).toBe(false)
+  })
+
+  test('false with no protocols registered', () => {
+    expect(isProtocolPost('anyone', 'anywhere')).toBe(false)
+  })
+})
+

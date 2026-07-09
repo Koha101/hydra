@@ -8,6 +8,9 @@ import { reviewCriticPrompt } from './prompts/review-critic.js'
 import { reviewModel, resolveModelAlias } from '../shared/constants.js'
 import { createStateMachine } from './state-machine.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge, formatStateLine } from './anchor-state.js'
+import { safeSend } from './util.js'
+import { dumpTranscript } from './transcript-dump.js'
+import { reviewSummaryFormat } from './prompts/review-summary.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -142,11 +145,11 @@ export async function startReview(
 
   try {
     const topicLine = topic ? `\nFocus: **${topic}**` : ''
-    const ann = await gateway.send(ownerThreadId, [
+    const annIds = await safeSend(ownerThreadId, [
       `**Adversarial Review** — ${rounds} round${rounds > 1 ? 's' : ''}`,
       `A critic will challenge the design. You defend.${topicLine}`,
     ].join('\n'))
-    state.messageIds.push(ann.id)
+    state.messageIds.push(...annIds)
 
     transport.sendOrQueue(ownerSessionId, {
       type: 'notification',
@@ -196,7 +199,7 @@ export async function cancelReview(reviewId: string): Promise<void> {
   }
 
   refreshSessionVisual(state.ownerThreadId)
-  await gateway.send(state.ownerThreadId, `Review cancelled.`)
+  await safeSend(state.ownerThreadId, `Review cancelled.`)
 
   void deleteReviewMessages(state).catch(err => {
     process.stderr.write(`daemon: cancel cleanup failed: ${err}\n`)
@@ -436,16 +439,30 @@ function completeReview(state: ReviewState): void {
       ``,
       `Use this format:`,
       `${SUMMARY_SENTINEL}`,
-      `**Review Summary** (${state.rounds} round${state.rounds > 1 ? 's' : ''})`,
-      `- ✅ issue — fixed/will fix`,
-      `- ⚠️ issue — acknowledged, deferred`,
-      `- ❌ issue — rebutted`,
+      ...reviewSummaryFormat(state.rounds),
     ].join('\n'),
     meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
   })
 }
 
 async function deleteReviewMessages(state: ReviewState): Promise<void> {
+  if (state.messageIds.length === 0) return
+
+  // Preserve-then-strike: no deletion without a complete dump on disk first.
+  // Covers cancel and completion alike — both paths land here.
+  const owner = registry.get(state.ownerSessionId)?.tmuxName ?? state.ownerSessionId
+  const critic = state.criticSessionId ? registry.get(state.criticSessionId)?.tmuxName ?? state.criticSessionId : 'unknown'
+  const dumpPath = await dumpTranscript(state.ownerThreadId, 'review', state.messageIds, {
+    topic: state.topic ?? '(none)',
+    rounds: `${state.currentRound}/${state.rounds}`,
+    cast: `owner ${owner} · critic ${critic}`,
+    outcome: state.phase,
+  })
+  if (!dumpPath) {
+    process.stderr.write(`daemon: review cleanup: transcript dump failed — leaving ${state.messageIds.length} messages in place (no strike without preserve)\n`)
+    return
+  }
+
   let failures = 0
   for (let i = 0; i < state.messageIds.length; i++) {
     try {
@@ -461,6 +478,11 @@ async function deleteReviewMessages(state: ReviewState): Promise<void> {
   if (failures > 0) {
     process.stderr.write(`daemon: review cleanup: ${failures}/${state.messageIds.length} message deletes failed\n`)
   }
+
+  // Posted after the strike so the one status line reports the whole outcome.
+  const struck = state.messageIds.length - failures
+  const failNote = failures > 0 ? ` · ⚠️ ${failures} delete${failures > 1 ? 's' : ''} failed (still in thread)` : ''
+  void safeSend(state.ownerThreadId, `_📼 transcript saved: \`${dumpPath}\` · ${struck}/${state.messageIds.length} messages struck${failNote}_`)
 }
 
 function finalizeReview(state: ReviewState): void {
@@ -510,7 +532,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: critic spawn failed: ${msg}\n`)
-    await gateway.send(state.ownerThreadId, `Failed to spawn critic: ${msg}. Review cancelled.`)
+    await safeSend(state.ownerThreadId, `Failed to spawn critic: ${msg}. Review cancelled.`)
     void cancelReview(state.reviewId)
   }
 }
@@ -526,7 +548,7 @@ function resetTimeout(state: ReviewState): void {
   const timeoutMs = whose === 'critic' ? CRITIC_TIMEOUT_MS : OWNER_TIMEOUT_MS
   state.timeout = setTimeout(async () => {
     process.stderr.write(`daemon: review turn timed out (${whose})\n`)
-    await gateway.send(state.ownerThreadId, `Review timed out waiting for ${whose}. Cancelling.`)
+    await safeSend(state.ownerThreadId, `Review timed out waiting for ${whose}. Cancelling.`)
     await cancelReview(state.reviewId)
   }, timeoutMs)
 }
@@ -537,4 +559,13 @@ registerProtocol('review', {
   onReply: onReviewReply,
   onDisconnect: onParticipantDisconnect,
   onReconnect: onParticipantReconnect,
+  expectedTag: (sessionId, chatId) => {
+    const reviewId = sessionToReview.get(sessionId) ?? ownerToReview.get(sessionId)
+    const state = reviewId ? reviews.get(reviewId) : undefined
+    if (!state || chatId !== state.ownerThreadId) return null
+    if (state.phase === 'critic_turn' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    if (state.phase === 'owner_turn' && sessionId === state.ownerSessionId) return OWNER_SENTINEL
+    if (state.phase === 'cleanup' && sessionId === state.criticSessionId) return SUMMARY_SENTINEL
+    return null
+  },
 })
