@@ -196,21 +196,6 @@ function handleDaemonMessage(msg: Record<string, unknown>): void {
       break
     }
 
-    case 'permission_request': {
-      mcp.notification({
-        method: 'notifications/claude/channel/permission_request',
-        params: {
-          request_id: msg.request_id as string,
-          tool_name: msg.tool_name as string,
-          description: msg.description as string,
-          input_preview: msg.input_preview as string,
-        },
-      }).catch(err => {
-        process.stderr.write(`bridge: failed to deliver permission_request: ${err}\n`)
-      })
-      break
-    }
-
     default:
       process.stderr.write(`bridge: unknown daemon message type: ${type}\n`)
   }
@@ -280,7 +265,6 @@ const mcp = new Server(
       tools: {},
       experimental: {
         'claude/channel': {},
-        'claude/channel/permission': {},
       },
     },
     instructions: [
@@ -300,25 +284,6 @@ const mcp = new Server(
       '',
       'Session management (main session only): When the user says "new session: <topic>", call spawn_session with that topic, the current chat_id, and the message_id of the triggering message. This threads on their message and spawns an isolated Claude session. Use list_sessions to check active sessions and kill_session to terminate them. IMPORTANT: After spawning, reply with the session name AND the thread URL from the result, e.g. "Spawned session **spark** — <url>". Always include the URL so it renders as a clickable link. When the user asks for a worktree session or mentions working in an isolated branch, pass the worktree parameter with the repo subdirectory name (e.g. worktree: "options_bot").',
     ].join('\n'),
-  },
-)
-
-// ── Permission response handler (Claude → daemon) ─────────────────────
-
-mcp.setNotificationHandler(
-  z.object({
-    method: z.literal('notifications/claude/channel/permission'),
-    params: z.object({
-      request_id: z.string(),
-      behavior: z.string(),
-    }),
-  }),
-  async ({ params }) => {
-    sendToSocket({
-      type: 'permission_response',
-      request_id: params.request_id,
-      behavior: params.behavior,
-    })
   },
 )
 

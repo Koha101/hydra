@@ -1,5 +1,4 @@
 import { describe, test, expect } from 'bun:test'
-import { PERMISSION_REPLY_RE } from '../config.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -252,43 +251,7 @@ describe('build command', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Permission reply regex
-// ---------------------------------------------------------------------------
-
-describe('permission reply regex', () => {
-  test('yes with code', () => {
-    const m = PERMISSION_REPLY_RE.exec('y abcde')
-    expect(m).not.toBeNull()
-    expect(m![1]).toBe('y')
-    expect(m![2]).toBe('abcde')
-  })
-
-  test('no with code', () => {
-    const m = PERMISSION_REPLY_RE.exec('no fghij')
-    expect(m).not.toBeNull()
-    expect(m![1]).toBe('no')
-    expect(m![2]).toBe('fghij')
-  })
-
-  test('case insensitive', () => {
-    expect(PERMISSION_REPLY_RE.exec('YES ABCDE')).not.toBeNull()
-  })
-
-  test('rejects code with excluded letter l', () => {
-    // The regex uses [a-km-z] — excludes 'l' to avoid ambiguity
-    expect(PERMISSION_REPLY_RE.exec('y abcle')).toBeNull()
-  })
-
-  test('rejects wrong code length', () => {
-    expect(PERMISSION_REPLY_RE.exec('y abc')).toBeNull()
-    expect(PERMISSION_REPLY_RE.exec('y abcdef')).toBeNull()
-  })
-
-  test('rejects non-permission messages', () => {
-    expect(PERMISSION_REPLY_RE.exec('hello world')).toBeNull()
-    expect(PERMISSION_REPLY_RE.exec('yes')).toBeNull()
-  })
-})
+// (permission reply regex removed — superseded by the HMAC gate-approval flow)
 
 // ---------------------------------------------------------------------------
 // Interrupt prefix

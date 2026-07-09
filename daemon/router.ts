@@ -1,4 +1,4 @@
-import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
+import { gateway, INBOX_DIR } from './config.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
@@ -21,7 +21,6 @@ import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handl
 import { handleModelIntercept, handleEffortIntercept, handleContextIntercept, handleClearIntercept, handleRebootIntercept, handleUltracodeIntercept } from './commands/session-config.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
-import { pendingPermissions } from './permission.js'
 import { isAlive, reportError } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
 
@@ -724,25 +723,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
         }
       }
     }
-  }
-
-  const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
-  if (permMatch) {
-    const requestId = permMatch[2]!.toLowerCase()
-    const pending = pendingPermissions.get(requestId)
-    const targetSessionId = pending?.sessionId ?? 'main'
-    const targetBridge = transport.get(targetSessionId)
-    if (targetBridge) {
-      transport.sendToBridge(targetBridge, {
-        type: 'permission_response',
-        request_id: requestId,
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      })
-    }
-    pendingPermissions.delete(requestId)
-    const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
-    void gateway.react(msg.channelId, msg.id, emoji).catch(() => {})
-    return
   }
 
   void gateway.typing(msg.channelId).catch(() => {})
