@@ -56,8 +56,7 @@ export type BuildState = {
   worktreePath?: string
   worktreeBranch?: string
   model?: string
-  _approved?: boolean
-  _lastCriticText?: string
+  _closing?: { approved: boolean; lastCriticText: string }  // set on closing entry, cleared at completion
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +313,9 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
       if (!r.ok) return
       state.phase = r.to
       state.messageIds.push(...sentMessageIds)
-      completeBuild(state, state._approved ?? true, state._lastCriticText ?? '')
+      const ctx = state._closing
+      state._closing = undefined
+      completeBuild(state, ctx?.approved ?? true, ctx?.lastCriticText ?? '')
       return
     }
 
@@ -337,6 +338,10 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
   if (!buildId) return
   const state = builds.get(buildId)
   if (!state || state.phase === 'complete' || state.phase === 'cancelled') return
+  // Closing: the critic is already dead by design, and if the builder dies the
+  // 5-minute summary backstop completes the build — a disconnect-cancel here
+  // would kill a build that is finishing.
+  if (state.phase === 'closing') return
   if (transport.has(sessionId)) return
 
   if (state.criticSessionId === sessionId) {
@@ -456,10 +461,13 @@ async function requestBuildSummary(state: BuildState, lastCriticText: string, ap
     state.criticSessionId = undefined
   }
 
-  // The critic heartbeat is moot once the critic is gone — stop the no-op ticks.
+  // The critic heartbeat is moot once the critic is gone — stop the no-op
+  // ticks. Pending disconnect timers from the reviewing phase must die too,
+  // or a stale one fires mid-closing and cancels a completing build.
   if (state._heartbeat) clearInterval(state._heartbeat)
-  state._approved = approved
-  state._lastCriticText = lastCriticText
+  if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
+  if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
+  state._closing = { approved, lastCriticText }
 
   // Backstop: complete without a summary rather than hold the thread hostage.
   if (state.timeout) clearTimeout(state.timeout)
@@ -467,6 +475,7 @@ async function requestBuildSummary(state: BuildState, lastCriticText: string, ap
     if (state.phase !== 'closing') return
     const r = buildMachine.transition(state.phase, 'timeout')
     if (r.ok) state.phase = r.to
+    state._closing = undefined
     completeBuild(state, approved, lastCriticText)
   }, 5 * 60 * 1000)
 
