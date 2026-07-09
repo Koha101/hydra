@@ -43,6 +43,7 @@ import { marketplaceName } from './shared/constants.js'
 import { transport } from './daemon/bridge-transport.js'
 import { loadAccess } from './daemon/access.js'
 import { setupPermissionHandler } from './daemon/permission.js'
+import { setupGateApproval, writeApprovalResponse } from './daemon/gate-approval.js'
 import { socketServer, startBridgeServer, initEphemeralTimers } from './daemon/bridge-server.js'
 import { announceRestartComplete } from './daemon/commands/global.js'
 
@@ -143,7 +144,8 @@ gateway.onReconnectAfterOutage = sendRecoveryReport
 // Permission UI
 // ---------------------------------------------------------------------------
 
-setupPermissionHandler(gateway)
+setupPermissionHandler(gateway, writeApprovalResponse)
+setupGateApproval(gateway)
 
 // ---------------------------------------------------------------------------
 // Bridge sync — keep plugin cache in sync with repo bridge.ts
