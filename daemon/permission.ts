@@ -14,7 +14,7 @@ export const pendingPermissions = new Map<
 // Button click handler for permission approval flow
 // ---------------------------------------------------------------------------
 
-const PERM_BUTTON_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
+const PERM_BUTTON_RE = /^perm:(allow|deny|more):([0-9a-f]{16})$/
 
 export function setupPermissionHandler(
   gateway: ChatGateway,
