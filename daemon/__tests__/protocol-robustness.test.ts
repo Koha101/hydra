@@ -32,14 +32,18 @@ describe('state machine transitions', () => {
     }
   })
 
-  test('build: implementing -> reviewing -> complete', () => {
+  test('build: implementing -> reviewing -> closing -> complete', () => {
     const r1 = buildMachine.transition('implementing', 'owner_impl')
     expect(r1.ok).toBe(true)
     if (r1.ok) expect(r1.to).toBe('reviewing')
 
     const r2 = buildMachine.transition('reviewing', 'critic_lgtm')
     expect(r2.ok).toBe(true)
-    if (r2.ok) expect(r2.to).toBe('complete')
+    if (r2.ok) expect(r2.to).toBe('closing')
+
+    const r3 = buildMachine.transition('closing', 'summary_posted')
+    expect(r3.ok).toBe(true)
+    if (r3.ok) expect(r3.to).toBe('complete')
   })
 
   test('build: feedback loops back', () => {

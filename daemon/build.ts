@@ -8,6 +8,8 @@ import { registerProtocol, isThreadOccupied } from './protocol-registry.js'
 import { buildOwnerPrompt } from './prompts/build-owner.js'
 import { buildCriticPrompt } from './prompts/build-critic.js'
 import { refreshSessionVisual, registerProtocolBadge, formatRoundBadge, formatStateLine } from './anchor-state.js'
+import { getWatchesBySession } from './pr-watch.js'
+import { buildSummaryFormat } from './prompts/build-summary.js'
 import { createStateMachine } from './state-machine.js'
 import { buildModel, resolveModelAlias } from '../shared/constants.js'
 import { safeSend } from './util.js'
@@ -32,6 +34,7 @@ export function taskToBranchName(task: string): string {
 export type BuildPhase =
   | 'implementing'   // waiting for owner implementation summary
   | 'reviewing'      // waiting for critic review
+  | 'closing'        // waiting for the builder's closing summary
   | 'complete'
   | 'cancelled'
 
@@ -53,6 +56,7 @@ export type BuildState = {
   worktreePath?: string
   worktreeBranch?: string
   model?: string
+  _closing?: { approved: boolean; lastCriticText: string }  // set on closing entry, cleared at completion
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +86,12 @@ function cleanupBuildMaps(state: BuildState): void {
 // State machine
 // ---------------------------------------------------------------------------
 
-type BuildEvent = 'owner_impl' | 'critic_lgtm' | 'critic_feedback' | 'timeout' | 'cancel'
+type BuildEvent = 'owner_impl' | 'critic_lgtm' | 'critic_final' | 'critic_feedback' | 'summary_posted' | 'timeout' | 'cancel'
 
 export const buildMachine = createStateMachine<BuildPhase, BuildEvent>('build', {
   implementing: { owner_impl: 'reviewing',    timeout: 'cancelled', cancel: 'cancelled' },
-  reviewing:    { critic_lgtm: 'complete', critic_feedback: 'implementing', timeout: 'cancelled', cancel: 'cancelled' },
+  reviewing:    { critic_lgtm: 'closing', critic_final: 'closing', critic_feedback: 'implementing', timeout: 'cancelled', cancel: 'cancelled' },
+  closing:      { summary_posted: 'complete', timeout: 'complete', cancel: 'cancelled' },
   complete:     {},
   cancelled:    {},
 })
@@ -257,6 +262,7 @@ export async function cancelBuild(buildId: string): Promise<void> {
 
 const BUILDER_SENTINEL = '[builder→critic]'
 const CRITIC_SENTINEL = '[critic→builder]'
+const SUMMARY_SENTINEL = '[summary]'
 
 export function onBuildReply(sessionId: string, text: string, chatId: string, sentMessageIds: string[]): void {
   const firstLine = text.split('\n')[0].trim()
@@ -273,19 +279,16 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
     const bodyText = text.slice(text.indexOf('\n') + 1).trim()
     const secondLine = bodyText.split('\n')[0].trim()
     const isLgtm = secondLine === '**LGTM**' || secondLine === 'LGTM'
-    const event: BuildEvent = isLgtm ? 'critic_lgtm' : 'critic_feedback'
+    const isFinal = !isLgtm && state.currentRound >= state.rounds
+    const event: BuildEvent = isLgtm ? 'critic_lgtm' : isFinal ? 'critic_final' : 'critic_feedback'
     const result = buildMachine.transition(state.phase, event)
     if (!result.ok) return
 
     state.messageIds.push(...sentMessageIds)
-    if (isLgtm) {
-      void finishBuild(state, bodyText).catch(err => {
-        process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
-        void cancelBuild(state.buildId).catch(e => process.stderr.write(`daemon: cancelBuild failed: ${e}\n`))
-      })
-    } else if (state.currentRound >= state.rounds) {
-      void finishBuild(state, bodyText).catch(err => {
-        process.stderr.write(`daemon: finishBuild failed: ${err}\n`)
+    if (isLgtm || isFinal) {
+      state.phase = result.to
+      void requestBuildSummary(state, bodyText, isLgtm).catch(err => {
+        process.stderr.write(`daemon: requestBuildSummary failed: ${err}\n`)
         void cancelBuild(state.buildId).catch(e => process.stderr.write(`daemon: cancelBuild failed: ${e}\n`))
       })
     } else {
@@ -301,6 +304,20 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
   if (ownerBuildId) {
     const state = builds.get(ownerBuildId)
     if (!state || chatId !== state.ownerThreadId) return
+
+    // Closing phase: the builder posts the closing summary
+    if (state.phase === 'closing') {
+      if (!firstLine.startsWith(SUMMARY_SENTINEL)) return
+      if (state.timeout) clearTimeout(state.timeout)
+      const r = buildMachine.transition(state.phase, 'summary_posted')
+      if (!r.ok) return
+      state.phase = r.to
+      state.messageIds.push(...sentMessageIds)
+      const ctx = state._closing
+      state._closing = undefined
+      completeBuild(state, ctx?.approved ?? true, ctx?.lastCriticText ?? '')
+      return
+    }
 
     // Only process messages with the builder sentinel
     if (!firstLine.startsWith(BUILDER_SENTINEL)) return
@@ -321,6 +338,10 @@ export function onBuildParticipantDisconnect(sessionId: string): void {
   if (!buildId) return
   const state = builds.get(buildId)
   if (!state || state.phase === 'complete' || state.phase === 'cancelled') return
+  // Closing: the critic is already dead by design, and if the builder dies the
+  // 5-minute summary backstop completes the build — a disconnect-cancel here
+  // would kill a build that is finishing.
+  if (state.phase === 'closing') return
   if (transport.has(sessionId)) return
 
   if (state.criticSessionId === sessionId) {
@@ -429,7 +450,7 @@ function onCriticFeedback(state: BuildState, text: string): void {
 // Phase transitions
 // ---------------------------------------------------------------------------
 
-async function finishBuild(state: BuildState, lastCriticText: string): Promise<void> {
+async function requestBuildSummary(state: BuildState, lastCriticText: string, approved: boolean): Promise<void> {
   // Kill critic — delete from map BEFORE nulling the field
   if (state.criticSessionId) {
     sessionToBuild.delete(state.criticSessionId)
@@ -439,15 +460,44 @@ async function finishBuild(state: BuildState, lastCriticText: string): Promise<v
         await killSession(info, 'build complete')
       }
     } catch (err) {
-      process.stderr.write(`daemon: build finishBuild killSession failed: ${err}\n`)
+      process.stderr.write(`daemon: build requestBuildSummary killSession failed: ${err}\n`)
     }
     state.criticSessionId = undefined
   }
 
-  const firstLine = lastCriticText.split('\n')[0].trim()
-  const approved = firstLine === '**LGTM**' || firstLine === 'LGTM'
+  // The critic heartbeat is moot once the critic is gone — stop the no-op
+  // ticks. Pending disconnect timers from the reviewing phase must die too,
+  // or a stale one fires mid-closing and cancels a completing build.
+  if (state._heartbeat) clearInterval(state._heartbeat)
+  if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
+  if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
+  state._closing = { approved, lastCriticText }
 
-  completeBuild(state, approved, lastCriticText)
+  // Backstop: complete without a summary rather than hold the thread hostage.
+  if (state.timeout) clearTimeout(state.timeout)
+  state.timeout = setTimeout(() => {
+    if (state.phase !== 'closing') return
+    const r = buildMachine.transition(state.phase, 'timeout')
+    if (r.ok) state.phase = r.to
+    state._closing = undefined
+    completeBuild(state, approved, lastCriticText)
+  }, 5 * 60 * 1000)
+
+  const prLinks = getWatchesBySession(state.ownerSessionId).map(w => w.prUrl)
+  transport.sendOrQueue(state.ownerSessionId, {
+    type: 'notification',
+    content: [
+      `[system] Build ${approved ? 'approved (**LGTM**)' : 'reached max rounds'} after ${state.currentRound} round${state.currentRound > 1 ? 's' : ''}.`,
+      `Post a closing summary to your thread.`,
+      ``,
+      `**Message routing:** Your first line MUST be \`${SUMMARY_SENTINEL}\`. Messages without this tag won't complete the build.`,
+      ``,
+      `Use this format:`,
+      `${SUMMARY_SENTINEL}`,
+      ...buildSummaryFormat(state.currentRound, prLinks),
+    ].join('\n'),
+    meta: { chat_id: state.ownerThreadId, message_id: '', user: 'system', user_id: 'system', ts: new Date().toISOString() },
+  })
 }
 
 function completeBuild(state: BuildState, approved: boolean, lastCriticText: string): void {
