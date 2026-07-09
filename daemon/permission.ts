@@ -1,4 +1,3 @@
-import { transport } from './bridge-transport.js'
 import { loadAccess } from './access.js'
 import type { ChatGateway, ButtonDef } from '../gateway.js'
 
@@ -17,7 +16,10 @@ export const pendingPermissions = new Map<
 
 const PERM_BUTTON_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
 
-export function setupPermissionHandler(gateway: ChatGateway): void {
+export function setupPermissionHandler(
+  gateway: ChatGateway,
+  onDecision: (requestId: string, behavior: 'allow' | 'deny') => void,
+): void {
   gateway.onButtonClick(click => {
     const m = PERM_BUTTON_RE.exec(click.customId)
     if (!m) return
@@ -56,15 +58,9 @@ export function setupPermissionHandler(gateway: ChatGateway): void {
       return
     }
 
-    // Forward allow/deny to main session bridge
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'permission_response',
-        request_id,
-        behavior,
-      })
-    }
+    // Hand the decision to the gate-approval bridge, which writes the signed
+    // response the blocked permission-gate hook is polling for.
+    onDecision(request_id, behavior as 'allow' | 'deny')
     pendingPermissions.delete(request_id)
     const label = behavior === 'allow' ? 'Allowed' : 'Denied'
     void click.clearButtons(`${click.messageContent}\n\n${label}`)
