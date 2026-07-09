@@ -38,13 +38,23 @@ const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
 // Listen state resolution: thread override → channel group → global → false
 // ---------------------------------------------------------------------------
 
-function resolveListenState(threadId: string, channelId?: string): boolean {
+export function resolveListenState(threadId: string, channelId?: string): boolean {
   const thread = threadRegistry.get(threadId)
-  if (thread?.listenOverride !== undefined) return thread.listenOverride
-  const access = loadAccess()
-  if (channelId) {
-    const group = access.groups[channelId]
-    if (group?.defaultListen !== undefined) return group.defaultListen
+  return resolveListenStatePure(channelId, loadAccess(), thread?.listenOverride, thread?.parentChannelId)
+}
+
+export function resolveListenStatePure(
+  channelId: string | undefined,
+  access: { groups: Record<string, { defaultListen?: boolean }>; defaultListen?: boolean },
+  listenOverride?: boolean,
+  parentChannelId?: string,
+): boolean {
+  if (listenOverride !== undefined) return listenOverride
+  for (const id of [channelId, parentChannelId]) {
+    if (id) {
+      const group = access.groups[id]
+      if (group?.defaultListen !== undefined) return group.defaultListen
+    }
   }
   return access.defaultListen ?? false
 }
@@ -209,12 +219,14 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
   // Determine where to create the thread
   let targetChannelId = chatId
+  let parentChannelId: string | undefined
   if (!threadId) {
     if (targetChannelId) {
       try {
         const ch = await gateway.fetchChannel(targetChannelId)
         if (ch.isThread) {
           threadId = ch.id
+          parentChannelId = ch.parentId ?? undefined
         } else if (ch.isDM && !gateway.canThreadInDM) {
           targetChannelId = DEFAULT_SESSION_CHANNEL
         }
@@ -502,6 +514,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       originType,
       originFrom,
       model,
+      parentChannelId,
     })
   }
 

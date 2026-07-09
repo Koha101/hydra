@@ -566,7 +566,7 @@ registerProtocol('review', {
     if (!state || chatId !== state.ownerThreadId) return null
     if (state.phase === 'critic_turn' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
     if (state.phase === 'owner_turn' && sessionId === state.ownerSessionId) return OWNER_SENTINEL
-    if (state.phase === 'cleanup' && sessionId === state.criticSessionId) return SUMMARY_SENTINEL
+    if (state.phase === 'cleanup' && sessionId === state.ownerSessionId) return SUMMARY_SENTINEL
     return null
   },
 })
