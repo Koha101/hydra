@@ -633,6 +633,7 @@ registerProtocol('build', {
     if (!state || chatId !== state.ownerThreadId) return null
     if (state.phase === 'implementing' && sessionId === state.ownerSessionId) return BUILDER_SENTINEL
     if (state.phase === 'reviewing' && sessionId === state.criticSessionId) return CRITIC_SENTINEL
+    if (state.phase === 'closing' && sessionId === state.ownerSessionId) return SUMMARY_SENTINEL
     return null
   },
 })
