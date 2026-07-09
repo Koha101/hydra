@@ -102,7 +102,7 @@ async function buildNotificationPayload(
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
     ...(downloadedFiles.length > 0 ? { downloaded_files: downloadedFiles.map(f => f.path).join('; ') } : {}),
-    ...(transcripts.length > 0 ? { voice_transcript: String(transcripts.length) } : {}),
+    ...(transcripts.length > 0 ? { voice_transcript_count: String(transcripts.length) } : {}),
     ...threadContext,
   }
 

@@ -202,7 +202,10 @@ export async function lifecycleDown(platform: string): Promise<void> {
   killOrphanBytes(cfg.sockPath, cfg.byteLog, '-9')
 
   tmuxKill(cfg.daemonTmux)
-  tmuxKill(cfg.transcribeTmux)
+  const otherPlatform = cfg.platform === 'slack' ? 'discord' : 'slack'
+  if (!tmuxExists(`${otherPlatform}-daemon`)) {
+    tmuxKill(cfg.transcribeTmux)
+  }
 
   for (const f of ['daemon.sock', 'daemon.pid']) {
     try { unlinkSync(join(cfg.stateDir, f)) } catch {}

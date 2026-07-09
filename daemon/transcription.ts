@@ -18,7 +18,7 @@
  * token-required side effects and can be unit-tested in isolation.
  */
 
-import { readFileSync, statSync } from 'fs'
+import { stat, readFile } from 'fs/promises'
 import { basename } from 'path'
 
 import type { DownloadedFile } from '../gateway.js'
@@ -115,14 +115,14 @@ export async function transcribeFile(path: string, contentType?: string | null):
   // gateway-reported attachment sizes aren't always present or truthful.
   let bytes: Buffer
   try {
-    const size = statSync(path).size
+    const size = (await stat(path)).size
     if (size > transcribeMaxBytes()) {
       process.stderr.write(
         `transcription: skipping ${basename(path)} — ${(size / 1024 / 1024).toFixed(1)}MB exceeds HYDRA_TRANSCRIBE_MAX_BYTES\n`,
       )
       return null
     }
-    bytes = readFileSync(path)
+    bytes = await readFile(path)
   } catch (err) {
     process.stderr.write(`transcription: cannot read ${path}: ${err}\n`)
     return null
