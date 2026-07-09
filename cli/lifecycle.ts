@@ -114,7 +114,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
 function startTranscribeAuto(cfg: HydraConfig): string | null {
   try {
     const out = execFileSync(join(cfg.hydraDir, 'start-transcribe.sh'), ['--auto'], {
-      encoding: 'utf-8', stdio: 'pipe',
+      encoding: 'utf-8', stdio: 'pipe', timeout: 15_000,
       env: { ...process.env, HYDRA_STATE_DIR: cfg.stateDir, CHAT_PLATFORM: cfg.platform } as Record<string, string>,
     })
     return out.trim() || null

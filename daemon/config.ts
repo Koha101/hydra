@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 
 import type { ChatGateway } from '../gateway.js'
+import { parseEnvLine } from '../shared/env-parse.js'
 
 // ---------------------------------------------------------------------------
 // Paths & env
@@ -27,8 +28,8 @@ for (const envFile of [LOCAL_ENV_FILE, ENV_FILE]) {
   try {
     chmodSync(envFile, 0o600)
     for (const line of readFileSync(envFile, 'utf8').split('\n')) {
-      const m = line.match(/^(\w+)=(.*)$/)
-      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+      const parsed = parseEnvLine(line)
+      if (parsed && process.env[parsed[0]] === undefined) process.env[parsed[0]] = parsed[1]
     }
   } catch {}
 }
