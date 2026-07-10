@@ -432,5 +432,9 @@ export function buildDaemonEnvs(cfg: HydraConfig): string {
     `CHAT_PLATFORM=${shq(cfg.platform)}`,
     `CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `HYDRA_MARKETPLACE=${shq(marketplaceName())}`,
+    // tmux panes inherit the tmux SERVER's env, not this CLI's — without an
+    // explicit forward the daemon never sees .env's model and spawns fall back
+    // to DEFAULT_MODEL
+    `HYDRA_MODEL=${shq(cfg.byteModel)}`,
   ].join(' ')
 }
