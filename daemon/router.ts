@@ -44,6 +44,10 @@ const COMMAND_RE = new RegExp(
 const SPAWN_MODEL_RE = new RegExp(`^(?:new session|spawn)\\s+(${MODEL_ALIAS_PATTERN}):\\s*([\\s\\S]+)`, 'i')
 const SPAWN_WT_MODEL_RE = new RegExp(`^(?:spawn-wt|/spawn-wt)\\s+(${MODEL_ALIAS_PATTERN}):\\s*(\\S+)\\s+([\\s\\S]+)`, 'i')
 const BARE_ALIAS_RE = new RegExp(`^(${MODEL_ALIAS_PATTERN}):?$`, 'i')
+// "model sonnet" / "model opus" — switch a running session's model mid-conversation.
+// Matches any single token so a typo'd alias gets a clear error instead of silently
+// falling through; the alias is validated (resolveModelAlias) at the call site.
+const MODEL_SWITCH_RE = /^model\s+(\S+)\s*$/i
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -533,6 +537,48 @@ gateway.onMessage(async (msg: InboundMessage) => {
             registry.persist()
             void gateway.react(msg.channelId, msg.id, info.paused ? '⏸' : '▶️').catch(() => {})
             refreshSessionVisual(resolvedThreadId)
+            return
+          }
+
+          // "model <alias>" — switch this session's model mid-conversation. Validate the
+          // alias (error on unknown, like the spawn/review commands), then send Claude
+          // Code's own /model into the pane: Escape (clear composer), the text via -l, then
+          // Enter. Each send-keys is AWAITED so they can't arrive out of order, stdio is
+          // ignored (unread pipes would risk a full-buffer stall), and the react fires only
+          // if all three succeeded — otherwise the user gets an error, not false confirmation.
+          const modelMatch = msg.content.match(MODEL_SWITCH_RE)
+          if (modelMatch) {
+            const resolved = resolveModelAlias(modelMatch[1])
+            if (!resolved) {
+              void reportError(msg.channelId, msg.id, 'model', `unknown model alias "${modelMatch[1]}"`, `Known aliases: ${Object.keys(MODEL_ALIASES).join(', ')}`)
+              return
+            }
+            const spawnOpts = { stdio: ['ignore', 'ignore', 'ignore'] as const }
+            let switched = true
+            try {
+              for (const keys of [['Escape'], ['-l', `/model ${resolved}`], ['Enter']]) {
+                if ((await Bun.spawn(['tmux', 'send-keys', '-t', info.tmuxName, ...keys], spawnOpts).exited) !== 0) {
+                  switched = false
+                  break
+                }
+              }
+            } catch (err) {
+              switched = false
+              process.stderr.write(`daemon: model switch failed for ${info.tmuxName}: ${err instanceof Error ? err.message : err}\n`)
+            }
+            if (switched) {
+              // Claude Code shows a "Switch model?" confirmation when the change
+              // invalidates the prompt cache. Confirm the highlighted default
+              // (Yes) after a beat so the switch completes instead of leaving the
+              // pane parked on the modal; a stray Enter on an empty composer (no
+              // confirmation shown) is a harmless no-op.
+              await new Promise(r => setTimeout(r, 800))
+              try { await Bun.spawn(['tmux', 'send-keys', '-t', info.tmuxName, 'Enter'], spawnOpts).exited } catch {}
+              process.stderr.write(`daemon: model switch -> ${resolved} for ${info.tmuxName}\n`)
+              void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
+            } else {
+              void reportError(msg.channelId, msg.id, 'model', `couldn't switch model on ${info.tmuxName}`, 'The session pane may be gone.')
+            }
             return
           }
 
