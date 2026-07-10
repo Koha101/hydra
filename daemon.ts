@@ -97,6 +97,7 @@ if ('homeSpawnHandler' in gateway) {
 // Importing router wires up gateway.onMessage / onThreadDelete / onMessageDelete
 import './daemon/router.js'
 import { startPrWatcher, backfillTitles } from './daemon/pr-watch.js'
+import { startReplyGuard } from './daemon/reply-guard.js'
 import { getContextPercent, tmuxHasSession } from './daemon/util.js'
 import { refreshSessionVisual } from './daemon/anchor-state.js'
 
@@ -239,6 +240,9 @@ void startGateway().then(async () => {
 // ---------------------------------------------------------------------------
 
 startPrWatcher()
+
+// Reply guard — nudges sessions that go silent on user-authored messages
+startReplyGuard()
 
 // Backfill PR titles for existing watches (non-blocking)
 backfillTitles().then(n => {

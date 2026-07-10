@@ -12,6 +12,7 @@ import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-registry.js'
 import { maybeNudgeMissingSentinel } from './sentinel-nudge.js'
+import { clearPendingReply, settlePendingOnReact, notePendingFromQueue } from './reply-guard.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
@@ -248,6 +249,9 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           platform: PLATFORM,
         },
       })
+      // Reply guard: re-arm from queued user messages before the flush hands
+      // them over — the queue survives daemon restarts, the guard map doesn't.
+      notePendingFromQueue(sessionId, transport.messageQueues.get(sessionId))
       transport.flushQueue(sessionId)
       dispatchReconnect(sessionId)
       if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
@@ -286,6 +290,11 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           ...(result.isError ? { isError: true } : {}),
         })
 
+        // Reply guard: a reaction to the offending message is an acknowledgment
+        if (name === 'react' && !result.isError && conn.sessionId) {
+          settlePendingOnReact(conn.sessionId, args.chat_id as string, args.message_id as string)
+        }
+
         // Post-reply hooks (single registry lookup)
         if (name === 'reply' && !result.isError && conn.sessionId) {
           const replyInfo = registry.get(conn.sessionId)
@@ -298,6 +307,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
 
           dispatchReply(conn.sessionId, replyText, args.chat_id as string, result.sentIds ?? [])
           maybeNudgeMissingSentinel(conn.sessionId, replyText, args.chat_id as string)
+          clearPendingReply(conn.sessionId, args.chat_id as string)
 
           // Ephemeral session: kill on [done] sentinel
           if (replyInfo?.ephemeral && /^\[done\]$/m.test(replyText)) {
