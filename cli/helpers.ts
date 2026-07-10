@@ -65,8 +65,6 @@ export function resolveConfig(platform?: string): HydraConfig {
   }
 
   const stateDir = process.env.HYDRA_STATE_DIR ?? process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', platform)
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const spawnCwd = process.env.SPAWN_CWD ?? homedir()
 
   // Source .env from state dir (mirrors env-setup.sh)
   const envFile = join(stateDir, '.env')
@@ -90,11 +88,14 @@ export function resolveConfig(platform?: string): HydraConfig {
     }
   }
 
+  // Resolve AFTER sourcing so .env values apply when the shell didn't export them
+  // (an unsourced `hydra restart` used to boot the daemon with configDir=~/.claude,
+  // spawning ungated sessions parked on first-run onboarding).
   return {
     platform,
     stateDir,
-    configDir,
-    spawnCwd: process.env.SPAWN_CWD ?? spawnCwd,
+    configDir: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    spawnCwd: process.env.SPAWN_CWD ?? homedir(),
     hydraDir,
     daemonTmux: `${platform}-daemon`,
     byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
