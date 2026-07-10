@@ -19,13 +19,15 @@ function targetTmux(msg: InboundMessage): string {
   return byteTmux()
 }
 
-/** Type a slash command into a tmux pane and submit it (Escape clears any partial input first). */
-function sendSlash(tmux: string, line: string): void {
-  const opts = { stdio: ['pipe', 'pipe', 'pipe'] as const }
+/** Type a slash command into a tmux pane and submit it. Escape clears any partial
+ * input first; each keystroke is awaited so Escape → text → Enter can't arrive out
+ * of order (a bare `send-keys` returns before tmux has delivered the keys). */
+async function sendSlash(tmux: string, line: string): Promise<void> {
+  const opts = { stdio: ['ignore', 'ignore', 'ignore'] as const }
   try {
-    Bun.spawn(['tmux', 'send-keys', '-t', tmux, 'Escape'], opts)
-    Bun.spawn(['tmux', 'send-keys', '-t', tmux, '-l', line], opts)
-    Bun.spawn(['tmux', 'send-keys', '-t', tmux, 'Enter'], opts)
+    for (const keys of [['Escape'], ['-l', line], ['Enter']]) {
+      await Bun.spawn(['tmux', 'send-keys', '-t', tmux, ...keys], opts).exited
+    }
   } catch (err) {
     process.stderr.write(`daemon: sendSlash failed for ${tmux}: ${err}\n`)
   }
@@ -33,7 +35,14 @@ function sendSlash(tmux: string, line: string): void {
 
 export async function handleModelIntercept(msg: InboundMessage, arg: string): Promise<void> {
   const resolved = resolveModelAlias(arg.trim()) ?? arg.trim()
-  sendSlash(targetTmux(msg), `/model ${resolved}`)
+  const tmux = targetTmux(msg)
+  await sendSlash(tmux, `/model ${resolved}`)
+  // Claude Code shows a "Switch model?" confirmation when the change invalidates
+  // the prompt cache. Confirm the highlighted default (Yes) after a beat so the
+  // switch completes instead of leaving the pane parked on the modal. A stray
+  // Enter on an empty composer (no confirmation shown) is a harmless no-op.
+  await new Promise(r => setTimeout(r, 800))
+  try { await Bun.spawn(['tmux', 'send-keys', '-t', tmux, 'Enter'], { stdio: ['ignore', 'ignore', 'ignore'] }).exited } catch {}
   await gateway.send(msg.channelId, `⚙️ model → \`${resolved}\``, { replyTo: msg.id }).catch(() => {})
 }
 
@@ -43,13 +52,13 @@ export async function handleEffortIntercept(msg: InboundMessage, arg: string): P
     await gateway.send(msg.channelId, `effort must be one of: ${[...EFFORT_LEVELS].join(', ')}`, { replyTo: msg.id }).catch(() => {})
     return
   }
-  sendSlash(targetTmux(msg), `/effort ${level}`)
+  await sendSlash(targetTmux(msg), `/effort ${level}`)
   await gateway.send(msg.channelId, `⚙️ effort → \`${level}\``, { replyTo: msg.id }).catch(() => {})
 }
 
 export async function handleContextIntercept(msg: InboundMessage): Promise<void> {
   const tmux = targetTmux(msg)
-  sendSlash(tmux, '/context')
+  await sendSlash(tmux, '/context')
   await new Promise(r => setTimeout(r, 1800))
   let pane = ''
   try { pane = Bun.spawnSync(['tmux', 'capture-pane', '-t', tmux, '-p', '-J']).stdout.toString() } catch {}
@@ -65,7 +74,7 @@ export async function handleContextIntercept(msg: InboundMessage): Promise<void>
 
 /** /clear — wipe the session's conversation context in place (CC's own /clear). Same process, memory reloads. */
 export async function handleClearIntercept(msg: InboundMessage): Promise<void> {
-  sendSlash(targetTmux(msg), '/clear')
+  await sendSlash(targetTmux(msg), '/clear')
   await gateway.send(msg.channelId, `🧹 context cleared — fresh conversation, memory reloads on the next message.`, { replyTo: msg.id }).catch(() => {})
 }
 
