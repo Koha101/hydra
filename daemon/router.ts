@@ -18,7 +18,7 @@ import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
-import { isAlive, reportError } from './util.js'
+import { isAlive, reportError, capturePane } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
 
 // Global command prefixes — gated on top-level allowFrom. Thread-scoped
@@ -540,14 +540,16 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
 
-          // "model <alias>" — switch this session's model mid-conversation. Validate the
-          // alias (error on unknown, like the spawn/review commands), then send Claude
-          // Code's own /model into the pane: Escape (clear composer), the text via -l, then
-          // Enter. Each send-keys is AWAITED so they can't arrive out of order, stdio is
-          // ignored (unread pipes would risk a full-buffer stall), and the react fires only
-          // if all three succeeded — otherwise the user gets an error, not false confirmation.
+          // "model <alias>" — switch this session's model mid-conversation. allowFrom-gated
+          // (mutates cost/capability), but thread-scoped so NOT a COMMAND_PREFIXES entry.
+          // Drive Claude Code's own /model: Escape, text via -l, Enter — each send awaited so
+          // they can't reorder; react only if every step succeeds.
           const modelMatch = msg.content.match(MODEL_SWITCH_RE)
           if (modelMatch) {
+            if (!isAllowed) {
+              process.stderr.write(`daemon: model switch from non-allowlisted sender ${senderId} on ${info.tmuxName} ignored\n`)
+              return
+            }
             const resolved = resolveModelAlias(modelMatch[1])
             if (!resolved) {
               void reportError(msg.channelId, msg.id, 'model', `unknown model alias "${modelMatch[1]}"`, `Known aliases: ${Object.keys(MODEL_ALIASES).join(', ')}`)
@@ -567,17 +569,27 @@ gateway.onMessage(async (msg: InboundMessage) => {
               process.stderr.write(`daemon: model switch failed for ${info.tmuxName}: ${err instanceof Error ? err.message : err}\n`)
             }
             if (switched) {
-              // Claude Code shows a "Switch model?" confirmation when the change
-              // invalidates the prompt cache. Confirm the highlighted default
-              // (Yes) after a beat so the switch completes instead of leaving the
-              // pane parked on the modal; a stray Enter on an empty composer (no
-              // confirmation shown) is a harmless no-op.
-              await new Promise(r => setTimeout(r, 800))
-              try { await Bun.spawn(['tmux', 'send-keys', '-t', info.tmuxName, 'Enter'], spawnOpts).exited } catch {}
+              // Claude Code shows "Switch model?" only when the switch invalidates the cache.
+              // Poll for it rather than blind-firing a timed Enter (a slow modal would swallow
+              // one); best-effort — a capture error leaves the submitted switch intact, only a
+              // seen-but-unconfirmed modal (pane parked) downgrades success to failure.
+              try {
+                for (let i = 0; i < 12; i++) {
+                  await new Promise(r => setTimeout(r, 250))
+                  if (/Switch model\?/i.test(capturePane(info.tmuxName))) {
+                    if ((await Bun.spawn(['tmux', 'send-keys', '-t', info.tmuxName, 'Enter'], spawnOpts).exited) !== 0) switched = false
+                    break
+                  }
+                }
+              } catch (err) {
+                process.stderr.write(`daemon: model switch confirm-check failed for ${info.tmuxName}: ${err instanceof Error ? err.message : err}\n`)
+              }
+            }
+            if (switched) {
               process.stderr.write(`daemon: model switch -> ${resolved} for ${info.tmuxName}\n`)
               void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
             } else {
-              void reportError(msg.channelId, msg.id, 'model', `couldn't switch model on ${info.tmuxName}`, 'The session pane may be gone.')
+              void reportError(msg.channelId, msg.id, 'model', `couldn't switch model on ${info.tmuxName}`, 'The pane may be gone or stuck on the confirmation.')
             }
             return
           }
