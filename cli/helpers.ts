@@ -92,11 +92,12 @@ export function resolveConfig(platform?: string): HydraConfig {
   // Resolve AFTER sourcing so .env values apply when the shell didn't export them
   // (an unsourced `hydra restart` used to boot the daemon with configDir=~/.claude,
   // spawning ungated sessions parked on first-run onboarding).
+  const spawnCwd = process.env.SPAWN_CWD ?? homedir()
   return {
     platform,
     stateDir,
     configDir: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-    spawnCwd: process.env.SPAWN_CWD ?? homedir(),
+    spawnCwd,
     hydraDir,
     daemonTmux: `${platform}-daemon`,
     byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
