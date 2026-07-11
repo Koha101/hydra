@@ -74,11 +74,13 @@ async function buildNotificationPayload(
   // spoken prompt as text. The original audio file stays in downloaded_files,
   // so Claude can still inspect it if needed. No-op unless transcription is
   // enabled and an audio file is present.
-  const transcripts = await transcribeDownloads(downloadedFiles)
+  const transcripts = downloadedFiles.length > 0
+    ? await transcribeDownloads(downloadedFiles)
+    : []
 
   let content = msg.content || (atts.length > 0 ? '(attachment)' : '')
   if (transcripts.length > 0) {
-    content = mergeTranscripts(msg.content, transcripts)
+    content = mergeTranscripts(content, transcripts)
   }
 
   let threadContext: Record<string, string> = {}

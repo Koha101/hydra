@@ -118,8 +118,8 @@ function startTranscribeAuto(cfg: HydraConfig): string | null {
       env: { ...process.env, HYDRA_STATE_DIR: cfg.stateDir, CHAT_PLATFORM: cfg.platform } as Record<string, string>,
     })
     return out.trim() || null
-  } catch (err: any) {
-    return `transcribe sidecar autostart failed: ${err?.message ?? err}`
+  } catch (err: unknown) {
+    return `transcribe sidecar autostart failed: ${err instanceof Error ? err.message : err}`
   }
 }
 
@@ -202,8 +202,10 @@ export async function lifecycleDown(platform: string): Promise<void> {
   killOrphanBytes(cfg.sockPath, cfg.byteLog, '-9')
 
   tmuxKill(cfg.daemonTmux)
-  const otherPlatform = cfg.platform === 'slack' ? 'discord' : 'slack'
-  if (!tmuxExists(`${otherPlatform}-daemon`)) {
+  const otherDaemonAlive = ['slack', 'discord']
+    .filter(p => p !== cfg.platform)
+    .some(p => tmuxExists(`${p}-daemon`))
+  if (!otherDaemonAlive) {
     tmuxKill(cfg.transcribeTmux)
   }
 
@@ -329,10 +331,10 @@ export async function lifecycleWatchdog(platform: string): Promise<void> {
     await startByte(cfg)
   }
 
-  // Transcription sidecar — independent of the daemon socket, so revive it
-  // even on restart ticks. Quiet no-op unless set up (or explicitly enabled).
-  const transcribeMsg = startTranscribeAuto(cfg)
-  if (transcribeMsg) appendLog(cfg.watchdogLog, transcribeMsg)
+  if (!tmuxExists(cfg.transcribeTmux)) {
+    const transcribeMsg = startTranscribeAuto(cfg)
+    if (transcribeMsg) appendLog(cfg.watchdogLog, transcribeMsg)
+  }
 }
 
 async function restartDaemonForWatchdog(cfg: HydraConfig): Promise<void> {
