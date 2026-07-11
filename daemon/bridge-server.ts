@@ -16,6 +16,8 @@ import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
 import { shouldHoldIncumbentMain } from './main-guard.js'
+import { buildAutopsy, logCorrelation, tailSpawnLog, buildCrashNotice, getVitalsSample } from './observability.js'
+import { safeSend } from './util.js'
 import type { ButtonDef } from '../gateway.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
@@ -174,6 +176,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
             threadRegistry.persist()
           }
         }
+        if (sessionId !== 'main') logCorrelation(info)
       }
 
       if (sessionId !== 'main' && trackRegistration(sessionId)) {
@@ -389,7 +392,17 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
   try { execSync(`tmux has-session -t '${info.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); tmuxAlive = true } catch {}
 
   if (!tmuxAlive) {
-    process.stderr.write(`daemon: session ${info.tmuxName} crashed (tmux dead, bridge disconnected)\n`)
+    // Read the pane tail once, for the autopsy — which goes to the daemon log
+    // (PRESERVE, hardware-only). The channel gets a LINK to the log, never the bytes.
+    let tail: string[] = []
+    if (info.spawnLogPath) {
+      try {
+        tail = tailSpawnLog(info.spawnLogPath)
+      } catch (err) {
+        process.stderr.write(`daemon: session ${info.tmuxName} black box unreadable (${info.spawnLogPath}): ${err}\n`)
+      }
+    }
+    process.stderr.write(buildAutopsy(info, 'crashed (tmux dead, bridge disconnected)', tail, Date.now(), getVitalsSample(info.sessionId)) + '\n')
 
     const thread = threadRegistry.get(info.threadId)
     if (thread) {
@@ -407,9 +420,8 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 
     // Ephemeral sessions die silently — no crash message or skull visual
     if (!info.ephemeral) {
-      try {
-        await gateway.send(info.threadId, `💀 **${info.tmuxName}** crashed — use \`resume\` to reconnect or \`respawn\` to start fresh.`)
-      } catch {}
+      // safeSend (never throws, chunks, logs) — the daemon's delivery path.
+      await safeSend(info.threadId, buildCrashNotice(info))
       refreshSessionVisual(info.threadId, { state: 'crashed' })
     }
   }

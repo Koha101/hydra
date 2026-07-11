@@ -47,6 +47,7 @@ export type SessionInfo = {
   ephemeral?: boolean
   budgetDeadline?: number  // epoch ms; phase-budget nudge fires here, reap at +grace (persisted so restarts re-arm)
   spawnAnnounceId?: string // message ID of the spawn announce line — edited on death to show completion
+  spawnLogPath?: string    // black-box recorder: tmux pane output captured via `pipe-pane`, read on crash
 }
 
 export type ThreadMember = {
