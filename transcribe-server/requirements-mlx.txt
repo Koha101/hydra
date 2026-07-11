@@ -1,0 +1,7 @@
+# Parakeet-MLX transcription sidecar (server_mlx.py) — Apple Silicon only.
+# Native MLX runtime: no torch, no NeMo, no GPU/CUDA. Needs ffmpeg on PATH
+# (brew install ffmpeg) and an M-series Mac.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+parakeet-mlx

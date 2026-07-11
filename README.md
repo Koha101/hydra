@@ -161,6 +161,56 @@ hydra up slack
 
 Each platform gets its own daemon, state dir, and watchdog. Use different `CLAUDE_CONFIG_DIR` values for separate logins.
 
+### Voice dictation
+
+Hydra can transcribe inbound audio attachments (Discord voice notes, Slack audio
+clips) to text, so you can **dictate prompts** to Claude alongside text and images.
+
+Transcription runs in a self-hosted sidecar (`transcribe-server/`) so audio never
+leaves your machine. Claude doesn't accept audio natively, so the daemon
+transcribes first and merges the text into the message as `[voice transcript] ...`;
+the original audio file stays available in `downloaded_files`. Backend by platform:
+
+- **macOS (Apple Silicon)** → **Parakeet-MLX** — NVIDIA Parakeet TDT on Apple's MLX
+  runtime. Native, fast (~50× realtime), no GPU/CUDA. _Default on macOS._
+- **Linux + NVIDIA GPU** → **Canary-Qwen 2.5B** via NeMo (top of the Open ASR
+  leaderboard for English accuracy).
+
+It's **on by default on the daemon side** — whenever a sidecar is reachable, voice
+notes are transcribed; when it isn't, audio just passes through. So the only thing
+to set up is the sidecar.
+
+**Try it right now (no model install):**
+
+```bash
+./start-transcribe.sh mock     # GPU-free stub, returns a canned transcript
+```
+
+Send a voice note → Claude receives `[voice transcript] This is a mock transcription...`.
+(The mock is manual-only: the daemon never auto-starts it, so a leftover mock
+setting can't silently feed canned text into real messages. `hydra down` or
+`tmux kill-session -t hydra-transcribe` stops it.)
+
+**Real transcription (one-time; needs ffmpeg — `brew install ffmpeg`):**
+
+```bash
+./transcribe-server/setup.sh   # venv + the right backend for your platform
+```
+
+That's it. Once set up, the sidecar starts and stays up **with the daemon** —
+`hydra up`, `start-daemon.sh`, and the watchdog all bring it along; `hydra down`
+stops it. One shared tmux session (`hydra-transcribe`) serves every platform
+daemon. Run `./start-transcribe.sh` to start it by hand. Set
+`HYDRA_TRANSCRIBE_AUTOSTART=0` to keep the daemon from managing it, or `=1` to
+force autostart even before setup (loud failure instead of a quiet skip).
+
+If the sidecar is unreachable, the daemon logs it and delivers the message without a
+transcript — dictation never blocks normal messages (a down sidecar fails fast; a
+live-but-slow one delays only the voice message itself, up to
+`HYDRA_TRANSCRIBE_TIMEOUT_MS`, 60s default). Disable entirely with
+`HYDRA_TRANSCRIBE_ENABLED=0`. Full setup, env vars, and tuning:
+[`transcribe-server/README.md`](transcribe-server/README.md).
+
 ## Tools
 
 | Tool | Description |

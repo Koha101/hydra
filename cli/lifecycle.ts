@@ -104,6 +104,26 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Transcription sidecar (voice dictation)
+// ---------------------------------------------------------------------------
+
+// Delegates to start-transcribe.sh --auto: quiet no-op unless the sidecar is
+// set up (or explicitly enabled), idempotent when already running. Returns a
+// message to surface, or null when there's nothing to report. Never throws —
+// dictation must not block the daemon lifecycle.
+function startTranscribeAuto(cfg: HydraConfig): string | null {
+  try {
+    const out = execFileSync(join(cfg.hydraDir, 'start-transcribe.sh'), ['--auto'], {
+      encoding: 'utf-8', stdio: 'pipe', timeout: 15_000,
+      env: { ...process.env, HYDRA_STATE_DIR: cfg.stateDir, CHAT_PLATFORM: cfg.platform } as Record<string, string>,
+    })
+    return out.trim() || null
+  } catch (err: unknown) {
+    return `transcribe sidecar autostart failed: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+// ---------------------------------------------------------------------------
 // up (replaces start-daemon.sh + start-byte.sh)
 // ---------------------------------------------------------------------------
 
@@ -138,6 +158,9 @@ export async function lifecycleUp(platform: string): Promise<void> {
   tmuxSpawn(cfg.daemonTmux,
     `cd ${shq(cfg.hydraDir)} && ${buildDaemonEnvs(cfg)} bun run daemon.ts 2>&1 | tee -a ${cfg.daemonLog}`)
   appendLog(cfg.daemonLog, `Daemon started in tmux session '${cfg.daemonTmux}' (SPAWN_CWD=${cfg.spawnCwd})`)
+
+  const transcribeMsg = startTranscribeAuto(cfg)
+  if (transcribeMsg) console.log(transcribeMsg)
 
   if (!await waitForSocket(cfg.sockPath, cfg.socketTimeout)) {
     console.error(`error: ${platform} daemon socket did not appear`)
@@ -179,6 +202,12 @@ export async function lifecycleDown(platform: string): Promise<void> {
   killOrphanBytes(cfg.sockPath, cfg.byteLog, '-9')
 
   tmuxKill(cfg.daemonTmux)
+  const otherDaemonAlive = ['slack', 'discord']
+    .filter(p => p !== cfg.platform)
+    .some(p => tmuxExists(`${p}-daemon`))
+  if (!otherDaemonAlive) {
+    tmuxKill(cfg.transcribeTmux)
+  }
 
   for (const f of ['daemon.sock', 'daemon.pid']) {
     try { unlinkSync(join(cfg.stateDir, f)) } catch {}
@@ -300,6 +329,11 @@ export async function lifecycleWatchdog(platform: string): Promise<void> {
   if (!daemonRestartedThisTick && !tmuxExists(cfg.byteTmux) && tmuxExists(cfg.daemonTmux)) {
     appendLog(cfg.watchdogLog, `Bot session '${cfg.byteTmux}' missing (daemon alive), reviving`)
     await startByte(cfg)
+  }
+
+  if (!tmuxExists(cfg.transcribeTmux)) {
+    const transcribeMsg = startTranscribeAuto(cfg)
+    if (transcribeMsg) appendLog(cfg.watchdogLog, transcribeMsg)
   }
 }
 
