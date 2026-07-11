@@ -9,6 +9,7 @@ import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSe
 import { isProtocolPost } from './protocol-registry.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
+import { refreshDashboard } from './dashboard.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -239,6 +240,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         info.description = description.slice(0, 120)
         registry.persist()
         refreshSessionVisual(info.threadId)
+        refreshDashboard()
         return { content: [{ type: 'text', text: `description set for ${info.tmuxName}` }] }
       }
 
