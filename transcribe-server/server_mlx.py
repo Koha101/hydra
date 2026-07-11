@@ -61,7 +61,10 @@ def _transcribe(wav_path: str) -> str:
     assert _model is not None
     result = _model.transcribe(wav_path)
     # parakeet-mlx returns an aligned result object with a `.text` attribute.
-    return (getattr(result, "text", None) or str(result)).strip()
+    # Fall back to str(result) only when the attribute is missing — empty text
+    # (silent audio) must yield "", not the object repr.
+    text = getattr(result, "text", None)
+    return (text if text is not None else str(result)).strip()
 
 
 @app.get("/health")
