@@ -314,6 +314,13 @@ export async function handleDesignAnswer(threadId: string, answerText: string): 
 }
 
 async function startProposalPhase(state: DesignState): Promise<void> {
+  const aliveUnproposed = state.personas.filter(p => !p.proposed && transport.has(p.sessionId)).length
+  if (aliveUnproposed === 0) {
+    process.stderr.write(`daemon: design: no alive personas for proposals — cancelling\n`)
+    await cancelDesign(state.ownerThreadId, `All personas crashed. Design cancelled.\nUse \`design: ${state.topic}\` to retry.`)
+    return
+  }
+
   await safeSend(state.ownerThreadId, `_${formatPhaseBadge('🎨', state.phase)} Waiting for proposals..._`)
 
   state.timeout = setTimeout(async () => {
@@ -360,7 +367,7 @@ async function cleanupDesignSessions(state: DesignState, reason: string): Promis
 // Cancel a design
 // ---------------------------------------------------------------------------
 
-export async function cancelDesign(threadId: string): Promise<void> {
+export async function cancelDesign(threadId: string, message?: string): Promise<void> {
   const state = designs.get(threadId)
   if (!state) return
 
@@ -374,7 +381,7 @@ export async function cancelDesign(threadId: string): Promise<void> {
   await cleanupDesignSessions(state, 'design cancelled')
   designs.delete(threadId)
   refreshSessionVisual(threadId)
-  await gateway.send(state.ownerThreadId, `Design session cancelled.`)
+  await gateway.send(state.ownerThreadId, message ?? `Design session cancelled.`)
 }
 
 // ---------------------------------------------------------------------------
@@ -604,8 +611,14 @@ async function runRefinement(
 }
 
 async function processNextDivergence(state: DesignState): Promise<void> {
+  const anyAlive = state.personas.some(p => transport.has(p.sessionId))
+  if (!anyAlive) {
+    process.stderr.write(`daemon: design: all personas dead at refinement entry — cancelling\n`)
+    await cancelDesign(state.ownerThreadId, `All personas crashed during synthesis. Proposals were gathered but refinement couldn't run.\nUse \`design: ${state.topic}\` to retry.`)
+    return
+  }
+
   if (!state.refinementQueue || state.refinementQueue.length === 0) {
-    // All divergences refined — auto re-synthesize
     void autoAdvanceAfterRefinement(state)
     return
   }
@@ -615,14 +628,14 @@ async function processNextDivergence(state: DesignState): Promise<void> {
   state.refinementResponses = 0
   state.refinementRespondedIds = new Set()
 
-  // Find relevant personas
+  // Find relevant personas — only those with a live transport connection
   const relevant = state.personas.filter(p =>
-    divergence.personas.some(name => normalizePersonaName(name) === normalizePersonaName(p.name))
+    transport.has(p.sessionId) && divergence.personas.some(name => normalizePersonaName(name) === normalizePersonaName(p.name))
   )
   state.refinementExpected = relevant.length
 
   if (relevant.length === 0) {
-    await safeSend(state.ownerThreadId, `_Divergence ${state.currentDivergence}: no matching personas found. Skipping._`)
+    await safeSend(state.ownerThreadId, `_Divergence ${state.currentDivergence}: no alive matching personas. Skipping._`)
     await processNextDivergence(state)
     return
   }
@@ -679,8 +692,17 @@ export function onDesignParticipantDisconnect(sessionId: string): void {
 
     // Personas are expendable — adjust expectations immediately (no grace timer)
     if (persona) {
-      process.stderr.write(`daemon: design: ${label} disconnected/died\n`)
-      void gateway.send(threadId, `_💀 ${label} (${persona.sessionName}) disconnected. Continuing with ${state.personas.filter(p => p.sessionId !== sessionId).length} remaining personas._`).catch(err => process.stderr.write(`daemon: design: death notice send failed: ${err}\n`))
+      const aliveCount = state.personas.filter(p => p.sessionId !== sessionId && transport.has(p.sessionId)).length
+      process.stderr.write(`daemon: design: ${label} disconnected/died (${aliveCount} alive)\n`)
+      void gateway.send(threadId, `_💀 ${label} (${persona.sessionName}) disconnected. ${aliveCount > 0 ? `Continuing with ${aliveCount} remaining persona${aliveCount !== 1 ? 's' : ''}.` : ''}_`).catch(err => process.stderr.write(`daemon: design: death notice send failed: ${err}\n`))
+
+      const personaActivePhases: DesignPhase[] = ['questioning', 'independent', 'refinement']
+      if (aliveCount === 0 && personaActivePhases.includes(state.phase)) {
+        if (state.timeout) { clearTimeout(state.timeout); state.timeout = undefined }
+        process.stderr.write(`daemon: design: all personas dead — cancelling\n`)
+        void cancelDesign(threadId, `All personas crashed. Design cancelled.\nUse \`design: ${state.topic}\` to retry.`).catch(e => process.stderr.write(`daemon: design: cancel failed: ${e}\n`))
+        return
+      }
 
       if (state.phase === 'questioning') {
         state.questionsExpected--
