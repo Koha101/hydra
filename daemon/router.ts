@@ -429,8 +429,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (reviewMatch) {
-        const preModel = reviewMatch[1] ? resolveModelAlias(reviewMatch[1]) : undefined
-        const postModel = reviewMatch[3] ? resolveModelAlias(reviewMatch[3]) : undefined
+        const preAlias = reviewMatch[1]?.toLowerCase()
+        const postAlias = reviewMatch[3]?.toLowerCase()
+        const isCodex = preAlias === 'codex' || postAlias === 'codex'
+        const preModel = (preAlias && preAlias !== 'codex') ? resolveModelAlias(preAlias) : undefined
+        const postModel = (postAlias && postAlias !== 'codex') ? resolveModelAlias(postAlias) : undefined
         const modelId = preModel ?? postModel
         const rounds = parseInt(reviewMatch[2] ?? '3')
         let topic = reviewMatch[4]?.trim()
@@ -450,7 +453,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
         if (postPasses.length > 0) {
           topic = topic!.replace(passRe, '').replace(/\s{2,}/g, ' ').trim() || undefined
         }
-        void handleReviewIntercept(msg, rounds, topic, modelId, postPasses.length > 0 ? postPasses : undefined)
+        void handleReviewIntercept(msg, rounds, topic, modelId, postPasses.length > 0 ? postPasses : undefined, isCodex ? 'codex' : undefined)
         return
       }
 
@@ -475,8 +478,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const buildMatch = msg.content.match(/^(?:\/build|build)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (buildMatch) {
-        const preModel = buildMatch[1] ? resolveModelAlias(buildMatch[1]) : undefined
-        const postModel = buildMatch[3] ? resolveModelAlias(buildMatch[3]) : undefined
+        const buildPreAlias = buildMatch[1]?.toLowerCase()
+        const buildPostAlias = buildMatch[3]?.toLowerCase()
+        const buildIsCodex = buildPreAlias === 'codex' || buildPostAlias === 'codex'
+        const preModel = (buildPreAlias && buildPreAlias !== 'codex') ? resolveModelAlias(buildPreAlias) : undefined
+        const postModel = (buildPostAlias && buildPostAlias !== 'codex') ? resolveModelAlias(buildPostAlias) : undefined
         const buildModelId = preModel ?? postModel
         const buildRounds = parseInt(buildMatch[2] ?? '3')
         const buildTask = buildMatch[4]?.trim()
@@ -487,7 +493,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
         }
-        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId)
+        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId, buildIsCodex ? 'codex' : undefined)
         return
       }
 

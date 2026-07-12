@@ -3,7 +3,7 @@ import { registry } from '../sessions.js'
 import { startBuild, getBuildByThread, cancelBuild } from '../build.js'
 import type { InboundMessage } from '../../gateway.js'
 
-export async function handleBuildIntercept(msg: InboundMessage, rounds: number, task?: string, worktree?: string, model?: string): Promise<void> {
+export async function handleBuildIntercept(msg: InboundMessage, rounds: number, task?: string, worktree?: string, model?: string, engine?: 'claude' | 'codex'): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🔨').catch(() => {})
 
   // Validate rounds
@@ -37,7 +37,7 @@ export async function handleBuildIntercept(msg: InboundMessage, rounds: number, 
   const clampedRounds = Math.max(1, Math.min(rounds, 5))
 
   try {
-    await startBuild(threadId, sessionId, clampedRounds, task, worktree, model)
+    await startBuild(threadId, sessionId, clampedRounds, task, worktree, model, engine)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await gateway.send(msg.channelId, `Build failed to start: ${errMsg}`, { replyTo: msg.id })

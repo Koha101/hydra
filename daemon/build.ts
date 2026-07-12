@@ -56,6 +56,7 @@ export type BuildState = StatusLineState & {
   worktreePath?: string
   worktreeBranch?: string
   model?: string
+  engine?: 'claude' | 'codex'
   _closing?: { approved: boolean; lastCriticText: string }  // set on closing entry, cleared at completion
 }
 
@@ -150,6 +151,7 @@ export async function startBuild(
   task?: string,
   worktreeTarget?: string,
   model?: string,
+  engine?: 'claude' | 'codex',
 ): Promise<BuildState> {
   if (threadToBuild.has(ownerThreadId)) {
     throw new Error('A build is already in progress in this thread')
@@ -209,6 +211,7 @@ export async function startBuild(
     worktreePath,
     worktreeBranch,
     model,
+    ...(engine ? { engine } : {}),
   }
 
   builds.set(buildId, state)
@@ -595,6 +598,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
       trigger: 'build',
       joinThread: state.ownerThreadId,
       model: criticModel,
+      ...(state.engine ? { engine: state.engine } : {}),
       promptBuilder: (sessionId, tmuxName) =>
         buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd, implementationText }),
     })

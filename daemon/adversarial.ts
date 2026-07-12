@@ -75,6 +75,7 @@ export type ReviewState = StatusLineState & {
   model?: string
   postPasses?: string[]
   _currentPassIdx?: number
+  engine?: 'claude' | 'codex'
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,7 @@ export async function startReview(
   topic?: string,
   model?: string,
   postPasses?: string[],
+  engine?: 'claude' | 'codex',
 ): Promise<ReviewState> {
   if (threadToReview.has(ownerThreadId)) {
     throw new Error('A review is already in progress in this thread')
@@ -183,6 +185,7 @@ export async function startReview(
     messageIds: [],
     model,
     ...(postPasses && postPasses.length > 0 ? { postPasses } : {}),
+    ...(engine ? { engine } : {}),
   }
 
   reviews.set(reviewId, state)
@@ -684,6 +687,7 @@ async function spawnCritic(state: ReviewState): Promise<void> {
       trigger: 'review',
       joinThread: state.ownerThreadId,
       model: criticModel,
+      ...(state.engine ? { engine: state.engine } : {}),
       promptBuilder: (sessionId, tmuxName) =>
         reviewCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, topic: state.topic }),
     })

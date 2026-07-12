@@ -3,7 +3,7 @@ import { registry } from '../sessions.js'
 import { startReview, getReviewByThread, cancelReview, listPostPasses } from '../adversarial.js'
 import type { InboundMessage } from '../../gateway.js'
 
-export async function handleReviewIntercept(msg: InboundMessage, rounds: number, topic?: string, model?: string, postPasses?: string[]): Promise<void> {
+export async function handleReviewIntercept(msg: InboundMessage, rounds: number, topic?: string, model?: string, postPasses?: string[], engine?: 'claude' | 'codex'): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '⚔️').catch(() => {})
 
   // Must be in a session thread
@@ -42,7 +42,7 @@ export async function handleReviewIntercept(msg: InboundMessage, rounds: number,
   }
 
   try {
-    await startReview(threadId, sessionId, clampedRounds, topic, model, postPasses)
+    await startReview(threadId, sessionId, clampedRounds, topic, model, postPasses, engine)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await gateway.send(msg.channelId, `Review failed to start: ${errMsg}`, { replyTo: msg.id })
