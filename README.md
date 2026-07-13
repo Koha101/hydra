@@ -1,6 +1,9 @@
 # Hydra
 
-Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or both simultaneously via MCP.
+A new interface to building — run coding agents over Discord/Slack.
+
+- Spawn and manage parallel agents from chat
+- tmux in to manage from terminal
 
 ## Architecture
 
