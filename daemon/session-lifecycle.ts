@@ -454,9 +454,22 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     try { execSync(`git -C ${shq(repoDir)} worktree prune 2>/dev/null`, { stdio: 'pipe' }) } catch {}
     try { execSync(`git -C ${shq(repoDir)} branch -D ${shq(branch)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
 
+    // Detect default branch (main/master) so worktree always starts clean
+    let defaultBranch = 'main'
     try {
-      execFileSync('git', ['-C', repoDir, 'worktree', 'add', '-b', branch, wtDir], { stdio: 'pipe' })
-      process.stderr.write(`daemon: created worktree ${wtDir} (branch ${branch})\n`)
+      defaultBranch = execSync(`git -C ${shq(repoDir)} symbolic-ref refs/remotes/origin/HEAD`, { stdio: 'pipe' }).toString().trim().replace('refs/remotes/origin/', '')
+    } catch {
+      try {
+        // Fallback: check if 'main' exists, otherwise use 'master'
+        execSync(`git -C ${shq(repoDir)} rev-parse --verify main`, { stdio: 'pipe' })
+      } catch {
+        defaultBranch = 'master'
+      }
+    }
+
+    try {
+      execFileSync('git', ['-C', repoDir, 'worktree', 'add', '-b', branch, wtDir, defaultBranch], { stdio: 'pipe' })
+      process.stderr.write(`daemon: created worktree ${wtDir} (branch ${branch}) from ${defaultBranch}\n`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`failed to create worktree: ${msg}`)
