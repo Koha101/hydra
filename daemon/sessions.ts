@@ -103,7 +103,7 @@ export type ThreadMetadata = {
 }
 
 export type SpawnOpts = {
-  forkFrom?: { claudeSessionId: string; parentName: string }
+  forkFrom?: { parentName: string; claudeSessionId?: string; codexSessionId?: string }
   handedOffFrom?: string
   artifact?: string
   existingThreadId?: string                                    // reuse an existing thread instead of creating a new one

@@ -194,6 +194,7 @@ Spawn isolated Claude or Codex sessions from chat:
 | `/clear` | Reset the active Claude or Codex conversation context |
 | `/ultracode on|off` | Toggle Claude ultracode; for Codex, set effort to `ultra` or `default` |
 | `/provider claude|codex` | Hand off a live thread to the other provider |
+| `/fork` / `fork: <focus>` | Fork the current Claude or Codex conversation into a separate Hydra thread |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
 | `help` / `commands` | Show all available commands |
 
@@ -204,6 +205,8 @@ Codex sessions reuse your local Codex CLI login and preserve their Codex convers
 The Discord `/spawn` command exposes `topic`, `provider`, and `model`; `provider` defaults to Claude and `model` is optional. For example, choose `provider: codex` to start a Codex session, or use the text form `spawn codex gpt-5.6-sol: inspect this repository`.
 
 Inside a live session thread, `/provider codex` or `/provider claude` keeps the same Discord thread and working directory. Hydra resumes that provider's most recent conversation from the thread when one exists and supplies the messages posted while it was inactive; the first switch to a provider starts a new conversation with recent thread history. Active build/review/design protocols must be cancelled before switching.
+
+`/fork` works for both providers and leaves the parent session unchanged. Claude uses its native fork-session flow; Codex uses its persisted conversation through the Codex app-server `thread/fork` method, then resumes the returned fork ID in a new Hydra thread. Add an optional focus with `/fork: investigate the parser` or the Discord slash command's `focus` field.
 
 Inside a Codex thread, `/model <model-id>` and `/effort <level>` update that session starting with its next turn. Use `default` to remove the per-session override and return to the Codex CLI configuration. Documented Codex effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; availability depends on the selected model.
 

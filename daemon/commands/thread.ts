@@ -10,6 +10,8 @@ import { isThreadOccupied } from '../protocol-registry.js'
 import { transferWatches } from '../pr-watch.js'
 import { buildProviderHandoffContext, findLatestProviderConversation } from '../provider-handoff.js'
 import { getBySessionId, updateIdempotency } from '../idempotency.js'
+import { getCodexContext } from '../codex-control.js'
+import { forkCodexSession } from '../codex-app-server.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { SessionInfo, SessionProvider, SpawnResult } from '../sessions.js'
 
@@ -212,12 +214,17 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     return
   }
 
-  if (info.provider === 'codex') {
-    void gateway.send(msg.channelId, 'Fork is not available for Codex sessions. Use `spawn codex: <topic>` to start a separate Codex thread.', { replyTo: msg.id }).catch(() => {})
-    return
-  }
-
-  if (!info.claudeSessionId) {
+  const provider = info.provider ?? 'claude'
+  if (provider === 'codex' && !info.codexSessionId) {
+    const current = await getCodexContext(info.sessionId).catch(() => undefined)
+    if (current?.codexSessionId) {
+      info.codexSessionId = current.codexSessionId
+      registry.persist()
+    } else {
+      void gateway.send(msg.channelId, 'Fork unavailable — the Codex conversation ID is not available yet. Wait for the current turn to finish and retry.', { replyTo: msg.id }).catch(() => {})
+      return
+    }
+  } else if (provider === 'claude' && !info.claudeSessionId) {
     const discovered = discoverClaudeSessionId(info.tmuxName)
     if (discovered) {
       info.claudeSessionId = discovered
@@ -244,9 +251,20 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
   const baseChatId = msg.parentChannelId ?? msg.channelId
 
   try {
+    const forkFrom = provider === 'codex'
+      ? {
+        codexSessionId: await forkCodexSession(info.codexSessionId!, {
+          cwd: info.capabilities?.cwd,
+          model: info.capabilities?.model,
+        }),
+        parentName,
+      }
+      : { claudeSessionId: info.claudeSessionId!, parentName }
     const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
-      forkFrom: { claudeSessionId: info.claudeSessionId, parentName },
+      forkFrom,
       model: info.capabilities?.model,
+      effort: provider === 'codex' ? info.capabilities?.effort : undefined,
+      provider,
     })
 
     const pe = sessionEmoji(parentName)
@@ -269,6 +287,11 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
+    if (provider === 'codex') {
+      process.stderr.write(`daemon: Codex fork failed: ${errMsg}\n`)
+      try { await gateway.send(msg.channelId, `Codex fork failed: ${errMsg}. The parent session is unchanged.`, { replyTo: msg.id }) } catch {}
+      return
+    }
     process.stderr.write(`daemon: fork failed, falling back to spawn: ${errMsg}\n`)
     try {
       await gateway.send(msg.channelId, `⚠️ Fork failed — spawning fresh session that will read the thread for context.`, { replyTo: msg.id })

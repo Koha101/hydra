@@ -16,7 +16,7 @@ import { computeToolsForSession } from './bridge-tools.js'
 import { extractPhaseBudget } from './util.js'
 import { startPhaseBudget, clearPhaseBudget } from './phase-budget.js'
 import { isKnownModel, resolveModelAlias, spawnModel } from '../shared/constants.js'
-import { buildSpawnPrompt, buildCodexSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
+import { buildSpawnPrompt, buildCodexSpawnPrompt, buildCodexForkPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
 import { loadAccess } from './access.js'
@@ -267,8 +267,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const isResume = !!opts?.resumeFrom
   const isResurrect = !!opts?.resurrectFrom
   const provider = opts?.provider ?? 'claude'
-  if (provider === 'codex' && isFork) {
-    throw new Error('Codex sessions cannot be forked; use a fresh `spawn codex:` session instead')
+  if (isFork) {
+    const forkId = provider === 'codex' ? opts!.forkFrom!.codexSessionId : opts!.forkFrom!.claudeSessionId
+    if (!forkId) throw new Error(`${provider} fork source conversation ID is required`)
   }
   const originType: 'spawn' | 'fork' | 'handoff' | 'resurrect' = isFork ? 'fork' : isHandoff ? 'handoff' : isResurrect ? 'resurrect' : 'spawn'
   const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom ?? opts?.resurrectFrom
@@ -438,6 +439,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   let prompt: string
   if (opts?.promptBuilder) {
     prompt = opts.promptBuilder(sessionId, tmuxName)
+  } else if (provider === 'codex' && isFork) {
+    prompt = buildCodexForkPrompt({ ...promptParams, originFrom: originFrom! })
   } else if (provider === 'codex') {
     prompt = buildCodexSpawnPrompt(promptParams)
   } else if (isHandoff) {
@@ -472,6 +475,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   let providerArgs: string
   if (provider === 'codex') {
     const codexBridge = join(import.meta.dir, '..', 'codex-bridge.ts')
+    const codexConversationId = isFork ? opts!.forkFrom!.codexSessionId : isResume ? opts!.resumeFrom : undefined
     providerArgs = [
       `bun run ${shq(codexBridge)}`,
       `--session-id ${shq(sessionId)}`,
@@ -480,7 +484,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--prompt ${shq(prompt)}`,
       ...(model !== 'default' ? [`--model ${shq(model)}`] : []),
       ...(effort !== 'default' ? [`--effort ${shq(effort!)}`] : []),
-      ...(isResume ? [`--resume ${shq(opts!.resumeFrom!)}`] : []),
+      ...(codexConversationId ? [`--resume ${shq(codexConversationId)}`] : []),
     ].join(' ')
   } else if (isFork) {
     providerArgs = [
@@ -571,7 +575,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     initiator: opts?.initiator,
     ephemeral: opts?.ephemeral,
     ...(phaseBudgetMs ? { budgetDeadline: now + phaseBudgetMs } : {}),
-    ...(provider === 'codex' && isResume ? { codexSessionId: opts!.resumeFrom } : {}),
+    ...(provider === 'codex' && (isResume || isFork)
+      ? { codexSessionId: isFork ? opts!.forkFrom!.codexSessionId : opts!.resumeFrom }
+      : {}),
   })
   if (phaseBudgetMs) startPhaseBudget(sessionId)
   // Don't register in threadToSession for join members — owner keeps that mapping

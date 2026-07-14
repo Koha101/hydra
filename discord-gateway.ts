@@ -22,7 +22,7 @@ import {
 // Native Discord slash commands (registered per-guild for instant availability).
 // Each maps to hydra's existing text command via slashToText() below.
 const STR = ApplicationCommandOptionType.String
-const HYDRA_SLASH_COMMANDS = [
+export const HYDRA_SLASH_COMMANDS = [
   { name: 'sessions', description: 'List active sessions' },
   { name: 'context', description: 'Show the session\'s context usage' },
   { name: 'clear', description: 'Wipe the session\'s conversation context (in place)' },
@@ -37,6 +37,8 @@ const HYDRA_SLASH_COMMANDS = [
   { name: 'provider', description: 'Hand off this thread to Claude or Codex', options: [
     { name: 'provider', description: 'Destination provider', type: STR, required: true,
       choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) }] },
+  { name: 'fork', description: 'Fork this Claude or Codex session into a new thread', options: [
+    { name: 'focus', description: 'Optional focus for the forked session', type: STR, required: false }] },
   { name: 'ultracode', description: 'Toggle Claude ultracode or Codex ultra effort', options: [
     { name: 'mode', description: 'on or off', type: STR, required: true,
       choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] }] },
@@ -50,13 +52,17 @@ const HYDRA_SLASH_COMMANDS = [
 ]
 
 /** Translate a slash interaction into hydra's text-command form. */
-function slashToText(interaction: ChatInputCommandInteraction): string {
+export function slashToText(interaction: ChatInputCommandInteraction): string {
   const name = interaction.commandName
   if (name === 'spawn') {
     const topic = interaction.options.getString('topic') ?? ''
     const provider = interaction.options.getString('provider') ?? 'claude'
     const model = interaction.options.getString('model')
     return `/spawn ${provider}${model ? ` ${model}` : ''}: ${topic}`
+  }
+  if (name === 'fork') {
+    const focus = interaction.options.getString('focus')?.trim()
+    return focus ? `/fork: ${focus}` : '/fork'
   }
   const arg = interaction.options.data[0]?.value
   return arg !== undefined ? `/${name} ${arg}` : `/${name}`
