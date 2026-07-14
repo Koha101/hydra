@@ -15,7 +15,8 @@ Import topology: `docs/topology.html` (interactive analysis dashboard) + `docs/t
 ```sh
 bun build daemon.ts --target bun --outdir /tmp/hb    # daemon
 bun build cli/hydra.ts --target bun --outdir /tmp/hb  # CLI
-bun build bridge.ts --target bun --outdir /tmp/hb     # bridge
+bun build bridge.ts --target bun --outdir /tmp/hb     # Claude bridge
+bun build codex-bridge.ts --target bun --outdir /tmp/hb # Codex bridge
 bun test                                              # all tests
 ```
 

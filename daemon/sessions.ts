@@ -13,9 +13,13 @@ export type SessionCapabilities = {
   role: 'main' | 'worker'
   tools: string[]
   model: string
+  effort?: string
   cwd: string
   platform: string
+  provider?: SessionProvider
 }
+
+export type SessionProvider = 'claude' | 'codex'
 
 export type SessionInfo = {
   sessionId: string
@@ -32,6 +36,8 @@ export type SessionInfo = {
   contentEmoji?: string
   messageCount?: number
   claudeSessionId?: string
+  codexSessionId?: string
+  provider?: SessionProvider
   originType?: 'spawn' | 'fork' | 'handoff' | 'resurrect'
   originFrom?: string
   initiator?: string
@@ -41,6 +47,8 @@ export type SessionInfo = {
   lastReplyId?: string
   worktreeRepo?: string
   worktreePath?: string
+  worktreeBranch?: string
+  worktreeName?: string
   isJoinMember?: boolean
   deadAt?: number
   contextLinks?: string[]
@@ -70,7 +78,10 @@ export type ThreadSessionEntry = {
   endedAt?: number
   messageCount: number
   claudeSessionId?: string
+  codexSessionId?: string
+  provider?: SessionProvider
   model?: string
+  effort?: string
 }
 
 export type ThreadMetadata = {
@@ -102,6 +113,9 @@ export type SpawnOpts = {
   initiator?: string
   ephemeral?: boolean    // auto-kill on [done] sentinel, skip death visuals
   model?: string         // per-spawn model override (falls back to spawnModel() / HYDRA_MODEL)
+  effort?: string        // per-spawn Codex reasoning-effort override
+  provider?: SessionProvider // defaults to Claude; Codex is opt-in per spawn
+  reuseWorktree?: { repo: string; path: string; branch?: string; name?: string } // preserve an existing worktree across provider handoff
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +377,7 @@ export class ThreadRegistry {
     anchorMessageId?: string, threadUrl?: string, topic: string,
     respawnCount: number, sessionId: string, tmuxName: string,
     originType: 'spawn' | 'fork' | 'handoff' | 'resurrect', originFrom?: string,
-    model?: string,
+    model?: string, effort?: string, provider?: SessionProvider,
   }): void {
     const now = Date.now()
     let thread = this.threads.get(threadId)
@@ -393,11 +407,13 @@ export class ThreadRegistry {
       startedAt: now,
       messageCount: 0,
       model: opts.model,
+      effort: opts.effort,
+      provider: opts.provider,
     })
     this.persist()
   }
 
-  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string): void {
+  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string, codexSessionId?: string): void {
     const thread = this.threads.get(threadId)
     if (!thread) return
     const entry = thread.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
@@ -405,6 +421,7 @@ export class ThreadRegistry {
       entry.endedAt = Date.now()
       entry.messageCount = messageCount
       entry.claudeSessionId = claudeSessionId
+      entry.codexSessionId = codexSessionId
     }
     this.persist()
   }
@@ -457,6 +474,8 @@ export class ThreadRegistry {
           startedAt: session.createdAt,
           messageCount: session.messageCount ?? 0,
           claudeSessionId: session.claudeSessionId,
+          codexSessionId: session.codexSessionId,
+          provider: session.provider,
         }],
       })
       created++

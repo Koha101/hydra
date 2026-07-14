@@ -348,9 +348,22 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
     }
   }
 
+  try {
+    execFileSync('codex', ['--version'], { stdio: 'pipe', env: process.env as Record<string, string> })
+    ok('codex on PATH (optional provider available)')
+    try {
+      execFileSync('codex', ['login', 'status'], { stdio: 'pipe', env: process.env as Record<string, string> })
+      ok('codex authentication available')
+    } catch {
+      wrn('codex is installed but not logged in — run `codex login` before `spawn codex:`')
+    }
+  } catch {
+    wrn('codex not found on PATH — Claude still works, but `spawn codex:` is unavailable')
+  }
+
   const check = await compileCheck(cfg.hydraDir)
   if (check.ok) {
-    ok('daemon + bridge compile')
+    ok('daemon + Claude/Codex bridges compile')
   } else {
     bad('compile FAILED — daemon would crash-loop on boot:')
     console.log(check.errors.split('\n').map(l => `      ${l}`).join('\n'))

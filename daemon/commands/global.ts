@@ -15,6 +15,7 @@ import { startDesign } from '../design.js'
 import type { SpawnTemplate } from '../templates.js'
 import type { InboundMessage } from '../../gateway.js'
 import type { Access } from '../access.js'
+import type { SessionProvider } from '../sessions.js'
 
 const RESTART_PENDING_FILE = join(STATE_DIR, 'restart-pending.json')
 
@@ -42,6 +43,7 @@ async function spawnAndNotify(
   topic: string,
   template?: { name: string; template: SpawnTemplate },
   model?: string,
+  provider: SessionProvider = 'claude',
 ): Promise<void> {
   void gateway.react(msg.channelId, msg.id, '🚀').catch(() => {})
   const chatId = await resolveSpawnTarget(msg)
@@ -52,15 +54,17 @@ async function spawnAndNotify(
   const spawnOpts = {
     ...(template && { promptPrefix: template.template.prompt }),
     ...(resolvedModel && { model: resolvedModel }),
+    ...(provider !== 'claude' && { provider }),
   }
 
   try {
     const result = await doSpawnSession(topic, chatId, msg.id, Object.keys(spawnOpts).length > 0 ? spawnOpts : undefined)
 
-    if (label || resolvedModel) {
+    if (label || resolvedModel || provider !== 'claude') {
       const parts: string[] = []
       if (label) parts.push(`**${label}** template`)
       if (resolvedModel) parts.push(`model \`${resolvedModel}\``)
+      if (provider !== 'claude') parts.push(`provider \`${provider}\``)
       process.stderr.write(`daemon: ${label ? `template "${label}" ` : ''}spawned ${result.name} for: ${topic}${resolvedModel ? ` (model: ${resolvedModel})` : ''}\n`)
       void gateway.send(result.threadId, `_Using ${parts.join(' · ')}_`).catch(() => {})
     }
@@ -116,8 +120,8 @@ async function spawnAndNotify(
   }
 }
 
-export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access, model?: string): Promise<void> {
-  await spawnAndNotify(msg, topic, undefined, model)
+export async function handleSpawnIntercept(msg: InboundMessage, topic: string, access: Access, model?: string, provider: SessionProvider = 'claude'): Promise<void> {
+  await spawnAndNotify(msg, topic, undefined, model, provider)
 }
 
 export async function handleTemplateSpawn(msg: InboundMessage, templateName: string, topic: string, template: SpawnTemplate, access: Access, model?: string): Promise<void> {
@@ -228,7 +232,9 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Channel** (work anywhere):',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
-    '• 🚀 `spawn <model>: <topic>` — spawn with model (sonnet, haiku, fable, etc)',
+    '• 🧠 `/spawn` — choose topic, provider (Claude/Codex), and optional model',
+    '• 🚀 `spawn <provider> [model]: <topic>` — equivalent text form',
+    '• 🚀 `spawn <model>: <topic>` — Claude shorthand (sonnet, haiku, fable, etc)',
     '• 🚀 `spawn-wt: <repo> <topic>` — spawn in a git worktree',
     '• 🎯 `review:` / `fix:` / `design:` — templated session (`<template> <model>: topic`) · 📋 `templates`',
     '• 📊 `list sessions` — show all running sessions',
@@ -241,6 +247,9 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• ☠️ `kill` — kill this session',
     '• 👂 `listen` / 🔇 `unlisten` — mute/unmute message delivery',
     '• ⏸️ `pause` / ▶️ `unpause` — mark as paused (visual only)',
+    '• ⚙️ `/model <id>` / `/effort <level>` — reconfigure Claude or Codex',
+    '• 📊 `/context` · 🧹 `/clear` · 🚀 `/ultracode on|off` — work with Claude or Codex',
+    '• 🔀 `/provider claude|codex` — hand off this thread between providers',
     '• 📈 `usage` — context %, messages, runtime',
     '',
     '**Multi-agent** (thread):',
@@ -274,8 +283,8 @@ let recoveryInProgress = false
 const MAX_CONCURRENT = 2
 const STAGGER_MS = 5_000
 
-function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }> {
-  const results: Array<{ thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }> = []
+function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: string; codexSessionId?: string; provider: SessionProvider; lastTmuxName: string; model?: string; effort?: string }> {
+  const results: Array<{ thread: ThreadMetadata; claudeSessionId?: string; codexSessionId?: string; provider: SessionProvider; lastTmuxName: string; model?: string; effort?: string }> = []
 
   // Check all sessions in registry for dead ones
   for (const info of registry.values()) {
@@ -287,25 +296,31 @@ function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: s
     results.push({
       thread,
       claudeSessionId: info.claudeSessionId,
+      codexSessionId: info.codexSessionId,
+      provider: info.provider ?? 'claude',
       lastTmuxName: info.tmuxName,
       model: info.capabilities?.model,
+      effort: info.capabilities?.effort,
     })
   }
 
   return results
 }
 
-async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }): Promise<{ name: string; method: 'resumed' | 'forked' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
-  const { thread, claudeSessionId, lastTmuxName, model } = dead
+async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: string; codexSessionId?: string; provider: SessionProvider; lastTmuxName: string; model?: string; effort?: string }): Promise<{ name: string; method: 'resumed' | 'forked' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
+  const { thread, claudeSessionId, codexSessionId, provider, lastTmuxName, model, effort } = dead
 
-  if (claudeSessionId) {
+  if (claudeSessionId || codexSessionId) {
     // Tier 1: full resume
     const result = await tryResume({
       topic: thread.topic,
       threadId: thread.threadId,
       claudeSessionId,
+      codexSessionId,
+      provider,
       threadUrl: thread.threadUrl,
       model,
+      effort,
     })
     if (result) {
       return { name: lastTmuxName, method: 'resumed', newName: result.name, threadUrl: thread.threadUrl }
@@ -313,7 +328,7 @@ async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: stri
     process.stderr.write(`daemon: recover ${lastTmuxName}: resume failed, trying fork-from-dead\n`)
 
     // Tier 2: fork from dead session (best-effort, short timeout)
-    try {
+    if (provider === 'claude' && claudeSessionId) try {
       const forkResult = await doSpawnSession(thread.topic, undefined, undefined, {
         existingThreadId: thread.threadId,
         forkFrom: { claudeSessionId, parentName: lastTmuxName },
@@ -326,7 +341,7 @@ async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: stri
   }
 
   // Tier 3: respawn
-  const result = await tryRespawn(thread.threadId, thread.topic, lastTmuxName, model)
+  const result = await tryRespawn(thread.threadId, thread.topic, lastTmuxName, model, provider, effort)
   if (result) {
     return { name: lastTmuxName, method: 'resurrected', newName: result.name, threadUrl: thread.threadUrl }
   }

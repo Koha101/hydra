@@ -13,6 +13,7 @@ import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
 import { shouldHoldIncumbentMain } from './main-guard.js'
+import { handleCodexConfigResult, handleCodexControlResult, rejectCodexConfigRequests } from './codex-control.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -155,9 +156,25 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       conn.sessionId = sessionId
 
       const claudeSessionId = msg.claudeSessionId as string | undefined
+      const codexSessionId = msg.codexSessionId as string | undefined
       const info = registry.get(sessionId)
+      const provider = msg.provider === 'codex' ? 'codex' : (info?.provider ?? 'claude')
       if (info) {
-        const resolved = claudeSessionId || discoverClaudeSessionId(info.tmuxName)
+        info.provider = provider
+        if (codexSessionId) info.codexSessionId = codexSessionId
+        if (provider === 'codex' && info.capabilities) {
+          if (typeof msg.model === 'string') info.capabilities.model = msg.model
+          if (typeof msg.effort === 'string') info.capabilities.effort = msg.effort
+          const thread = threadRegistry.get(info.threadId)
+          const histEntry = thread?.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+          if (histEntry) {
+            histEntry.model = info.capabilities.model
+            histEntry.effort = info.capabilities.effort
+            threadRegistry.persist()
+          }
+          registry.persist()
+        }
+        const resolved = provider === 'claude' ? (claudeSessionId || discoverClaudeSessionId(info.tmuxName)) : undefined
         if (resolved) {
           info.claudeSessionId = resolved
           registry.persist()
@@ -253,6 +270,46 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
         if (info?.ephemeral) startEphemeralTtl(sessionId)
       }
+      break
+    }
+
+    case 'session_identity': {
+      const sessionId = msg.sessionId as string
+      const info = registry.get(sessionId)
+      if (!info || conn.sessionId !== sessionId) break
+      if (msg.provider === 'codex' && typeof msg.codexSessionId === 'string') {
+        info.provider = 'codex'
+        info.codexSessionId = msg.codexSessionId
+        const thread = threadRegistry.get(info.threadId)
+        const entry = thread?.sessionHistory.find(h => h.sessionId === sessionId)
+        if (entry) {
+          entry.provider = 'codex'
+          entry.codexSessionId = msg.codexSessionId
+          threadRegistry.persist()
+        }
+        registry.persist()
+      } else if (msg.provider === 'codex' && msg.codexSessionId === null) {
+        info.provider = 'codex'
+        delete info.codexSessionId
+        const thread = threadRegistry.get(info.threadId)
+        const entry = thread?.sessionHistory.find(h => h.sessionId === sessionId)
+        if (entry) {
+          entry.provider = 'codex'
+          delete entry.codexSessionId
+          threadRegistry.persist()
+        }
+        registry.persist()
+      }
+      break
+    }
+
+    case 'session_config_result': {
+      if (conn.sessionId) handleCodexConfigResult(conn.sessionId, msg)
+      break
+    }
+
+    case 'session_control_result': {
+      if (conn.sessionId) handleCodexControlResult(conn.sessionId, msg)
       break
     }
 
@@ -362,6 +419,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
         histEntry.endedAt = Date.now()
         histEntry.messageCount = info.messageCount ?? 0
         histEntry.claudeSessionId = info.claudeSessionId
+        histEntry.codexSessionId = info.codexSessionId
       }
       threadRegistry.persist()
     }
@@ -408,6 +466,7 @@ export const socketServer = createServer((socket: Socket) => {
     }
     if (isOwner) {
       transport.delete(conn.sessionId)
+      rejectCodexConfigRequests(conn.sessionId)
     }
     if (conn.sessionId !== 'main') {
       const sid = conn.sessionId

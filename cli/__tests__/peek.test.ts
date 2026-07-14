@@ -1,31 +1,23 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { peek, type PeekOverrides } from '../peek.js'
 
-// Mock child_process before importing peek
 const mockExecSync = mock(() => '')
-const mockExecFileSync = mock(() => '')
-mock.module('child_process', () => ({
-  execSync: mockExecSync,
-  execFileSync: mockExecFileSync,
-}))
-
-// Mock helpers to avoid real socket/tmux calls
 const mockSendRequest = mock(async () => ({ ok: true, data: [] }))
 const mockTmuxExists = mock(() => true)
 const mockTmuxKill = mock(() => {})
-mock.module('../helpers.js', () => ({
+const mockExit = mock(() => { throw new Error('exit') })
+
+const deps = {
+  execSync: mockExecSync,
   resolveSocket: () => '/tmp/fake.sock',
   sendRequest: mockSendRequest,
   shq: (s: string) => "'" + s.replace(/'/g, "'\\''") + "'",
   tmuxExists: mockTmuxExists,
   tmuxKill: mockTmuxKill,
-}))
+  exit: mockExit,
+} as unknown as PeekOverrides
 
-// Now import peek (uses mocked modules)
-const { peek } = await import('../peek.js')
-
-// Capture process.exit calls
-const mockExit = mock(() => { throw new Error('exit') })
-process.exit = mockExit as any
+const runPeek = (args: string[]) => peek(args, undefined, deps)
 
 beforeEach(() => {
   mockExecSync.mockClear()
@@ -39,7 +31,7 @@ describe('peek', () => {
   describe('no live sessions', () => {
     test('exits cleanly when no sessions are live', async () => {
       mockSendRequest.mockResolvedValueOnce({ ok: true, data: [] })
-      try { await peek([], undefined) } catch {}
+      try { await runPeek([]) } catch {}
       expect(mockExit).toHaveBeenCalledWith(0)
     })
   })
@@ -50,7 +42,7 @@ describe('peek', () => {
         ok: true,
         data: [{ name: 'spark', status: 'connected', description: 'test' }],
       })
-      await peek([], undefined)
+      await runPeek([])
       const attachCall = mockExecSync.mock.calls.find(
         c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes("'spark'")
       )
@@ -62,7 +54,7 @@ describe('peek', () => {
         ok: true,
         data: [{ name: 'spark', status: 'connected' }],
       })
-      try { await peek(['drift'], undefined) } catch {}
+      try { await runPeek(['drift']) } catch {}
       expect(mockExit).toHaveBeenCalledWith(1)
     })
   })
@@ -77,7 +69,7 @@ describe('peek', () => {
           { name: 'nova', status: 'disconnected' },
         ],
       })
-      await peek([], undefined)
+      await runPeek([])
 
       // Should kill existing peek session
       expect(mockTmuxKill).toHaveBeenCalledWith('hydra-peek')
@@ -109,7 +101,7 @@ describe('peek', () => {
           { name: 'pixel', status: 'connected' },
         ],
       })
-      await peek([], undefined)
+      await runPeek([])
 
       const attachCall = mockExecSync.mock.calls.find(
         c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes('hydra-peek')
@@ -127,7 +119,7 @@ describe('peek', () => {
           { name: 'pixel', status: 'connected' },
         ],
       })
-      await peek([], undefined)
+      await runPeek([])
 
       const bindCalls = mockExecSync.mock.calls.filter(
         c => typeof c[0] === 'string' && c[0].includes('bind-key')
@@ -146,7 +138,7 @@ describe('peek', () => {
           { name: 'pixel', status: 'dead' },
         ],
       })
-      await peek([], undefined)
+      await runPeek([])
 
       // Only spark is live — should direct-attach, not split
       const attachCall = mockExecSync.mock.calls.find(
@@ -167,7 +159,7 @@ describe('peek', () => {
           { name: 'pixel', status: 'connected' },
         ],
       })
-      await peek(['pixel'], undefined)
+      await runPeek(['pixel'])
 
       const attachCall = mockExecSync.mock.calls.find(
         c => typeof c[0] === 'string' && c[0].includes('attach-session') && c[0].includes("'pixel'")

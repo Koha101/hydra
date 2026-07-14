@@ -1,11 +1,12 @@
-// Chat commands that reconfigure a running session by typing Claude Code's own
-// slash commands into its tmux pane: /model, /effort, /context.
-// Targets the thread's live session when used in a thread, else the main byte.
+// Chat commands that reconfigure a running session. Claude sessions receive
+// their native slash commands through tmux; Codex sessions use bridge control
+// messages because their Hydra sidecar runs `codex exec` non-interactively.
 import { readFileSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { gateway, PLATFORM, CLAUDE_CONFIG } from '../config.js'
-import { registry } from '../sessions.js'
-import { resolveModelAlias, EFFORT_LEVELS } from '../../shared/constants.js'
+import { registry, threadRegistry, type SessionInfo } from '../sessions.js'
+import { clearCodexContext, configureCodexSession, getCodexContext, type CodexConfigResult } from '../codex-control.js'
+import { resolveModelAlias, EFFORT_LEVELS, CODEX_EFFORT_LEVELS } from '../../shared/constants.js'
 import type { InboundMessage } from '../../gateway.js'
 
 const byteTmux = (): string => process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
@@ -17,6 +18,25 @@ function targetTmux(msg: InboundMessage): string {
     if (info) return info.tmuxName
   }
   return byteTmux()
+}
+
+function targetSession(msg: InboundMessage): SessionInfo | undefined {
+  return msg.isThread ? registry.resolveThreadSessionFromMsg(msg) : undefined
+}
+
+function persistCodexConfig(info: SessionInfo, result: CodexConfigResult): void {
+  if (info.capabilities) {
+    info.capabilities.model = result.model
+    info.capabilities.effort = result.effort
+  }
+  const thread = threadRegistry.get(info.threadId)
+  const entry = thread?.sessionHistory.find(h => h.sessionId === info.sessionId && !h.endedAt)
+  if (entry) {
+    entry.model = result.model
+    entry.effort = result.effort
+    threadRegistry.persist()
+  }
+  registry.persist()
 }
 
 /** Type a slash command into a tmux pane and submit it. Escape clears any partial
@@ -34,6 +54,22 @@ async function sendSlash(tmux: string, line: string): Promise<void> {
 }
 
 export async function handleModelIntercept(msg: InboundMessage, arg: string): Promise<void> {
+  const info = targetSession(msg)
+  if (info?.provider === 'codex') {
+    const requested = arg.trim()
+    try {
+      const result = await configureCodexSession(info.sessionId, {
+        model: requested.toLowerCase() === 'default' ? null : requested,
+      })
+      persistCodexConfig(info, result)
+      await gateway.send(msg.channelId, `⚙️ Codex model → \`${result.model}\` _(applies on the next turn)_`, { replyTo: msg.id }).catch(() => {})
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await gateway.send(msg.channelId, `❌ Could not change Codex model: ${detail}`, { replyTo: msg.id }).catch(() => {})
+    }
+    return
+  }
+
   const resolved = resolveModelAlias(arg.trim()) ?? arg.trim()
   const tmux = targetTmux(msg)
   await sendSlash(tmux, `/model ${resolved}`)
@@ -48,6 +84,25 @@ export async function handleModelIntercept(msg: InboundMessage, arg: string): Pr
 
 export async function handleEffortIntercept(msg: InboundMessage, arg: string): Promise<void> {
   const level = arg.trim().toLowerCase()
+  const info = targetSession(msg)
+  if (info?.provider === 'codex') {
+    if (level !== 'default' && !CODEX_EFFORT_LEVELS.has(level)) {
+      await gateway.send(msg.channelId, `Codex effort must be one of: ${[...CODEX_EFFORT_LEVELS].join(', ')}, default`, { replyTo: msg.id }).catch(() => {})
+      return
+    }
+    try {
+      const result = await configureCodexSession(info.sessionId, {
+        effort: level === 'default' ? null : level,
+      })
+      persistCodexConfig(info, result)
+      await gateway.send(msg.channelId, `⚙️ Codex effort → \`${result.effort}\` _(applies on the next turn)_`, { replyTo: msg.id }).catch(() => {})
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await gateway.send(msg.channelId, `❌ Could not change Codex effort: ${detail}`, { replyTo: msg.id }).catch(() => {})
+    }
+    return
+  }
+
   if (!EFFORT_LEVELS.has(level)) {
     await gateway.send(msg.channelId, `effort must be one of: ${[...EFFORT_LEVELS].join(', ')}`, { replyTo: msg.id }).catch(() => {})
     return
@@ -57,6 +112,30 @@ export async function handleEffortIntercept(msg: InboundMessage, arg: string): P
 }
 
 export async function handleContextIntercept(msg: InboundMessage): Promise<void> {
+  const info = targetSession(msg)
+  if (info?.provider === 'codex') {
+    try {
+      const result = await getCodexContext(info.sessionId)
+      if (!result.usage) {
+        await gateway.send(msg.channelId, `📊 Codex context — \`${info.tmuxName}\`\nNo token data yet; it becomes available after the first completed Codex turn.`, { replyTo: msg.id }).catch(() => {})
+        return
+      }
+      const { usedTokens, contextWindow, inputTokens, cachedInputTokens, outputTokens } = result.usage
+      const used = usedTokens.toLocaleString('en-US')
+      const input = inputTokens.toLocaleString('en-US')
+      const cached = cachedInputTokens.toLocaleString('en-US')
+      const output = outputTokens.toLocaleString('en-US')
+      const capacity = contextWindow && contextWindow > 0
+        ? `${used} / ${contextWindow.toLocaleString('en-US')} tokens (${Math.min(100, usedTokens / contextWindow * 100).toFixed(1)}% used, ${Math.max(0, contextWindow - usedTokens).toLocaleString('en-US')} remaining)`
+        : `${used} tokens used (context-window size unavailable)`
+      await gateway.send(msg.channelId, `📊 Codex context — \`${info.tmuxName}\` _(latest available usage)_\n${capacity}\ninput ${input} · cached ${cached} · output ${output}`, { replyTo: msg.id }).catch(() => {})
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await gateway.send(msg.channelId, `❌ Could not read Codex context: ${detail}`, { replyTo: msg.id }).catch(() => {})
+    }
+    return
+  }
+
   const tmux = targetTmux(msg)
   await sendSlash(tmux, '/context')
   await new Promise(r => setTimeout(r, 1800))
@@ -74,6 +153,23 @@ export async function handleContextIntercept(msg: InboundMessage): Promise<void>
 
 /** /clear — wipe the session's conversation context in place (CC's own /clear). Same process, memory reloads. */
 export async function handleClearIntercept(msg: InboundMessage): Promise<void> {
+  const info = targetSession(msg)
+  if (info?.provider === 'codex') {
+    try {
+      await clearCodexContext(info.sessionId)
+      delete info.codexSessionId
+      const thread = threadRegistry.get(info.threadId)
+      const entry = thread?.sessionHistory.find(h => h.sessionId === info.sessionId && !h.endedAt)
+      if (entry) delete entry.codexSessionId
+      registry.persist()
+      threadRegistry.persist()
+      await gateway.send(msg.channelId, '🧹 Codex context cleared — the next message starts a fresh Codex conversation and reloads workspace instructions and memory.', { replyTo: msg.id }).catch(() => {})
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await gateway.send(msg.channelId, `❌ Could not clear Codex context: ${detail}`, { replyTo: msg.id }).catch(() => {})
+    }
+    return
+  }
   await sendSlash(targetTmux(msg), '/clear')
   await gateway.send(msg.channelId, `🧹 context cleared — fresh conversation, memory reloads on the next message.`, { replyTo: msg.id }).catch(() => {})
 }
@@ -99,8 +195,8 @@ export async function handleRebootIntercept(msg: InboundMessage): Promise<void> 
   rebootDetached()
 }
 
-/** /ultracode on|off — toggle the persistent ultracode mode (xhigh + auto workflows); reboots to apply.
- * Keyword trigger stays on regardless, so "ultracode" in any message opts that one turn in. */
+/** /ultracode on|off — Codex maps this to ultra/default effort; Claude
+ * toggles its persistent ultracode mode and reboots the byte to apply. */
 export async function handleUltracodeIntercept(msg: InboundMessage, arg: string): Promise<void> {
   const a = arg.trim().toLowerCase()
   if (a !== 'on' && a !== 'off') {
@@ -108,6 +204,20 @@ export async function handleUltracodeIntercept(msg: InboundMessage, arg: string)
     return
   }
   const on = a === 'on'
+  const info = targetSession(msg)
+  if (info?.provider === 'codex') {
+    try {
+      const result = await configureCodexSession(info.sessionId, { effort: on ? 'ultra' : null })
+      persistCodexConfig(info, result)
+      await gateway.react(msg.channelId, msg.id, on ? '🚀' : '🐢').catch(() => {})
+      await gateway.send(msg.channelId, `Codex ultracode → **${on ? 'ON' : 'OFF'}** · effort \`${result.effort}\` _(applies on the next turn)_`, { replyTo: msg.id }).catch(() => {})
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await gateway.send(msg.channelId, `❌ Could not change Codex ultracode: ${detail}`, { replyTo: msg.id }).catch(() => {})
+    }
+    return
+  }
+
   const settingsPath = join(CLAUDE_CONFIG, 'settings.json')
   try {
     const s = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>

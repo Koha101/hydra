@@ -30,24 +30,34 @@ const HYDRA_SLASH_COMMANDS = [
   { name: 'reboot', description: 'Full restart: daemon + a fresh byte process' },
   { name: 'health', description: 'Daemon health' },
   { name: 'model', description: 'Switch the session model', options: [
-    { name: 'model', description: 'Model or alias', type: STR, required: true,
-      choices: ['fable', 'opus', 'sonnet', 'haiku'].map(m => ({ name: m, value: m })) }] },
+    { name: 'model', description: 'Claude alias or full Claude/Codex model ID', type: STR, required: true }] },
   { name: 'effort', description: 'Set reasoning effort', options: [
     { name: 'level', description: 'Effort level', type: STR, required: true,
-      choices: ['low', 'medium', 'high', 'xhigh', 'max'].map(m => ({ name: m, value: m })) }] },
-  { name: 'ultracode', description: 'Toggle ultracode mode (xhigh + auto workflows)', options: [
+      choices: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(m => ({ name: m, value: m })) }] },
+  { name: 'provider', description: 'Hand off this thread to Claude or Codex', options: [
+    { name: 'provider', description: 'Destination provider', type: STR, required: true,
+      choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) }] },
+  { name: 'ultracode', description: 'Toggle Claude ultracode or Codex ultra effort', options: [
     { name: 'mode', description: 'on or off', type: STR, required: true,
       choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] }] },
   { name: 'kill', description: 'Kill a session by name', options: [
     { name: 'name', description: 'Session name (e.g. pulse)', type: STR, required: true }] },
   { name: 'spawn', description: 'Spawn an isolated session', options: [
-    { name: 'topic', description: 'What the session should work on', type: STR, required: true }] },
+    { name: 'topic', description: 'What the session should work on', type: STR, required: true },
+    { name: 'provider', description: 'Provider (defaults to Claude)', type: STR, required: false,
+      choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) },
+    { name: 'model', description: 'Optional model alias or full model ID', type: STR, required: false }] },
 ]
 
 /** Translate a slash interaction into hydra's text-command form. */
 function slashToText(interaction: ChatInputCommandInteraction): string {
   const name = interaction.commandName
-  if (name === 'spawn') return `spawn: ${interaction.options.getString('topic') ?? ''}`
+  if (name === 'spawn') {
+    const topic = interaction.options.getString('topic') ?? ''
+    const provider = interaction.options.getString('provider') ?? 'claude'
+    const model = interaction.options.getString('model')
+    return `/spawn ${provider}${model ? ` ${model}` : ''}: ${topic}`
+  }
   const arg = interaction.options.data[0]?.value
   return arg !== undefined ? `/${name} ${arg}` : `/${name}`
 }

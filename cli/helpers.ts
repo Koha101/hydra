@@ -173,7 +173,7 @@ export function tmuxSessionAge(name: string): number | null {
 
 export async function compileCheck(hydraDir: string): Promise<{ ok: boolean; errors: string }> {
   const errors: string[] = []
-  for (const entry of ['daemon.ts', 'bridge.ts']) {
+  for (const entry of ['daemon.ts', 'bridge.ts', 'codex-bridge.ts']) {
     const result = await Bun.build({
       entrypoints: [join(hydraDir, entry)],
       target: 'bun',

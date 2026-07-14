@@ -55,6 +55,11 @@ describe('computeToolsForSession', () => {
     }
   })
 
+  test('spawn_session exposes Claude and Codex providers', () => {
+    const spawn = BRIDGE_TOOLS.find(t => t.name === 'spawn_session')!
+    expect((spawn.inputSchema.properties as any).provider.enum).toEqual(['claude', 'codex'])
+  })
+
   test('send_to_thread schema has required fields including type', () => {
     const tool = BRIDGE_TOOLS.find(t => t.name === 'send_to_thread')!
     expect(tool).toBeDefined()

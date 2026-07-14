@@ -8,7 +8,7 @@ import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleProviderIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
@@ -28,6 +28,7 @@ import { listTemplates, getTemplate } from './templates.js'
 // can never trigger them.
 const COMMAND_PREFIXES = [
   'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
+  'spawn codex', 'new session codex', 'spawn claude', 'new session claude',
   ...Object.keys(MODEL_ALIASES).flatMap(a => [`spawn ${a}:`, `new session ${a}:`, `spawn-wt ${a}:`]),
   'kill session:', 'kill:', '/kill',
   '/sessions', 'list sessions',
@@ -45,6 +46,8 @@ const COMMAND_RE = new RegExp(
 const SPAWN_MODEL_RE = new RegExp(`^(?:new session|spawn)\\s+(${MODEL_ALIAS_PATTERN}):\\s*([\\s\\S]+)`, 'i')
 const SPAWN_WT_MODEL_RE = new RegExp(`^(?:spawn-wt|/spawn-wt)\\s+(${MODEL_ALIAS_PATTERN}):\\s*(\\S+)\\s+([\\s\\S]+)`, 'i')
 const BARE_ALIAS_RE = new RegExp(`^(${MODEL_ALIAS_PATTERN}):?$`, 'i')
+const SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
+const EMPTY_SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*$/i
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -281,6 +284,27 @@ gateway.onMessage(async (msg: InboundMessage) => {
   }
 
   if (isAllowed) {
+    // "/spawn codex [model]: topic" and "/spawn claude [model]: topic".
+    // Native Discord /spawn interactions are translated to this form too.
+    const spawnProviderMatch = msg.content.match(SPAWN_PROVIDER_RE)
+    if (spawnProviderMatch) {
+      const provider = spawnProviderMatch[1].toLowerCase() as 'claude' | 'codex'
+      const model = spawnProviderMatch[2]
+      const topic = spawnProviderMatch[3].trim()
+      if (topic) {
+        void handleSpawnIntercept(msg, topic, access, model, provider)
+        return
+      }
+    }
+
+    const emptySpawnProviderMatch = msg.content.match(EMPTY_SPAWN_PROVIDER_RE)
+    if (emptySpawnProviderMatch) {
+      const provider = emptySpawnProviderMatch[1].toLowerCase()
+      const model = emptySpawnProviderMatch[2]
+      void gateway.send(msg.channelId, `_\`spawn ${provider}${model ? ` ${model}` : ''}:\` needs a topic._`, { replyTo: msg.id })
+      return
+    }
+
     // "spawn sonnet: topic" / "new session haiku: topic" — model alias before colon
     const spawnModelMatch = msg.content.match(SPAWN_MODEL_RE)
     if (spawnModelMatch) {
@@ -394,6 +418,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const effortMatch = msg.content.match(/^\/effort\s+(\S+)\s*$/i)
     if (effortMatch) {
       void handleEffortIntercept(msg, effortMatch[1])
+      return
+    }
+
+    const providerMatch = msg.content.match(/^\/provider\s+(claude|codex)\s*$/i)
+    if (providerMatch) {
+      void handleProviderIntercept(msg, providerMatch[1].toLowerCase() as 'claude' | 'codex')
       return
     }
 
