@@ -1,4 +1,4 @@
-export const DEFAULT_MODEL = 'claude-opus-4-6[1m]'
+export const DEFAULT_MODEL = 'claude-opus-4-8[1m]'
 
 export const KNOWN_MODELS = new Set([
   'claude-sonnet-5',
@@ -12,11 +12,26 @@ export const KNOWN_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
 ])
 
+/** Valid reasoning-effort levels for `/effort` (per `claude --help`). */
+export const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+
+/** Valid Codex reasoning-effort values. Model support varies by value. */
+export const CODEX_EFFORT_LEVELS = new Set([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+])
+
 /** Short aliases for chat commands like `spawn sonnet: topic`. */
 export const MODEL_ALIASES: Record<string, string> = {
   'sonnet': 'claude-sonnet-4-6[1m]',
   'haiku': 'claude-haiku-4-5-20251001',
-  'opus': 'claude-opus-4-6[1m]',
+  'opus': 'claude-opus-4-8[1m]',
   'fable': 'claude-fable-5[1m]',
   'sonnet-5': 'claude-sonnet-5[1m]',
   'opus-4-7': 'claude-opus-4-7[1m]',
@@ -51,6 +66,14 @@ export function isKnownModel(id: string): boolean {
 // change from the original SPAWN_MODEL constant — consistent with maxChunkLimit().
 export function spawnModel(): string {
   return process.env.HYDRA_MODEL?.trim() || DEFAULT_MODEL
+}
+
+// Late-bound (reads env per call). Marketplace that serves the bridge plugin — sets both
+// the `--channels plugin:discord@<name>` flag and the cache path `plugins/cache/<name>/discord`.
+// Defaults to Anthropic's official marketplace; override with HYDRA_MARKETPLACE when the plugin
+// is served from a local marketplace (e.g. `hydra-plugins`) rather than the published one.
+export function marketplaceName(): string {
+  return process.env.HYDRA_MARKETPLACE?.trim() || 'claude-plugins-official'
 }
 
 /** Extract a model alias prefix from text using colon syntax (e.g. "fable: topic").

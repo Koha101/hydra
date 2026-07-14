@@ -1,4 +1,3 @@
-import { transport } from './bridge-transport.js'
 import { loadAccess } from './access.js'
 import type { ChatGateway, ButtonDef } from '../gateway.js'
 
@@ -8,16 +7,27 @@ import type { ChatGateway, ButtonDef } from '../gateway.js'
 
 export const pendingPermissions = new Map<
   string,
-  { tool_name: string; description: string; input_preview: string }
+  { tool: string; summary: string; input: string; sessionable: boolean }
 >()
+
+export function approvalButtons(k: string, sessionable: boolean, withMore = true): ButtonDef[] {
+  const buttons: ButtonDef[] = withMore ? [{ id: `perm:more:${k}`, label: 'See more', style: 'secondary' }] : []
+  buttons.push({ id: `perm:allow:${k}`, label: 'Allow once', style: 'success', emoji: '✅' })
+  if (sessionable) buttons.push({ id: `perm:session:${k}`, label: 'Allow for session', style: 'primary', emoji: '🔓' })
+  buttons.push({ id: `perm:deny:${k}`, label: 'Deny', style: 'danger', emoji: '❌' })
+  return buttons
+}
 
 // ---------------------------------------------------------------------------
 // Button click handler for permission approval flow
 // ---------------------------------------------------------------------------
 
-const PERM_BUTTON_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
+const PERM_BUTTON_RE = /^perm:(allow|session|deny|more):([0-9a-f]{16})$/
 
-export function setupPermissionHandler(gateway: ChatGateway): void {
+export function setupPermissionHandler(
+  gateway: ChatGateway,
+  onDecision: (requestId: string, behavior: 'allow' | 'session' | 'deny') => boolean,
+): void {
   gateway.onButtonClick(click => {
     const m = PERM_BUTTON_RE.exec(click.customId)
     if (!m) return
@@ -28,45 +38,35 @@ export function setupPermissionHandler(gateway: ChatGateway): void {
       return
     }
 
-    const [, behavior, request_id] = m
+    const [, behavior, requestId] = m
 
     if (behavior === 'more') {
-      const details = pendingPermissions.get(request_id)
+      const details = pendingPermissions.get(requestId)
       if (!details) {
         void click.respond('Details no longer available.')
         return
       }
-      const { tool_name, description, input_preview } = details
+      const { tool, summary, input, sessionable } = details
       let prettyInput: string
       try {
-        prettyInput = JSON.stringify(JSON.parse(input_preview), null, 2)
+        prettyInput = JSON.stringify(JSON.parse(input), null, 2)
       } catch {
-        prettyInput = input_preview
+        prettyInput = input
       }
       const expanded =
-        `Permission: ${tool_name}\n\n` +
-        `tool_name: ${tool_name}\n` +
-        `description: ${description}\n` +
-        `input_preview:\n${prettyInput}`
-      const buttons: ButtonDef[] = [
-        { id: `perm:allow:${request_id}`, label: 'Allow', style: 'success', emoji: '✅' },
-        { id: `perm:deny:${request_id}`, label: 'Deny', style: 'danger', emoji: '❌' },
-      ]
-      void click.respond(expanded, buttons)
+        `Permission: ${tool}\n\n` +
+        `flagged: ${summary}\n` +
+        `input:\n${prettyInput}`
+      void click.respond(expanded, approvalButtons(requestId, sessionable, false))
       return
     }
 
-    // Forward allow/deny to main session bridge
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'permission_response',
-        request_id,
-        behavior,
-      })
-    }
-    pendingPermissions.delete(request_id)
-    const label = behavior === 'allow' ? 'Allowed' : 'Denied'
+    // Hand the decision to the gate-approval bridge, which writes the signed
+    // grant the permission-gate hook consumes on the agent's retry.
+    const applied = onDecision(requestId, behavior as 'allow' | 'session' | 'deny')
+    pendingPermissions.delete(requestId)
+    const label = !applied ? 'Request expired — ask the agent to re-run the action'
+      : behavior === 'deny' ? 'Denied' : behavior === 'session' ? 'Allowed for session' : 'Allowed once'
     void click.clearButtons(`${click.messageContent}\n\n${label}`)
   })
 }

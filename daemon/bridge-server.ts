@@ -7,16 +7,14 @@ import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool } from './bridge-dispatch.js'
 import { computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-tools.js'
 import { spawnModel } from '../shared/constants.js'
-import { pendingPermissions } from './permission.js'
 import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
-import { loadAccess } from './access.js'
 import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-registry.js'
 import { maybeNudgeMissingSentinel } from './sentinel-nudge.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleCLIRequest, type CLIRequest } from './cli-handler.js'
 import { watchPr, getWatchesBySession } from './pr-watch.js'
 import { shouldHoldIncumbentMain } from './main-guard.js'
-import type { ButtonDef } from '../gateway.js'
+import { handleCodexConfigResult, handleCodexControlResult, rejectCodexConfigRequests } from './codex-control.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -159,9 +157,25 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       conn.sessionId = sessionId
 
       const claudeSessionId = msg.claudeSessionId as string | undefined
+      const codexSessionId = msg.codexSessionId as string | undefined
       const info = registry.get(sessionId)
+      const provider = msg.provider === 'codex' ? 'codex' : (info?.provider ?? 'claude')
       if (info) {
-        const resolved = claudeSessionId || discoverClaudeSessionId(info.tmuxName)
+        info.provider = provider
+        if (codexSessionId) info.codexSessionId = codexSessionId
+        if (provider === 'codex' && info.capabilities) {
+          if (typeof msg.model === 'string') info.capabilities.model = msg.model
+          if (typeof msg.effort === 'string') info.capabilities.effort = msg.effort
+          const thread = threadRegistry.get(info.threadId)
+          const histEntry = thread?.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+          if (histEntry) {
+            histEntry.model = info.capabilities.model
+            histEntry.effort = info.capabilities.effort
+            threadRegistry.persist()
+          }
+          registry.persist()
+        }
+        const resolved = provider === 'claude' ? (claudeSessionId || discoverClaudeSessionId(info.tmuxName)) : undefined
         if (resolved) {
           info.claudeSessionId = resolved
           registry.persist()
@@ -260,6 +274,46 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       break
     }
 
+    case 'session_identity': {
+      const sessionId = msg.sessionId as string
+      const info = registry.get(sessionId)
+      if (!info || conn.sessionId !== sessionId) break
+      if (msg.provider === 'codex' && typeof msg.codexSessionId === 'string') {
+        info.provider = 'codex'
+        info.codexSessionId = msg.codexSessionId
+        const thread = threadRegistry.get(info.threadId)
+        const entry = thread?.sessionHistory.find(h => h.sessionId === sessionId)
+        if (entry) {
+          entry.provider = 'codex'
+          entry.codexSessionId = msg.codexSessionId
+          threadRegistry.persist()
+        }
+        registry.persist()
+      } else if (msg.provider === 'codex' && msg.codexSessionId === null) {
+        info.provider = 'codex'
+        delete info.codexSessionId
+        const thread = threadRegistry.get(info.threadId)
+        const entry = thread?.sessionHistory.find(h => h.sessionId === sessionId)
+        if (entry) {
+          entry.provider = 'codex'
+          delete entry.codexSessionId
+          threadRegistry.persist()
+        }
+        registry.persist()
+      }
+      break
+    }
+
+    case 'session_config_result': {
+      if (conn.sessionId) handleCodexConfigResult(conn.sessionId, msg)
+      break
+    }
+
+    case 'session_control_result': {
+      if (conn.sessionId) handleCodexControlResult(conn.sessionId, msg)
+      break
+    }
+
     case 'tool_call': {
       const { id, name, args } = msg as { id: string; name: string; args: Record<string, unknown> }
 
@@ -325,28 +379,6 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       break
     }
 
-    case 'permission_response': {
-      break
-    }
-
-    case 'permission_request': {
-      const { request_id, tool_name, description, input_preview } = msg
-      pendingPermissions.set(request_id, { tool_name, description, input_preview })
-      const access = loadAccess()
-      const text = `Permission: ${tool_name}`
-      const buttons: ButtonDef[] = [
-        { id: `perm:more:${request_id}`, label: 'See more', style: 'secondary' },
-        { id: `perm:allow:${request_id}`, label: 'Allow', style: 'success', emoji: '✅' },
-        { id: `perm:deny:${request_id}`, label: 'Deny', style: 'danger', emoji: '❌' },
-      ]
-      for (const userId of access.allowFrom) {
-        void gateway.sendDM(userId, text, buttons).catch(e => {
-          process.stderr.write(`daemon: permission_request send to ${userId} failed: ${e}\n`)
-        })
-      }
-      break
-    }
-
     case 'cli': {
       void handleCLIRequest(msg as CLIRequest).then(response => {
         conn.socket.write(JSON.stringify(response) + '\n')
@@ -389,6 +421,7 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
         histEntry.endedAt = Date.now()
         histEntry.messageCount = info.messageCount ?? 0
         histEntry.claudeSessionId = info.claudeSessionId
+        histEntry.codexSessionId = info.codexSessionId
       }
       threadRegistry.persist()
     }
@@ -435,6 +468,7 @@ export const socketServer = createServer((socket: Socket) => {
     }
     if (isOwner) {
       transport.delete(conn.sessionId)
+      rejectCodexConfigRequests(conn.sessionId)
     }
     if (conn.sessionId !== 'main') {
       const sid = conn.sessionId

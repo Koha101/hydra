@@ -110,12 +110,16 @@ export function formatSpawnLine(p: {
   emoji: string
   name: string
   model: string
+  provider?: string
+  effort?: string
   trigger: string
   initiator?: string
 }): string {
   const title = p.roleLabel ? `The ${titleCaseRole(p.roleLabel)} • ` : ''
   const by = p.initiator ? `${p.trigger} from ${p.initiator}` : p.trigger
-  return `> ⚡ spawned [ ${title}${p.emoji} ${p.name} ] · model \`${p.model}\` · by ${by}`
+  const provider = p.provider && p.provider !== 'claude' ? ` · provider \`${p.provider}\`` : ''
+  const effort = p.effort && p.effort !== 'default' ? ` · effort \`${p.effort}\`` : ''
+  return `> ⚡ spawned [ ${title}${p.emoji} ${p.name} ] · model \`${p.model}\`${provider}${effort} · by ${by}`
 }
 
 export type StatusLineState = {

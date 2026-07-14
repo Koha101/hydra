@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileS
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
-import { spawnModel } from '../shared/constants.js'
+import { spawnModel, marketplaceName } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Config resolution (replaces env-setup.sh)
@@ -65,8 +65,6 @@ export function resolveConfig(platform?: string): HydraConfig {
   }
 
   const stateDir = process.env.HYDRA_STATE_DIR ?? process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', platform)
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const spawnCwd = process.env.SPAWN_CWD ?? homedir()
 
   // Source .env from state dir (mirrors env-setup.sh)
   const envFile = join(stateDir, '.env')
@@ -90,11 +88,15 @@ export function resolveConfig(platform?: string): HydraConfig {
     }
   }
 
+  // Resolve AFTER sourcing so .env values apply when the shell didn't export them
+  // (an unsourced `hydra restart` used to boot the daemon with configDir=~/.claude,
+  // spawning ungated sessions parked on first-run onboarding).
+  const spawnCwd = process.env.SPAWN_CWD ?? homedir()
   return {
     platform,
     stateDir,
-    configDir,
-    spawnCwd: process.env.SPAWN_CWD ?? spawnCwd,
+    configDir: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    spawnCwd,
     hydraDir,
     daemonTmux: `${platform}-daemon`,
     byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
@@ -118,7 +120,7 @@ export function resolveConfig(platform?: string): HydraConfig {
 // Avoids hardcoding a version that breaks on the next plugin release. Prefers a
 // dir that already holds server.ts; otherwise the newest by numeric sort.
 export function pluginVersionDir(configDir: string, plugin = 'discord'): string | null {
-  const base = join(configDir, 'plugins', 'cache', 'claude-plugins-official', plugin)
+  const base = join(configDir, 'plugins', 'cache', marketplaceName(), plugin)
   try {
     const versions = readdirSync(base).filter(v => {
       try { return statSync(join(base, v)).isDirectory() } catch { return false }
@@ -171,7 +173,7 @@ export function tmuxSessionAge(name: string): number | null {
 
 export async function compileCheck(hydraDir: string): Promise<{ ok: boolean; errors: string }> {
   const errors: string[] = []
-  for (const entry of ['daemon.ts', 'bridge.ts']) {
+  for (const entry of ['daemon.ts', 'bridge.ts', 'codex-bridge.ts']) {
     const result = await Bun.build({
       entrypoints: [join(hydraDir, entry)],
       target: 'bun',
@@ -429,5 +431,10 @@ export function buildDaemonEnvs(cfg: HydraConfig): string {
     `SPAWN_CWD=${shq(cfg.spawnCwd)}`,
     `CHAT_PLATFORM=${shq(cfg.platform)}`,
     `CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
+    `HYDRA_MARKETPLACE=${shq(marketplaceName())}`,
+    // tmux panes inherit the tmux SERVER's env, not this CLI's — without an
+    // explicit forward the daemon never sees .env's model and spawns fall back
+    // to DEFAULT_MODEL
+    `HYDRA_MODEL=${shq(cfg.byteModel)}`,
   ].join(' ')
 }

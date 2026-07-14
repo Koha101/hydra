@@ -196,6 +196,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const worktree = args.worktree as string | undefined
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
         const model = (args.model as string | undefined)?.trim() || undefined
+        const provider = args.provider === 'codex' ? 'codex' : 'claude'
         if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
         const budgetRaw = (args.phase_budget as string | undefined)?.trim() || undefined
         const phaseBudgetMs = budgetRaw ? parseDuration(budgetRaw) ?? undefined : undefined
@@ -204,6 +205,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, {
           ...(model ? { model } : {}),
           ...(phaseBudgetMs ? { phaseBudgetMs } : {}),
+          ...(provider === 'codex' ? { provider } : {}),
           trigger: 'spawn_session',
           initiator: spawnerName,
         })
@@ -223,6 +225,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
             messages: s.messageCount ?? 0,
             running_for: formatDuration(Date.now() - s.createdAt),
             status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
+            provider: s.provider ?? 'claude',
             origin_type: s.originType ?? 'spawn',
             origin_from: s.originFrom ?? null,
           }

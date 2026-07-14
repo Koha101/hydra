@@ -1,6 +1,6 @@
 # Hydra
 
-Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or both simultaneously via MCP.
+Multi-platform chat bridge for Claude Code and Codex. Connect Discord, Slack, or both while keeping Claude as the default and spawning Codex sessions on demand.
 
 ## Architecture
 
@@ -26,10 +26,10 @@ Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or
        │                 │     agnostic — doesn't import
        │  stdio ↔ socket │     any chat SDK.
        └────────┬────────┘
-                │  MCP (stdio)
+                │  MCP (Claude) / CLI (Codex)
        ┌────────▼────────┐
-       │   Claude Code   │     Full Claude with tools,
-       │                 │     memory, file access, etc.
+       │ Claude / Codex  │     Claude uses the MCP channel bridge;
+       │                 │     Codex uses a persistent CLI sidecar.
        └─────────────────┘
 ```
 
@@ -44,6 +44,7 @@ Multi-platform chat bridge for Claude Code. Connect Claude to Discord, Slack, or
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - [tmux](https://github.com/tmux/tmux) — `brew install tmux`
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
+- [Codex CLI](https://developers.openai.com/codex/cli/) (optional provider) — install it and run `codex login`
 
 ## Quick Start
 
@@ -93,6 +94,7 @@ hydra restart <platform>       # Restart daemon (picks up code changes)
 
 ```bash
 hydra spawn <prompt>           # Spawn a new session
+hydra spawn --provider codex --initiator <name> --idempotency-key <key> <prompt>
 hydra list                     # List active sessions
 hydra status <name>            # Session details
 hydra kill <name>              # Kill a session
@@ -171,23 +173,43 @@ Each platform gets its own daemon, state dir, and watchdog. Use different `CLAUD
 | `fetch_messages` | Pull recent history (up to 100). |
 | `download_attachment` | Download attachments from a message to local inbox. |
 | `create_thread` | Create a thread on a message or standalone. |
-| `spawn_session` | Spawn a new Claude session for a topic (main session only). |
+| `spawn_session` | Spawn a new Claude or Codex session for a topic (main session only). |
 | `list_sessions` | List active spawned sessions (main session only). |
 | `kill_session` | Kill a spawned session (main session only). |
 
 ## Sessions
 
-Spawn isolated Claude sessions from chat:
+Spawn isolated Claude or Codex sessions from chat:
 
 | Command | Action |
 |---------|--------|
-| `spawn: <topic>` | Create a new session with a thread |
+| `/spawn` | Create a session with `topic`, optional `provider`, and optional `model` fields |
+| `spawn <provider> [model]: <topic>` | Text form; provider is `claude` or `codex` |
+| `spawn: <topic>` | Claude shorthand that creates a new session with a thread |
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
+| `/model <id>` | Change the active Claude or Codex model |
+| `/effort <level>` | Change Claude or Codex reasoning effort |
+| `/context` | Show Claude context details or Codex's latest available usage |
+| `/clear` | Reset the active Claude or Codex conversation context |
+| `/ultracode on|off` | Toggle Claude ultracode; for Codex, set effort to `ultra` or `default` |
+| `/provider claude|codex` | Hand off a live thread to the other provider |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
 | `help` / `commands` | Show all available commands |
 
 Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts.
+
+Codex sessions reuse your local Codex CLI login and preserve their Codex conversation ID for `resume`/recovery. Set `CODEX_MODEL` in the platform `.env` only if you want to override the Codex CLI's configured default model.
+
+The Discord `/spawn` command exposes `topic`, `provider`, and `model`; `provider` defaults to Claude and `model` is optional. For example, choose `provider: codex` to start a Codex session, or use the text form `spawn codex gpt-5.6-sol: inspect this repository`.
+
+Inside a live session thread, `/provider codex` or `/provider claude` keeps the same Discord thread and working directory. Hydra resumes that provider's most recent conversation from the thread when one exists and supplies the messages posted while it was inactive; the first switch to a provider starts a new conversation with recent thread history. Active build/review/design protocols must be cancelled before switching.
+
+Inside a Codex thread, `/model <model-id>` and `/effort <level>` update that session starting with its next turn. Use `default` to remove the per-session override and return to the Codex CLI configuration. Documented Codex effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; availability depends on the selected model.
+
+For Codex, `/context` reports the last completed turn's context usage and remaining capacity, while `/clear` drops the saved Codex conversation ID so the next Discord message starts a fresh conversation and reloads workspace instructions and memory. `/clear` is rejected while a Codex turn is still running.
+
+Codex inherits `SPAWN_CWD` like Claude. Configure Codex with `project_doc_fallback_filenames = ["CLAUDE.md"]`; Hydra also includes the workspace `CLAUDE.md` and its Claude Code `memory/MEMORY.md` index on the first Codex turn. Override discovery with `CODEX_CLAUDE_INSTRUCTIONS_FILE` or `CODEX_CLAUDE_MEMORY_FILE` when needed.
 
 ## Troubleshooting
 

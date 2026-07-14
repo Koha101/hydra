@@ -9,7 +9,7 @@ import {
   compileCheck, killOrphanBytes, hasOrphanBytes, appendLog, shq,
   waitForSocket, buildDaemonEnvs, pluginVersionDir,
 } from './helpers.js'
-import { isKnownModel } from '../shared/constants.js'
+import { isKnownModel, marketplaceName } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Start byte (replaces start-byte.sh)
@@ -36,7 +36,7 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   const pluginDir = pluginVersionDir(cfg.configDir)
   if (!pluginDir) {
     console.error(`error: discord bridge plugin not found under ${cfg.configDir}`)
-    console.error(`Install it: claude plugin install discord@claude-plugins-official`)
+    console.error(`Install it: claude plugin install discord@${marketplaceName()}`)
     process.exit(1)
   }
   const bridgeDest = join(pluginDir, 'server.ts')
@@ -52,12 +52,15 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
     prompt = `You just restarted with a fresh context. You're running on ${cfg.platform} via the bridge. Read your memory files to orient, then wait silently for incoming messages — do NOT post anything proactively. When a message arrives, reply with the reply tool using the chat_id from the incoming message.`
   }
 
-  // Auth token setup
+  // Auth token setup. Prefer CLAUDE_CODE_OAUTH_TOKEN from env (refreshing the persisted
+  // file); else reuse the persisted .byte-token so a launchd-revived byte — whose plist
+  // env lacks the token, and which can't unlock the login keychain while detached — still
+  // authenticates on reboot without any secret living in the LaunchAgents plist.
   let authExport = ''
   const tokenFile = join(cfg.stateDir, '.byte-token')
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
-  if (oauthToken) {
-    writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
+  if (oauthToken) writeFileSync(tokenFile, oauthToken, { mode: 0o600 })
+  if (oauthToken || existsSync(tokenFile)) {
     authExport = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shq(tokenFile)})"`
   } else {
     const angellistToken = join(homedir(), '.angellist-claude-token')
@@ -90,11 +93,12 @@ export async function startByte(cfg: HydraConfig): Promise<void> {
   }
   const inner = [
     `cd ${shq(cfg.byteCwd)}`,
+    `export PATH="$HOME/.bun/bin:$PATH"`,
     `export DAEMON_SOCK=${shq(cfg.sockPath)}`,
     `export CLAUDE_CONFIG_DIR=${shq(cfg.configDir)}`,
     `export CHAT_PLATFORM=${cfg.platform}`,
     authExport || null,
-    `caffeinate -i claude --model ${shq(cfg.byteModel)} --channels plugin:discord@claude-plugins-official --dangerously-skip-permissions ${shq(prompt)}`,
+    `caffeinate -i claude --model ${shq(cfg.byteModel)} --dangerously-skip-permissions ${shq(prompt)} --channels plugin:discord@${marketplaceName()}`,
   ].filter(Boolean).join(' && ')
 
   tmuxSpawn(cfg.byteTmux, inner)
@@ -344,9 +348,22 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
     }
   }
 
+  try {
+    execFileSync('codex', ['--version'], { stdio: 'pipe', env: process.env as Record<string, string> })
+    ok('codex on PATH (optional provider available)')
+    try {
+      execFileSync('codex', ['login', 'status'], { stdio: 'pipe', env: process.env as Record<string, string> })
+      ok('codex authentication available')
+    } catch {
+      wrn('codex is installed but not logged in — run `codex login` before `spawn codex:`')
+    }
+  } catch {
+    wrn('codex not found on PATH — Claude still works, but `spawn codex:` is unavailable')
+  }
+
   const check = await compileCheck(cfg.hydraDir)
   if (check.ok) {
-    ok('daemon + bridge compile')
+    ok('daemon + Claude/Codex bridges compile')
   } else {
     bad('compile FAILED — daemon would crash-loop on boot:')
     console.log(check.errors.split('\n').map(l => `      ${l}`).join('\n'))
@@ -372,13 +389,13 @@ export async function lifecyclePreflight(platform: string): Promise<void> {
     wrn(`access.json missing — no users are allowlisted yet (${join(cfg.stateDir, 'access.json')})`)
   }
 
-  const bridgeDir = join(cfg.configDir, 'plugins', 'cache', 'claude-plugins-official', 'discord')
+  const bridgeDir = join(cfg.configDir, 'plugins', 'cache', marketplaceName(), 'discord')
   try {
     const versions = readdirSync(bridgeDir)
     const hasServer = versions.some(v => existsSync(join(bridgeDir, v, 'server.ts')))
     if (hasServer) ok('bridge plugin present in config dir'); else bad(`bridge plugin NOT in ${cfg.configDir}`)
   } catch {
-    bad(`bridge plugin NOT in ${cfg.configDir} — sessions can't reach the daemon. Install: claude plugin install discord@claude-plugins-official`)
+    bad(`bridge plugin NOT in ${cfg.configDir} — sessions can't reach the daemon. Install: claude plugin install discord@${marketplaceName()}`)
   }
 
   const managedSettings = '/Library/Application Support/ClaudeCode/managed-settings.json'

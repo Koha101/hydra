@@ -1,5 +1,4 @@
 import { describe, test, expect } from 'bun:test'
-import { PERMISSION_REPLY_RE } from '../config.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -10,6 +9,8 @@ process.stderr.write = (() => true) as any
 // ---------------------------------------------------------------------------
 
 const SPAWN_RE = /^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i
+const SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
+const EMPTY_SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*$/i
 const SPAWN_WT_RE = /^(?:spawn-wt:|\/spawn-wt)\s*(\S+)\s+([\s\S]+)/i
 const KILL_RE = /^(?:kill session:|kill:|\/kill)\s*(.+)/i
 const LIST_RE = /^(?:\/sessions|list sessions)\s*$/i
@@ -25,12 +26,44 @@ const FORKS_RE = /^(?:forks|\/forks)\s*$/i
 const REVIEW_RE = /^(?:\/review|review)\s*(\d+)?(?:\s+([\s\S]+))?$/i
 const BUILD_RE = /^(?:\/build|build)\s*(\d+)?(?:\s+([\s\S]+))?$/i
 const BUILD_WT_RE = /^(?:\/build-wt|build-wt):\s*(\S+)\s+(\d+)?(?:\s+([\s\S]+))?$/i
+const PROVIDER_RE = /^\/provider\s+(claude|codex)\s*$/i
 
 // ---------------------------------------------------------------------------
 // Spawn
 // ---------------------------------------------------------------------------
 
 describe('spawn command', () => {
+  test('spawn codex: topic', () => {
+    const m = 'spawn codex: inspect this repository'.match(SPAWN_PROVIDER_RE)
+    expect(m).not.toBeNull()
+    expect(m![1]).toBe('codex')
+    expect(m![2]).toBeUndefined()
+    expect(m![3].trim()).toBe('inspect this repository')
+  })
+
+  test('new session codex: topic', () => {
+    expect('new session codex: fix the tests'.match(SPAWN_PROVIDER_RE)?.[3]).toBe('fix the tests')
+  })
+
+  test('/spawn accepts provider and model', () => {
+    const m = '/spawn codex gpt-5.6-sol: inspect this repository'.match(SPAWN_PROVIDER_RE)
+    expect(m?.[1]).toBe('codex')
+    expect(m?.[2]).toBe('gpt-5.6-sol')
+    expect(m?.[3]).toBe('inspect this repository')
+  })
+
+  test('/spawn can explicitly select Claude and an alias', () => {
+    const m = '/spawn claude sonnet: fix the tests'.match(SPAWN_PROVIDER_RE)
+    expect(m?.[1]).toBe('claude')
+    expect(m?.[2]).toBe('sonnet')
+    expect(m?.[3]).toBe('fix the tests')
+  })
+
+  test('provider form without a topic is rejected before generic /spawn parsing', () => {
+    expect('/spawn codex:'.match(EMPTY_SPAWN_PROVIDER_RE)?.[1]).toBe('codex')
+    expect('/spawn codex gpt-5.6-sol:'.match(EMPTY_SPAWN_PROVIDER_RE)?.[2]).toBe('gpt-5.6-sol')
+  })
+
   test('new session: topic', () => {
     const m = 'new session: let us work on hydra'.match(SPAWN_RE)
     expect(m).not.toBeNull()
@@ -65,6 +98,17 @@ describe('spawn command', () => {
     const m = 'spawn: '.match(SPAWN_RE)
     expect(m).not.toBeNull() // regex matches but topic is whitespace
     expect(m![1].trim()).toBe('') // router checks this
+  })
+})
+
+describe('provider command', () => {
+  test('accepts Claude and Codex', () => {
+    expect('/provider claude'.match(PROVIDER_RE)?.[1]).toBe('claude')
+    expect('/provider codex'.match(PROVIDER_RE)?.[1]).toBe('codex')
+  })
+
+  test('rejects unknown providers', () => {
+    expect('/provider openai'.match(PROVIDER_RE)).toBeNull()
   })
 })
 
@@ -252,43 +296,7 @@ describe('build command', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Permission reply regex
-// ---------------------------------------------------------------------------
-
-describe('permission reply regex', () => {
-  test('yes with code', () => {
-    const m = PERMISSION_REPLY_RE.exec('y abcde')
-    expect(m).not.toBeNull()
-    expect(m![1]).toBe('y')
-    expect(m![2]).toBe('abcde')
-  })
-
-  test('no with code', () => {
-    const m = PERMISSION_REPLY_RE.exec('no fghij')
-    expect(m).not.toBeNull()
-    expect(m![1]).toBe('no')
-    expect(m![2]).toBe('fghij')
-  })
-
-  test('case insensitive', () => {
-    expect(PERMISSION_REPLY_RE.exec('YES ABCDE')).not.toBeNull()
-  })
-
-  test('rejects code with excluded letter l', () => {
-    // The regex uses [a-km-z] — excludes 'l' to avoid ambiguity
-    expect(PERMISSION_REPLY_RE.exec('y abcle')).toBeNull()
-  })
-
-  test('rejects wrong code length', () => {
-    expect(PERMISSION_REPLY_RE.exec('y abc')).toBeNull()
-    expect(PERMISSION_REPLY_RE.exec('y abcdef')).toBeNull()
-  })
-
-  test('rejects non-permission messages', () => {
-    expect(PERMISSION_REPLY_RE.exec('hello world')).toBeNull()
-    expect(PERMISSION_REPLY_RE.exec('yes')).toBeNull()
-  })
-})
+// (permission reply regex removed — superseded by the HMAC gate-approval flow)
 
 // ---------------------------------------------------------------------------
 // Interrupt prefix

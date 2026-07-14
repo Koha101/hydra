@@ -1,4 +1,4 @@
-import { gateway, PERMISSION_REPLY_RE, INBOX_DIR } from './config.js'
+import { gateway, INBOX_DIR } from './config.js'
 import { registry, threadRegistry } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { loadAccess, gate } from './access.js'
@@ -8,7 +8,7 @@ import type { InboundMessage } from '../gateway.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
+import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleProviderIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
@@ -16,6 +16,7 @@ import { getDesignByThread, handleDesignAnswer } from './design.js'
 import { isThreadOccupied } from './protocol-registry.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
+import { handleModelIntercept, handleEffortIntercept, handleContextIntercept, handleClearIntercept, handleRebootIntercept, handleUltracodeIntercept } from './commands/session-config.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
@@ -27,6 +28,7 @@ import { listTemplates, getTemplate } from './templates.js'
 // can never trigger them.
 const COMMAND_PREFIXES = [
   'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
+  'spawn codex', 'new session codex', 'spawn claude', 'new session claude',
   ...Object.keys(MODEL_ALIASES).flatMap(a => [`spawn ${a}:`, `new session ${a}:`, `spawn-wt ${a}:`]),
   'kill session:', 'kill:', '/kill',
   '/sessions', 'list sessions',
@@ -44,6 +46,8 @@ const COMMAND_RE = new RegExp(
 const SPAWN_MODEL_RE = new RegExp(`^(?:new session|spawn)\\s+(${MODEL_ALIAS_PATTERN}):\\s*([\\s\\S]+)`, 'i')
 const SPAWN_WT_MODEL_RE = new RegExp(`^(?:spawn-wt|/spawn-wt)\\s+(${MODEL_ALIAS_PATTERN}):\\s*(\\S+)\\s+([\\s\\S]+)`, 'i')
 const BARE_ALIAS_RE = new RegExp(`^(${MODEL_ALIAS_PATTERN}):?$`, 'i')
+const SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
+const EMPTY_SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*$/i
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -126,6 +130,69 @@ function extractContextLinks(text: string): string[] {
   return links
 }
 
+// ---------------------------------------------------------------------------
+// Delivery wake
+//
+// Claude Code delivers an inbound channel message as an MCP notification the
+// session normally processes on its own. But once a bridge has reconnected
+// (e.g. after a daemon restart), CC can instead stage the notification as a
+// *queued-message widget* in the composer that never auto-submits — so the
+// session silently never sees the message. The widget is un-submittable (Enter
+// is a no-op on it) and its prompt is "❯" + a NON-BREAKING space, distinct from
+// the real composer prompt (regular space).
+//
+// After delivering, poll the pane: once the session is idle with such a stuck
+// widget, clear it and nudge the session to pull the message from chat history
+// and reply. Gated on "idle AND stuck-widget-present", so a session that
+// processed the notification normally is never touched, and a busy session is
+// left alone until its turn ends. Disable with HYDRA_DELIVERY_WAKE=0.
+// ---------------------------------------------------------------------------
+const DELIVERY_WAKE = process.env.HYDRA_DELIVERY_WAKE !== '0'
+const QUEUED_WIDGET_PREFIX = String.fromCharCode(0x276f, 0xa0) // angle-prompt + non-breaking space (the stuck queued widget)
+const WAKE_NUDGE =
+  'You have unread messages in your thread that were not delivered to you. ' +
+  'Call fetch_messages on your own chat_id, read anything after your last reply, and respond.'
+const wakePending = new Set<string>()
+const MAX_WAKE_POLLS = 300 // ~10 min backstop while a turn runs; a longer turn re-arms on the next delivery
+
+async function paneText(tmux: string): Promise<string> {
+  try {
+    const p = Bun.spawn(['tmux', 'capture-pane', '-t', tmux, '-p'], { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+    return await new Response(p.stdout).text()
+  } catch { return '' }
+}
+
+async function tmuxKeys(tmux: string, ...keys: string[]): Promise<void> {
+  try { await Bun.spawn(['tmux', 'send-keys', '-t', tmux, ...keys], { stdio: ['ignore', 'ignore', 'ignore'] }).exited } catch {}
+}
+
+/** After a delivery, wake the session iff it's idle with an un-submitted queued
+ *  widget. Waits out a busy turn (bounded), dedupes per session, no-ops otherwise. */
+async function wakeIfStuck(tmux: string): Promise<void> {
+  if (!DELIVERY_WAKE || wakePending.has(tmux)) return
+  wakePending.add(tmux)
+  try {
+    for (let poll = 0; poll < MAX_WAKE_POLLS; poll++) {
+      await new Promise(r => setTimeout(r, 2000))
+      const pane = await paneText(tmux)
+      if (!pane) return
+      const lines = pane.split('\n')
+      // "esc to interrupt" appears only in the status footer during a turn; scan
+      // just the tail so the same substring quoted in transcript/output can't wedge us.
+      if (lines.filter(l => l.trim()).slice(-4).some(l => l.includes('esc to interrupt'))) continue
+      const stuck = lines.some(l => l.startsWith(QUEUED_WIDGET_PREFIX) && l.slice(QUEUED_WIDGET_PREFIX.length).trim())
+      if (!stuck) return // processed normally — leave it alone
+      await tmuxKeys(tmux, 'Escape')
+      await tmuxKeys(tmux, '-l', WAKE_NUDGE)
+      await tmuxKeys(tmux, 'Enter')
+      process.stderr.write(`daemon: woke ${tmux} — queued channel message never auto-submitted\n`)
+      return
+    }
+  } finally {
+    wakePending.delete(tmux)
+  }
+}
+
 async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
   void gateway.typing(msg.channelId).catch(() => {})
   if (access.ackReaction) {
@@ -150,6 +217,7 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
 
   const { content, meta } = await buildNotificationPayload(msg, chatId)
   transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
+  if (sessionInfo) void wakeIfStuck(sessionInfo.tmuxName)
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +284,27 @@ gateway.onMessage(async (msg: InboundMessage) => {
   }
 
   if (isAllowed) {
+    // "/spawn codex [model]: topic" and "/spawn claude [model]: topic".
+    // Native Discord /spawn interactions are translated to this form too.
+    const spawnProviderMatch = msg.content.match(SPAWN_PROVIDER_RE)
+    if (spawnProviderMatch) {
+      const provider = spawnProviderMatch[1].toLowerCase() as 'claude' | 'codex'
+      const model = spawnProviderMatch[2]
+      const topic = spawnProviderMatch[3].trim()
+      if (topic) {
+        void handleSpawnIntercept(msg, topic, access, model, provider)
+        return
+      }
+    }
+
+    const emptySpawnProviderMatch = msg.content.match(EMPTY_SPAWN_PROVIDER_RE)
+    if (emptySpawnProviderMatch) {
+      const provider = emptySpawnProviderMatch[1].toLowerCase()
+      const model = emptySpawnProviderMatch[2]
+      void gateway.send(msg.channelId, `_\`spawn ${provider}${model ? ` ${model}` : ''}:\` needs a topic._`, { replyTo: msg.id })
+      return
+    }
+
     // "spawn sonnet: topic" / "new session haiku: topic" — model alias before colon
     const spawnModelMatch = msg.content.match(SPAWN_MODEL_RE)
     if (spawnModelMatch) {
@@ -317,6 +406,48 @@ gateway.onMessage(async (msg: InboundMessage) => {
     const recoverMatch = msg.content.match(/^(?:recover|\/recover)(?:\s+(.+))?$/i)
     if (recoverMatch) {
       void handleRecoverIntercept(msg, recoverMatch[1]?.trim() || undefined)
+      return
+    }
+
+    const modelMatch = msg.content.match(/^\/model\s+(\S+)\s*$/i)
+    if (modelMatch) {
+      void handleModelIntercept(msg, modelMatch[1])
+      return
+    }
+
+    const effortMatch = msg.content.match(/^\/effort\s+(\S+)\s*$/i)
+    if (effortMatch) {
+      void handleEffortIntercept(msg, effortMatch[1])
+      return
+    }
+
+    const providerMatch = msg.content.match(/^\/provider\s+(claude|codex)\s*$/i)
+    if (providerMatch) {
+      void handleProviderIntercept(msg, providerMatch[1].toLowerCase() as 'claude' | 'codex')
+      return
+    }
+
+    const contextMatch = msg.content.match(/^\/context\s*$/i)
+    if (contextMatch) {
+      void handleContextIntercept(msg)
+      return
+    }
+
+    const clearMatch = msg.content.match(/^\/clear\s*$/i)
+    if (clearMatch) {
+      void handleClearIntercept(msg)
+      return
+    }
+
+    const rebootMatch = msg.content.match(/^\/reboot\s*$/i)
+    if (rebootMatch) {
+      void handleRebootIntercept(msg)
+      return
+    }
+
+    const ultracodeMatch = msg.content.match(/^\/ultracode\s+(\S+)\s*$/i)
+    if (ultracodeMatch) {
+      void handleUltracodeIntercept(msg, ultracodeMatch[1])
       return
     }
 
@@ -619,21 +750,6 @@ gateway.onMessage(async (msg: InboundMessage) => {
         }
       }
     }
-  }
-
-  const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
-  if (permMatch) {
-    const mainBridge = transport.get('main')
-    if (mainBridge) {
-      transport.sendToBridge(mainBridge, {
-        type: 'permission_response',
-        request_id: permMatch[2]!.toLowerCase(),
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      })
-    }
-    const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
-    void gateway.react(msg.channelId, msg.id, emoji).catch(() => {})
-    return
   }
 
   void gateway.typing(msg.channelId).catch(() => {})
