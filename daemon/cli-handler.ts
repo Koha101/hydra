@@ -62,7 +62,7 @@ function respond(req: CLIRequest, ok: boolean, dataOrError?: unknown, maybeData?
 // ---------------------------------------------------------------------------
 
 async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
-  const { prompt, initiator, idempotencyKey, channel, message, ephemeral, quiet, model } = req.params as {
+  const { prompt, initiator, idempotencyKey, channel, message, ephemeral, quiet, model, provider } = req.params as {
     prompt?: string
     initiator?: string
     idempotencyKey?: string
@@ -71,11 +71,13 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
     ephemeral?: boolean
     quiet?: boolean
     model?: string
+    provider?: 'claude' | 'codex'
   }
 
   if (!prompt) return respond(req, false, 'prompt is required')
   if (!idempotencyKey) return respond(req, false, 'idempotency-key is required')
   if (!initiator) return respond(req, false, 'initiator is required')
+  if (provider && provider !== 'claude' && provider !== 'codex') return respond(req, false, 'provider must be claude or codex')
 
   const check = checkIdempotency(idempotencyKey)
   if (check.blocked) {
@@ -89,7 +91,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
   let result
   try {
-    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral, trigger: 'CLI' })
+    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral, engine: provider, trigger: 'CLI' })
   } catch (err) {
     updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err

@@ -46,6 +46,7 @@ import { setupPermissionHandler } from './daemon/permission.js'
 import { setupGateApproval, writeApprovalDecision } from './daemon/gate-approval.js'
 import { socketServer, startBridgeServer, initEphemeralTimers } from './daemon/bridge-server.js'
 import { announceRestartComplete } from './daemon/commands/global.js'
+import { reconcilePendingContinuityOnBoot } from './daemon/provider-handoff.js'
 
 threadRegistry.boot(registry)
 
@@ -67,6 +68,8 @@ if (existsSync(SOCK_PATH)) {
   }
 }
 
+transport.restoreQueues()
+reconcilePendingContinuityOnBoot()
 startBridgeServer()
 initEphemeralTimers()
 

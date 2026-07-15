@@ -3,10 +3,10 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { gateway, STATE_DIR } from '../config.js'
-import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
-import type { ThreadMetadata } from '../sessions.js'
+import { recoverableWorktreeRef, registry, sessionEmoji, sessionEngine, threadRegistry } from '../sessions.js'
+import type { SessionEngine, ThreadMetadata, WorktreeRef } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
+import { assertHealthySpawn, doSpawnSession, killSession, tryResume, tryRespawn, discoverClaudeSessionId } from '../session-lifecycle.js'
 import { tmuxHasSession, isAlive, safeSend } from '../util.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { getActiveBuilds, cancelBuild, startBuild } from '../build.js'
@@ -239,6 +239,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Channel** (work anywhere):',
     '• 🚀 `spawn: <topic>` — new session in its own thread',
+    '• 🤖 `spawn codex [model]: <topic>` — new Codex session',
     '• 🚀 `spawn <model>: <topic>` — spawn with model (sonnet, haiku, fable, etc)',
     '• 🚀 `spawn-wt: <repo> <topic>` — spawn in a git worktree',
     '• 🎯 `review:` / `fix:` / `design:` — templated session (`<template> <model>: topic`) · 📋 `templates`',
@@ -247,6 +248,9 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '',
     '**Thread** (inside a session thread):',
     '• ⚡ `! <message>` — interrupt current work, then deliver',
+    '• 🔀 `/provider claude|codex` — hand off this thread between providers',
+    '• ⚙️ `/model <id>` · `/effort <level>` — configure the active provider',
+    '• 📊 `/context` · 🧹 `/clear` — inspect or reset conversation context',
     '• 🍴 `fork` / `fork: <focus>` — fork into a new thread',
     '• 🍽️ `forks` — list forks from this thread',
     '• ☠️ `kill` — kill this session',
@@ -285,8 +289,20 @@ let recoveryInProgress = false
 const MAX_CONCURRENT = 2
 const STAGGER_MS = 5_000
 
-function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }> {
-  const results: Array<{ thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }> = []
+type DeadSession = {
+  sessionId: string
+  thread: ThreadMetadata
+  claudeSessionId?: string
+  codexThreadId?: string
+  engine: SessionEngine
+  lastTmuxName: string
+  model?: string
+  effort?: string
+  reuseWorktree?: WorktreeRef
+}
+
+function findDeadSessions(): DeadSession[] {
+  const results: DeadSession[] = []
 
   // Check all sessions in registry for dead ones
   for (const info of registry.values()) {
@@ -296,27 +312,37 @@ function findDeadSessions(): Array<{ thread: ThreadMetadata; claudeSessionId?: s
     const thread = threadRegistry.get(info.threadId)
     if (!thread) continue
     results.push({
+      sessionId: info.sessionId,
       thread,
       claudeSessionId: info.claudeSessionId,
+      codexThreadId: info.codexThreadId ?? info.codexSessionId,
+      engine: sessionEngine(info),
       lastTmuxName: info.tmuxName,
       model: info.capabilities?.model,
+      effort: info.capabilities?.effort,
+      reuseWorktree: recoverableWorktreeRef(info),
     })
   }
 
   return results
 }
 
-async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: string; lastTmuxName: string; model?: string }): Promise<{ name: string; method: 'resumed' | 'forked' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
-  const { thread, claudeSessionId, lastTmuxName, model } = dead
+async function recoverOne(dead: DeadSession): Promise<{ name: string; method: 'resumed' | 'forked' | 'resurrected'; newName: string; threadUrl?: string } | { name: string; method: 'failed'; reason: string; threadUrl?: string }> {
+  const { sessionId, thread, claudeSessionId, codexThreadId, engine, lastTmuxName, model, effort, reuseWorktree } = dead
 
-  if (claudeSessionId) {
+  if (claudeSessionId || codexThreadId) {
     // Tier 1: full resume
     const result = await tryResume({
+      sessionId,
       topic: thread.topic,
       threadId: thread.threadId,
       claudeSessionId,
+      codexThreadId,
+      engine,
       threadUrl: thread.threadUrl,
       model,
+      effort,
+      reuseWorktree,
     })
     if (result) {
       return { name: lastTmuxName, method: 'resumed', newName: result.name, threadUrl: thread.threadUrl }
@@ -325,10 +351,21 @@ async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: stri
 
     // Tier 2: fork from dead session (best-effort, short timeout)
     try {
+      const forkFrom = engine === 'codex'
+        ? { codexThreadId: codexThreadId!, parentName: lastTmuxName }
+        : { claudeSessionId: claudeSessionId!, parentName: lastTmuxName }
       const forkResult = await doSpawnSession(thread.topic, undefined, undefined, {
         existingThreadId: thread.threadId,
-        forkFrom: { claudeSessionId, parentName: lastTmuxName },
+        forkFrom,
         model,
+        effort,
+        engine,
+        reuseWorktree,
+        replacesSessionId: sessionId,
+      })
+      await assertHealthySpawn(forkResult, engine, {
+        preserveWorktree: !!reuseWorktree,
+        previousSessionId: sessionId,
       })
       return { name: lastTmuxName, method: 'forked', newName: forkResult.name, threadUrl: thread.threadUrl }
     } catch {
@@ -337,7 +374,10 @@ async function recoverOne(dead: { thread: ThreadMetadata; claudeSessionId?: stri
   }
 
   // Tier 3: respawn
-  const result = await tryRespawn(thread.threadId, thread.topic, lastTmuxName, model)
+  const result = await tryRespawn({
+    threadId: thread.threadId, topic: thread.topic, resurrectFrom: lastTmuxName, model, engine, effort,
+    reuseWorktree, replacesSessionId: sessionId,
+  })
   if (result) {
     return { name: lastTmuxName, method: 'resurrected', newName: result.name, threadUrl: thread.threadUrl }
   }

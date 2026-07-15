@@ -31,6 +31,28 @@ export type CodexConn = {
   messageBuffer: string[]
   steerQueue: string[]
   lastUsageWarning: number  // threshold of last warning sent (0, 50, 70)
+  defaultModel?: string
+  defaultEffort?: string
+  model?: string
+  effort?: string
+  developerInstructions?: string
+  tokenUsage?: CodexTokenUsage
+}
+
+export type CodexRuntimeConfig = { model?: string; effort?: string; developerInstructions?: string }
+
+export type CodexTokenUsage = {
+  totalTokens: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  reasoningOutputTokens: number
+  modelContextWindow?: number
+}
+
+export type CodexContext = CodexRuntimeConfig & {
+  threadId: string
+  tokenUsage?: CodexTokenUsage
 }
 
 // Event types: 'message', 'turnCompleted', 'disconnected', 'usageWarning'
@@ -53,25 +75,58 @@ export class CodexEngine extends EventEmitter {
     })
   }
 
-  async connect(sessionId: string, socketPath: string): Promise<{ threadId: string }> {
+  async connect(sessionId: string, socketPath: string, config: CodexRuntimeConfig = {}): Promise<{ threadId: string }> {
     const conn = await this.connectBase(sessionId, socketPath)
-    const result = await this.request(conn, 'thread/start', {})
+    const result = await this.request(conn, 'thread/start', this.threadParams(config))
     conn.threadId = result.thread?.id
     if (!conn.threadId) throw new Error('codex-engine: thread/start did not return a thread ID')
+    this.setInitialConfig(conn, result, config)
     return { threadId: conn.threadId }
   }
 
-  async connectAndResume(sessionId: string, socketPath: string, existingThreadId: string): Promise<void> {
+  async connectAndResume(sessionId: string, socketPath: string, existingThreadId: string, config: CodexRuntimeConfig = {}): Promise<void> {
     const conn = await this.connectBase(sessionId, socketPath, existingThreadId)
-    await this.request(conn, 'thread/resume', { threadId: existingThreadId })
+    const result = await this.request(conn, 'thread/resume', { threadId: existingThreadId, ...this.threadParams(config) })
+    this.setInitialConfig(conn, result, config)
   }
 
-  async connectAndFork(sessionId: string, socketPath: string, parentThreadId: string): Promise<{ threadId: string }> {
+  async connectAndFork(sessionId: string, socketPath: string, parentThreadId: string, config: CodexRuntimeConfig = {}): Promise<{ threadId: string }> {
     const conn = await this.connectBase(sessionId, socketPath)
-    const result = await this.request(conn, 'thread/fork', { threadId: parentThreadId })
+    const result = await this.request(conn, 'thread/fork', { threadId: parentThreadId, ...this.threadParams(config) })
     conn.threadId = result.thread?.id
     if (!conn.threadId) throw new Error('codex-engine: thread/fork did not return a thread ID')
+    this.setInitialConfig(conn, result, config)
     return { threadId: conn.threadId }
+  }
+
+  configure(sessionId: string, patch: { model?: string | null; effort?: string | null }): CodexContext {
+    const conn = this.requireConnection(sessionId)
+    if (patch.model !== undefined) conn.model = patch.model ?? conn.defaultModel
+    if (patch.effort !== undefined) conn.effort = patch.effort ?? conn.defaultEffort
+    return this.contextOf(conn)
+  }
+
+  getContext(sessionId: string): CodexContext {
+    return this.contextOf(this.requireConnection(sessionId))
+  }
+
+  async resetThread(sessionId: string, developerInstructions?: string): Promise<CodexContext> {
+    const conn = this.requireConnection(sessionId)
+    if (conn.currentTurnId || conn.turnPending) throw new Error('Codex is busy; wait for the current turn to finish')
+    conn.developerInstructions = developerInstructions
+    const result = await this.request(conn, 'thread/start', this.threadParams({
+      model: conn.model,
+      effort: conn.effort,
+      developerInstructions: conn.developerInstructions,
+    }))
+    const threadId = result.thread?.id
+    if (!threadId) throw new Error('codex-engine: thread/start did not return a thread ID')
+    conn.threadId = threadId
+    conn.currentTurnId = null
+    conn.messageBuffer = []
+    conn.steerQueue = []
+    conn.tokenUsage = undefined
+    return this.contextOf(conn)
   }
 
   private async connectBase(sessionId: string, socketPath: string, threadId?: string): Promise<CodexConn> {
@@ -113,6 +168,8 @@ export class CodexEngine extends EventEmitter {
       const result = await this.request(conn, 'turn/start', {
         threadId: conn.threadId,
         input: [{ type: 'text', text }],
+        ...(conn.model ? { model: conn.model } : {}),
+        ...(conn.effort ? { effort: conn.effort } : {}),
       })
       if (result?.turn?.id) conn.currentTurnId = result.turn.id
     } finally {
@@ -157,6 +214,44 @@ export class CodexEngine extends EventEmitter {
 
   isConnected(sessionId: string): boolean {
     return this.connections.has(sessionId)
+  }
+
+  isBusy(sessionId: string): boolean {
+    const conn = this.connections.get(sessionId)
+    return !!(conn?.currentTurnId || conn?.turnPending)
+  }
+
+  private requireConnection(sessionId: string): CodexConn {
+    const conn = this.connections.get(sessionId)
+    if (!conn?.threadId) throw new Error(`codex-engine: session ${sessionId} not connected or no thread`)
+    return conn
+  }
+
+  private threadParams(config: CodexRuntimeConfig): Record<string, unknown> {
+    const model = config.model && config.model !== 'default' ? config.model : undefined
+    const effort = config.effort && config.effort !== 'default' ? config.effort : undefined
+    return {
+      ...(model ? { model } : {}),
+      ...(effort ? { config: { model_reasoning_effort: effort } } : {}),
+      ...(config.developerInstructions ? { developerInstructions: config.developerInstructions } : {}),
+    }
+  }
+
+  private setInitialConfig(conn: CodexConn, result: any, requested: CodexRuntimeConfig): void {
+    conn.defaultModel = result?.model || requested.model || undefined
+    conn.defaultEffort = result?.reasoningEffort || requested.effort || undefined
+    conn.model = requested.model && requested.model !== 'default' ? requested.model : conn.defaultModel
+    conn.effort = requested.effort && requested.effort !== 'default' ? requested.effort : conn.defaultEffort
+    conn.developerInstructions = requested.developerInstructions
+  }
+
+  private contextOf(conn: CodexConn): CodexContext {
+    return {
+      threadId: conn.threadId!,
+      ...(conn.model ? { model: conn.model } : {}),
+      ...(conn.effort ? { effort: conn.effort } : {}),
+      ...(conn.tokenUsage ? { tokenUsage: conn.tokenUsage } : {}),
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -387,6 +482,22 @@ export class CodexEngine extends EventEmitter {
               this.emit('usageWarning', conn.sessionId, usedPercent)
               break
             }
+          }
+        }
+        break
+      }
+
+      case 'thread/tokenUsage/updated': {
+        const usage = params.tokenUsage
+        const context = usage?.last ?? usage?.total
+        if (context) {
+          conn.tokenUsage = {
+            totalTokens: context.totalTokens ?? 0,
+            inputTokens: context.inputTokens ?? 0,
+            cachedInputTokens: context.cachedInputTokens ?? 0,
+            outputTokens: context.outputTokens ?? 0,
+            reasoningOutputTokens: context.reasoningOutputTokens ?? 0,
+            ...(typeof usage.modelContextWindow === 'number' ? { modelContextWindow: usage.modelContextWindow } : {}),
           }
         }
         break

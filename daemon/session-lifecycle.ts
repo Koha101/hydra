@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { execSync, execFileSync } from 'child_process'
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { basename, join, resolve } from 'path'
 import { homedir } from 'os'
 import { EventEmitter } from 'events'
 import { marketplaceName } from '../shared/constants.js'
@@ -19,9 +19,11 @@ import { isKnownModel, resolveModelAlias, spawnModel } from '../shared/constants
 import { buildSpawnPrompt, buildForkPrompt, buildHandoffPrompt, buildResurrectPrompt } from './prompts/session.js'
 import { refreshSessionVisual } from './anchor-state.js'
 import { unwatchBySession } from './pr-watch.js'
+import { completeSessionContinuity, transferSessionContinuity } from './session-continuity.js'
 import { loadAccess } from './access.js'
 import { codexEngine } from './codex-bootstrap.js'
 import { codexSocketPath } from './codex-engine.js'
+import { buildCodexWorkspaceContext } from './codex-context.js'
 
 // ---------------------------------------------------------------------------
 // Session death events
@@ -37,6 +39,28 @@ export type SessionDeathEvent = {
 export const sessionDeathEmitter = new EventEmitter()
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
+
+function removeOwnedWorktree(ref: { repo: string; path: string; branch: string; name: string }, tmuxName: string): void {
+  const cleanupScript = `${ref.path}/bin/dev/on-worktree-remove.sh`
+  try {
+    execSync(`test -x ${shq(cleanupScript)} && ${shq(cleanupScript)} ${shq(ref.name)}`, { stdio: 'pipe' })
+    process.stderr.write(`daemon: ran worktree cleanup hook for ${tmuxName}\n`)
+  } catch {}
+  try {
+    execSync(`git -C ${shq(ref.repo)} worktree remove ${shq(ref.path)} --force`, { stdio: 'pipe' })
+    process.stderr.write(`daemon: removed worktree ${ref.path}\n`)
+  } catch {
+    if (ref.path.includes('/.worktrees/') && existsSync(ref.path)) {
+      execSync(`rm -rf ${shq(ref.path)}`, { stdio: 'pipe' })
+      process.stderr.write(`daemon: rm -rf worktree ${ref.path} (git remove failed)\n`)
+    }
+  }
+  try { execSync(`git -C ${shq(ref.repo)} worktree prune`, { stdio: 'pipe' }) } catch {}
+  try {
+    execSync(`git -C ${shq(ref.repo)} branch -D ${shq(ref.branch)}`, { stdio: 'pipe' })
+    process.stderr.write(`daemon: deleted branch ${ref.branch}\n`)
+  } catch {}
+}
 
 // Per-session pane logfile — `tmux pipe-pane` captures each spawn's output so a
 // crash still leaves it on disk.
@@ -174,13 +198,20 @@ export const killsInProgress = new Set<string>()
 // Kill session
 // ---------------------------------------------------------------------------
 
-export async function killSession(info: SessionInfo, reason: string): Promise<void> {
+export type KillSessionOpts = {
+  silent?: boolean
+  preserveWorktree?: boolean
+  preserveWatches?: boolean
+  emitDeath?: boolean
+}
+
+export async function killSession(info: SessionInfo, reason: string, opts: KillSessionOpts = {}): Promise<void> {
   if (killsInProgress.has(info.sessionId)) return
   killsInProgress.add(info.sessionId)
 
   try {
     // Join members and ephemeral sessions don't own the thread — skip death message and anchor reactions
-    if (!info.isJoinMember && !info.ephemeral) {
+    if (!opts.silent && !info.isJoinMember && !info.ephemeral) {
       try {
         await gateway.send(info.threadId, `_${reason}_`)
       } catch (err) {
@@ -191,7 +222,7 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     }
 
     // Notify parent session when a child dies (createdAt guard prevents name-recycling mismatch)
-    if (info.originFrom && !info.isJoinMember) {
+    if (!opts.silent && info.originFrom && !info.isJoinMember) {
       const parent = [...registry.values()].find(s => s.tmuxName === info.originFrom && s.createdAt < info.createdAt)
       if (parent) {
         const msgs = info.messageCount ?? 0
@@ -231,52 +262,42 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
     transport.disconnect(info.sessionId)
     clearPhaseBudget(info.sessionId)
 
-    if (info.worktreePath && info.worktreeRepo) {
-      const branch = `wt/${info.tmuxName}`
-      const cleanupScript = `${info.worktreePath}/bin/dev/on-worktree-remove.sh`
-      try {
-        execSync(`test -x ${shq(cleanupScript)} && ${shq(cleanupScript)} ${shq(info.tmuxName)}`, { stdio: 'pipe' })
-        process.stderr.write(`daemon: ran worktree cleanup hook for ${info.tmuxName}\n`)
-      } catch {}
-      try {
-        execSync(`git -C ${shq(info.worktreeRepo)} worktree remove ${shq(info.worktreePath)} --force`, { stdio: 'pipe' })
-        process.stderr.write(`daemon: removed worktree ${info.worktreePath}\n`)
-      } catch {
-        if (info.worktreePath.includes('/.worktrees/') && existsSync(info.worktreePath)) {
-          execSync(`rm -rf ${shq(info.worktreePath)}`, { stdio: 'pipe' })
-          process.stderr.write(`daemon: rm -rf worktree ${info.worktreePath} (git remove failed)\n`)
-        }
-      }
-      try { execSync(`git -C ${shq(info.worktreeRepo)} worktree prune`, { stdio: 'pipe' }) } catch {}
-      try {
-        execSync(`git -C ${shq(info.worktreeRepo)} branch -D ${shq(branch)}`, { stdio: 'pipe' })
-        process.stderr.write(`daemon: deleted branch ${branch}\n`)
-      } catch {}
+    if (!opts.preserveWorktree && info.worktreePath && info.worktreeRepo) {
+      removeOwnedWorktree({
+        repo: info.worktreeRepo,
+        path: info.worktreePath,
+        branch: info.worktreeBranch ?? `wt/${info.tmuxName}`,
+        name: info.worktreeName ?? info.tmuxName,
+      }, info.tmuxName)
     }
 
     // Update thread metadata before deleting session
     if (!info.isJoinMember) {
-      threadRegistry.recordKill(info.threadId, info.sessionId, info.messageCount ?? 0, info.claudeSessionId)
+      threadRegistry.recordKill(info.threadId, info.sessionId, info.messageCount ?? 0, info.claudeSessionId, info.codexThreadId ?? info.codexSessionId)
       registry.deleteThread(info.threadId)
     }
     registry.delete(info.sessionId)
     registry.persist()
 
-    const removedWatches = unwatchBySession(info.sessionId)
-    if (removedWatches > 0) {
-      process.stderr.write(`daemon: removed ${removedWatches} PR watch(es) for session ${info.sessionId}\n`)
+    if (!opts.preserveWatches) {
+      const removedWatches = unwatchBySession(info.sessionId)
+      if (removedWatches > 0) {
+        process.stderr.write(`daemon: removed ${removedWatches} PR watch(es) for session ${info.sessionId}\n`)
+      }
     }
 
     if (info.isJoinMember) {
       registry.removeMember(info.threadId, info.sessionId)
     }
 
-    sessionDeathEmitter.emit('death', {
-      sessionId: info.sessionId,
-      threadId: info.threadId,
-      wasOwner: !info.isJoinMember,
-      tmuxName: info.tmuxName,
-    } satisfies SessionDeathEvent)
+    if (opts.emitDeath !== false) {
+      sessionDeathEmitter.emit('death', {
+        sessionId: info.sessionId,
+        threadId: info.threadId,
+        wasOwner: !info.isJoinMember,
+        tmuxName: info.tmuxName,
+      } satisfies SessionDeathEvent)
+    }
 
     setTimeout(() => {
       try {
@@ -307,22 +328,28 @@ export async function killSession(info: SessionInfo, reason: string): Promise<vo
 
 async function spawnCodexSession(p: {
   tmuxName: string; sessionId: string; effectiveCwd: string;
-  model?: string; forkFromThread?: string;
+  model?: string; effort?: string; forkFromThread?: string; resumeFromThread?: string;
+  developerInstructions?: string;
 }): Promise<{ sockPath: string; spawnLogPath?: string; codexThreadId: string; codexPaneRoots: Array<{ pid: number; lstart: string }>; codexAppServerPid?: number; codexAppServerLstart?: string }> {
   const sockPath = codexSocketPath(p.tmuxName)
   const codexHomeDir = join(process.env.HOME!, '.codex', `hydra-${p.tmuxName}`)
   const mcpServerPath = join(new URL('.', import.meta.url).pathname, 'codex-mcp-server.ts')
-  const codexModel = p.model ? `-c model=${shq(p.model)}` : ''
+  const requestedModel = p.model && p.model !== 'default' && p.model !== 'codex-default' ? p.model : undefined
+  const codexModel = requestedModel ? `-c model=${shq(requestedModel)}` : ''
+  const codexEffort = p.effort ? `-c model_reasoning_effort=${shq(p.effort)}` : ''
   const fullPerms = `-c 'sandbox_permissions=["disk-full-read-access","disk-full-write-access","network-full-access"]'`
-  const serverCmd = `codex app-server --listen 'unix://' ${codexModel} ${fullPerms}`.trim()
+  const serverCmd = `codex app-server --listen 'unix://' ${codexModel} ${codexEffort} ${fullPerms}`.trim()
 
   // Window 0: durable app-server
   const serverInner = [
     `cd ${shq(p.effectiveCwd)}`,
     `export CODEX_HOME=${shq(codexHomeDir)}`,
-    `mkdir -p ${shq(codexHomeDir)}`,
+    `mkdir -p ${shq(codexHomeDir)} && chmod 700 ${shq(codexHomeDir)}`,
     `ln -sf ~/.codex/auth.json ${shq(codexHomeDir)}/auth.json`,
-    `codex mcp remove hydra 2>/dev/null; codex mcp add hydra --env DAEMON_SOCK=${shq(SOCK_PATH)} --env HYDRA_SESSION_ID=${shq(p.sessionId)} -- bun ${shq(mcpServerPath)}`,
+    `test -e ${shq(codexHomeDir)}/sessions || ln -s ~/.codex/sessions ${shq(codexHomeDir)}/sessions`,
+    `test ! -f ~/.codex/config.toml || cp ~/.codex/config.toml ${shq(codexHomeDir)}/config.toml`,
+    `test -e ${shq(codexHomeDir)}/skills || ln -s ~/.codex/skills ${shq(codexHomeDir)}/skills`,
+    `codex mcp remove hydra 2>/dev/null; CODEX_HOME=${shq(codexHomeDir)} codex mcp add hydra --env DAEMON_SOCK=${shq(SOCK_PATH)} --env HYDRA_SESSION_ID=${shq(p.sessionId)} -- bun ${shq(mcpServerPath)}`,
     serverCmd,
   ].join(' && ')
 
@@ -359,13 +386,22 @@ async function spawnCodexSession(p: {
   let lastErr = ''
   while (Date.now() - start < 15_000) {
     try {
+      const runtimeConfig = {
+        model: requestedModel,
+        effort: p.effort,
+        developerInstructions: p.developerInstructions,
+      }
       if (p.forkFromThread) {
-        const r = await codexEngine.connectAndFork(p.sessionId, sockPath, p.forkFromThread)
+        const r = await codexEngine.connectAndFork(p.sessionId, sockPath, p.forkFromThread, runtimeConfig)
         codexThreadId = r.threadId
+      } else if (p.resumeFromThread) {
+        await codexEngine.connectAndResume(p.sessionId, sockPath, p.resumeFromThread, runtimeConfig)
+        codexThreadId = p.resumeFromThread
       } else {
-        const r = await codexEngine.connect(p.sessionId, sockPath)
+        const r = await codexEngine.connect(p.sessionId, sockPath, runtimeConfig)
         codexThreadId = r.threadId
       }
+      transport.flushCodexQueue(p.sessionId)
       break
     } catch (err: any) {
       lastErr = err?.message || String(err)
@@ -374,7 +410,11 @@ async function spawnCodexSession(p: {
       await new Promise(r => setTimeout(r, 500))
     }
   }
-  if (!codexThreadId) throw new Error(`codex socket not ready after 15s (last: ${lastErr})`)
+  if (!codexThreadId) {
+    try { codexEngine.disconnect(p.sessionId) } catch {}
+    try { execFileSync('tmux', ['kill-session', '-t', p.tmuxName], { stdio: 'pipe' }) } catch {}
+    throw new Error(`codex socket not ready after 15s (last: ${lastErr})`)
+  }
   process.stderr.write(`daemon: codex connected for ${p.tmuxName}, thread=${codexThreadId}\n`)
 
   // Attachable TUI — must use `resume` with the daemon's thread ID, not bare
@@ -396,7 +436,6 @@ async function spawnCodexSession(p: {
     process.stderr.write(`daemon: codex TUI window failed for ${p.tmuxName} (non-fatal)\n`)
   }
 
-  // Discover app-server PID from the pane's descendant tree (fallback identity for orphan cleanup)
   // Discover app-server PID from the first pane root's descendant tree
   let codexAppServerPid: number | undefined
   let codexAppServerLstart: string | undefined
@@ -450,6 +489,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const isHandoff = !!opts?.handedOffFrom
   const isResume = !!opts?.resumeFrom
   const isResurrect = !!opts?.resurrectFrom
+  const engine = opts?.engine ?? 'claude'
+  if (isFork) {
+    const sourceId = engine === 'codex' ? opts?.forkFrom?.codexThreadId : opts?.forkFrom?.claudeSessionId
+    if (!sourceId) throw new Error(`${engine} fork source conversation ID is required`)
+  }
   const originType: 'spawn' | 'fork' | 'handoff' | 'resurrect' = isFork ? 'fork' : isHandoff ? 'handoff' : isResurrect ? 'resurrect' : 'spawn'
   const originFrom = opts?.forkFrom?.parentName ?? opts?.handedOffFrom ?? opts?.resurrectFrom
 
@@ -489,11 +533,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       const staleId = registry.getByThread(threadId)
       if (staleId) {
         const stale = registry.get(staleId)
-        if (stale) {
-          try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {
-            respawnCount = (stale.respawnCount ?? 0) + 1
-            await killSession(stale, 'replaced by new spawn')
-          }
+        if (stale && (!tmuxHasSession(stale.tmuxName) || stale.deadAt)) {
+          respawnCount = (stale.respawnCount ?? 0) + 1
+          await killSession(stale, 'replaced by new spawn', {
+            preserveWorktree: !!stale.worktreePath && stale.worktreePath === opts?.reuseWorktree?.path,
+            preserveWatches: stale.sessionId === opts?.replacesSessionId,
+          })
         }
       }
     }
@@ -548,13 +593,16 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       if (stale) {
         let staleAlive = false
         try { execSync(`tmux has-session -t '${stale.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }); staleAlive = true } catch {}
-        if (!staleAlive) {
+        if (!staleAlive || stale.deadAt) {
           respawnCount = (stale.respawnCount ?? 0) + 1
           if (!anchorMessageId && stale.anchorMessageId) {
             anchorMessageId = stale.anchorMessageId
             anchorChannelId = stale.anchorChannelId
           }
-          await killSession(stale, 'replaced by new spawn')
+          await killSession(stale, 'replaced by new spawn', {
+            preserveWorktree: !!stale.worktreePath && stale.worktreePath === opts?.reuseWorktree?.path,
+            preserveWatches: stale.sessionId === opts?.replacesSessionId,
+          })
         }
       }
     }
@@ -571,12 +619,15 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const spawnCwd = process.env.SPAWN_CWD
   if (!spawnCwd) throw new Error('SPAWN_CWD env var is required -- set it to the working directory for spawned sessions')
 
-  let worktreeRepo: string | undefined
-  let worktreePath: string | undefined
-  let effectiveCwd = spawnCwd
-  if (worktreeTarget) {
-    const repoName = worktreeTarget
-    const repoDir = resolve(spawnCwd, repoName)
+  let worktreeRepo = opts?.reuseWorktree?.repo
+  let worktreePath = opts?.reuseWorktree?.path
+  let worktreeBranch = opts?.reuseWorktree?.branch
+  let worktreeName = opts?.reuseWorktree?.name
+  let createdWorktree = false
+  let effectiveCwd = worktreePath ?? spawnCwd
+  if (worktreeTarget || opts?.forkWorktreeFrom) {
+    const repoName = worktreeTarget ?? basename(opts!.forkWorktreeFrom!.repo)
+    const repoDir = worktreeTarget ? resolve(spawnCwd, repoName) : opts!.forkWorktreeFrom!.repo
 
     // Verify the target is a git repo
     try {
@@ -593,22 +644,23 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     try { execSync(`git -C ${shq(repoDir)} worktree prune 2>/dev/null`, { stdio: 'pipe' }) } catch {}
     try { execSync(`git -C ${shq(repoDir)} branch -D ${shq(branch)} 2>/dev/null`, { stdio: 'pipe' }) } catch {}
 
-    // Detect default branch (main/master) so worktree always starts clean
-    let defaultBranch = 'main'
-    try {
-      defaultBranch = execSync(`git -C ${shq(repoDir)} symbolic-ref refs/remotes/origin/HEAD`, { stdio: 'pipe' }).toString().trim().replace('refs/remotes/origin/', '')
-    } catch {
+    let baseRef = opts?.forkWorktreeFrom?.branch
+    if (!baseRef) {
+      baseRef = 'main'
       try {
-        // Fallback: check if 'main' exists, otherwise use 'master'
-        execSync(`git -C ${shq(repoDir)} rev-parse --verify main`, { stdio: 'pipe' })
+        baseRef = execSync(`git -C ${shq(repoDir)} symbolic-ref refs/remotes/origin/HEAD`, { stdio: 'pipe' }).toString().trim().replace('refs/remotes/origin/', '')
       } catch {
-        defaultBranch = 'master'
+        try {
+          execSync(`git -C ${shq(repoDir)} rev-parse --verify main`, { stdio: 'pipe' })
+        } catch {
+          baseRef = 'master'
+        }
       }
     }
 
     try {
-      execFileSync('git', ['-C', repoDir, 'worktree', 'add', '-b', branch, wtDir, defaultBranch], { stdio: 'pipe' })
-      process.stderr.write(`daemon: created worktree ${wtDir} (branch ${branch}) from ${defaultBranch}\n`)
+      execFileSync('git', ['-C', repoDir, 'worktree', 'add', '-b', branch, wtDir, baseRef], { stdio: 'pipe' })
+      process.stderr.write(`daemon: created worktree ${wtDir} (branch ${branch}) from ${baseRef}\n`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`failed to create worktree: ${msg}`)
@@ -616,6 +668,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 
     worktreeRepo = repoDir
     worktreePath = wtDir
+    worktreeBranch = branch
+    worktreeName = tmuxName
+    createdWorktree = true
     effectiveCwd = wtDir
 
     const claudeJsonPath = join(CLAUDE_CONFIG, '.claude.json')
@@ -674,25 +729,104 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   const rawModel = opts?.model
   const model = rawModel ? (resolveModelAlias(rawModel) ?? rawModel) : spawnModel()
 
-  const engine = opts?.engine ?? 'claude'
-
   if (engine === 'claude' && !isKnownModel(model)) {
     process.stderr.write(`daemon: unrecognized model ${model} — may be a new release or typo. Spawning anyway.\n`)
     if (threadId) void gateway.send(threadId, `\u26a0\ufe0f Unrecognized model \`${model}\` — may be a new release or typo. Spawning anyway.`).catch(() => {})
   }
 
+  let handoffProvisional = false
+  const discardHandoffProvisional = (): void => {
+    if (!handoffProvisional) return
+    if (registry.getByThread(threadId!) === sessionId) registry.deleteThread(threadId!)
+    registry.delete(sessionId)
+    registry.persist()
+    handoffProvisional = false
+  }
+  if (isHandoff && !isJoin) {
+    const now = Date.now()
+    const provisionalCapabilities: SessionCapabilities = {
+      role: 'worker',
+      tools: [],
+      model: engine === 'codex' ? opts?.model ?? 'codex-default' : model,
+      ...(engine === 'codex' && opts?.effort && opts.effort !== 'default' ? { effort: opts.effort } : {}),
+      cwd: effectiveCwd,
+      platform: PLATFORM,
+    }
+    registry.set(sessionId, {
+      sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
+      tmuxName, listening: resolveListenState(threadId!, chatId), originType, originFrom,
+      capabilities: provisionalCapabilities, engine,
+      threadUrl: threadRegistry.get(threadId!)?.threadUrl,
+      ...(worktreeRepo ? { worktreeRepo, worktreePath, worktreeBranch, worktreeName } : {}),
+      initiator: opts?.initiator,
+      ephemeral: opts?.ephemeral,
+      ...(phaseBudgetMs ? { budgetDeadline: now + phaseBudgetMs } : {}),
+      ...(engine === 'codex' ? { pendingInitialPrompt: prompt } : {}),
+    })
+    registry.setThread(threadId!, sessionId)
+    registry.persist()
+    handoffProvisional = true
+  }
+
   // --- Codex engine: spawn in tmux, connect via unix socket ---
   if (engine === 'codex') {
-    const { sockPath, spawnLogPath, codexThreadId, codexPaneRoots, codexAppServerPid, codexAppServerLstart } = await spawnCodexSession({
-      tmuxName, sessionId, effectiveCwd, model: opts?.model, forkFromThread: opts?.forkFrom?.codexThreadId,
-    })
-    void codexEngine.startTurn(sessionId, prompt).catch(err => {
-      process.stderr.write(`daemon: codex startTurn failed for ${tmuxName}: ${err}\n`)
-    })
+    const requestedEffort = opts?.effort && opts.effort !== 'default' ? opts.effort : undefined
+    const workspaceContext = buildCodexWorkspaceContext(spawnCwd)
+    let spawned: Awaited<ReturnType<typeof spawnCodexSession>>
+    try {
+      spawned = await spawnCodexSession({
+        tmuxName,
+        sessionId,
+        effectiveCwd,
+        model: opts?.model,
+        effort: requestedEffort,
+        forkFromThread: opts?.forkFrom?.codexThreadId,
+        resumeFromThread: isResume ? opts?.resumeFrom : undefined,
+        developerInstructions: workspaceContext || undefined,
+      })
+    } catch (error) {
+      discardHandoffProvisional()
+      if (createdWorktree && worktreeRepo && worktreePath) {
+        removeOwnedWorktree({ repo: worktreeRepo, path: worktreePath, branch: worktreeBranch!, name: worktreeName! }, tmuxName)
+      }
+      throw error
+    }
+    const { spawnLogPath, codexThreadId, codexPaneRoots, codexAppServerPid, codexAppServerLstart } = spawned
+    const context = codexEngine.getContext(sessionId)
+    const provisional = registry.get(sessionId)
+    if (provisional) {
+      provisional.codexThreadId = codexThreadId
+      registry.persist()
+    }
+    if (isHandoff) {
+      try {
+        await codexEngine.startTurn(sessionId, prompt)
+        if (provisional) {
+          delete provisional.pendingInitialPrompt
+          registry.persist()
+        }
+      } catch (error) {
+        try { codexEngine.disconnect(sessionId) } catch {}
+        try { Bun.spawnSync(['tmux', 'kill-session', '-t', tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
+        discardHandoffProvisional()
+        throw error
+      }
+    } else {
+      void codexEngine.startTurn(sessionId, prompt).catch(err => {
+        process.stderr.write(`daemon: codex startTurn failed for ${tmuxName}: ${err}\n`)
+      })
+    }
 
     // SYNC: keep in sync with Claude registration block (~line 655+)
     const now = Date.now()
-    const capabilities: SessionCapabilities = { role: 'worker', tools: [], model: opts?.model ?? 'codex-default', cwd: effectiveCwd, platform: PLATFORM }
+    const capabilities: SessionCapabilities = {
+      role: 'worker',
+      tools: [],
+      model: context.model ?? opts?.model ?? 'codex-default',
+      ...(context.effort ? { effort: context.effort } : {}),
+      cwd: effectiveCwd,
+      platform: PLATFORM,
+    }
     const url = await gateway.getThreadUrl(threadId!)
     registry.set(sessionId, {
       sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
@@ -702,7 +836,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       ...(codexAppServerPid ? { codexAppServerPid, codexAppServerLstart } : {}),
       ...(spawnLogPath ? { spawnLogPath } : {}),
       ...(respawnCount > 0 ? { respawnCount } : {}),
-      ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
+      ...(worktreeRepo ? { worktreeRepo, worktreePath, worktreeBranch, worktreeName } : {}),
       ...(isJoin ? { isJoinMember: true } : {}),
       initiator: opts?.initiator,
       ephemeral: opts?.ephemeral,
@@ -712,17 +846,29 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     if (!isJoin) registry.setThread(threadId!, sessionId)
     else registry.addMember(threadId!, sessionId, opts?.memberLabel)
     registry.persist()
+    if (opts?.replacesSessionId) {
+      transferSessionContinuity(opts.replacesSessionId, sessionId)
+    }
 
     if (!isJoin) {
       threadRegistry.recordSpawn(threadId!, {
         anchorMessageId, threadUrl: url || undefined, topic, respawnCount,
-        sessionId, tmuxName, originType, originFrom, model: opts?.model ?? 'codex-default', parentChannelId,
+        sessionId, tmuxName, originType, originFrom,
+        model: capabilities.model,
+        effort: capabilities.effort,
+        engine,
+        codexThreadId,
+        parentChannelId,
+        worktreeRepo,
+        worktreePath,
+        worktreeBranch,
+        worktreeName,
       })
     }
     refreshSessionVisual(threadId!, { state: respawnCount > 0 ? 'zombie' : 'live' })
 
     const spawnLine = formatSpawnLine({
-      emoji: sessionEmoji(tmuxName), name: tmuxName, model: opts?.model ?? 'codex',
+      emoji: sessionEmoji(tmuxName), name: tmuxName, model: capabilities.model,
       trigger: opts?.trigger ?? originType ?? 'spawn',
     })
     const announceIds = await safeSend(threadId!, spawnLine)
@@ -737,7 +883,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   if (isFork) {
     claudeArgs = [
       `claude`,
-      `--resume ${shq(opts!.forkFrom!.claudeSessionId)}`,
+      `--resume ${shq(opts!.forkFrom!.claudeSessionId!)}`,
       `--fork-session`,
       `--model ${shq(model)}`,
       `--dangerously-skip-permissions`,
@@ -750,6 +896,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       `--resume ${shq(opts!.resumeFrom!)}`,
       `--model ${shq(model)}`,
       `--dangerously-skip-permissions`,
+      ...(isHandoff ? [shq(prompt)] : []),
       `--channels ${shq(channelFlag)}`,
     ].join(' ')
   } else {
@@ -790,6 +937,10 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`daemon: spawn ${tmuxName}: execFileSync FAILED: ${msg}\n`)
+    if (createdWorktree && worktreeRepo && worktreePath) {
+      removeOwnedWorktree({ repo: worktreeRepo, path: worktreePath, branch: worktreeBranch!, name: worktreeName! }, tmuxName)
+    }
+    discardHandoffProvisional()
     throw new Error(`failed to spawn tmux session: ${msg}`)
   }
 
@@ -835,9 +986,9 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
   registry.set(sessionId, {
     sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
     tmuxName, listening: resolveListenState(threadId!, chatId), originType, originFrom, capabilities,
-    threadUrl: url || undefined,
+    threadUrl: url || undefined, engine,
     ...(respawnCount > 0 ? { respawnCount } : {}),
-    ...(worktreeRepo ? { worktreeRepo, worktreePath } : {}),
+    ...(worktreeRepo ? { worktreeRepo, worktreePath, worktreeBranch, worktreeName } : {}),
     ...(isJoin ? { isJoinMember: true } : {}),
     ...(spawnLogPath ? { spawnLogPath } : {}),
     initiator: opts?.initiator,
@@ -852,8 +1003,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
     registry.addMember(threadId!, sessionId, opts?.memberLabel)
   }
   registry.persist()
+  if (opts?.replacesSessionId) {
+    transferSessionContinuity(opts.replacesSessionId, sessionId)
+  }
 
-  // Co-update thread metadata (observational — not load-bearing for message routing)
+  // Persist thread recovery metadata.
   if (!isJoin) {
     threadRegistry.recordSpawn(threadId!, {
       anchorMessageId,
@@ -865,7 +1019,12 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       originType,
       originFrom,
       model,
+      engine,
       parentChannelId,
+      worktreeRepo,
+      worktreePath,
+      worktreeBranch,
+      worktreeName,
     })
   }
 
@@ -905,10 +1064,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
 export const HEALTH_TIMEOUT_MS = 30_000
 
 export function waitForBridge(sessionId: string, timeoutMs: number): Promise<boolean> {
+  const ready = () => transport.has(sessionId)
   return new Promise(resolve => {
-    if (transport.has(sessionId)) { resolve(true); return }
+    if (ready()) { resolve(true); return }
     const interval = setInterval(() => {
-      if (transport.has(sessionId)) {
+      if (ready()) {
         clearInterval(interval)
         clearTimeout(timer)
         resolve(true)
@@ -921,26 +1081,55 @@ export function waitForBridge(sessionId: string, timeoutMs: number): Promise<boo
   })
 }
 
+export async function assertHealthySpawn(
+  result: SpawnResult,
+  engine: 'claude' | 'codex',
+  opts: { preserveWorktree?: boolean; previousSessionId?: string } = {},
+): Promise<void> {
+  if (await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)) return
+  const info = registry.get(result.sessionId)
+  if (info) {
+    await killSession(info, 'spawn health check failed', {
+      silent: true,
+      preserveWorktree: opts.preserveWorktree,
+      preserveWatches: !!opts.previousSessionId,
+      emitDeath: false,
+    }).catch(() => {})
+  }
+  if (opts.previousSessionId) transferSessionContinuity(result.sessionId, opts.previousSessionId)
+  throw new Error(`${engine} bridge did not connect`)
+}
+
 export async function tryResume(dead: {
+  sessionId?: string
   topic: string
   threadId: string
   claudeSessionId?: string
+  codexThreadId?: string
+  engine?: 'claude' | 'codex'
   threadUrl?: string
   model?: string
+  effort?: string
+  reuseWorktree?: SpawnOpts['reuseWorktree']
 }): Promise<SpawnResult | null> {
-  if (!dead.claudeSessionId) return null
+  const engine = dead.engine ?? 'claude'
+  const resumeId = engine === 'codex' ? dead.codexThreadId : dead.claudeSessionId
+  if (!resumeId) return null
   try {
     const result = await doSpawnSession(dead.topic, undefined, undefined, {
       existingThreadId: dead.threadId,
-      resumeFrom: dead.claudeSessionId,
+      resumeFrom: resumeId,
       model: dead.model,
+      effort: dead.effort,
+      engine,
+      reuseWorktree: dead.reuseWorktree,
+      replacesSessionId: dead.sessionId,
     })
-    const ok = await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)
-    if (!ok) {
-      const info = registry.get(result.sessionId)
-      if (info) await killSession(info, 'resume health check failed').catch(() => {})
-      return null
-    }
+    await assertHealthySpawn(result, engine, {
+      preserveWorktree: !!dead.reuseWorktree,
+      previousSessionId: dead.sessionId,
+    })
+    if (dead.sessionId) completeSessionContinuity(dead.threadId, dead.sessionId, result.sessionId)
     transport.sendOrQueue(result.sessionId, {
       type: 'notification',
       content: `[system] You were interrupted by a system crash and have been recovered with full conversation context. Check your thread for any messages you may have missed, and continue where you left off.`,
@@ -952,18 +1141,32 @@ export async function tryResume(dead: {
   }
 }
 
-export async function tryRespawn(
-  threadId: string,
-  topic: string,
-  resurrectFrom?: string,
-  model?: string,
-): Promise<SpawnResult | null> {
+export async function tryRespawn(opts: {
+  threadId: string
+  topic: string
+  resurrectFrom?: string
+  model?: string
+  engine?: 'claude' | 'codex'
+  effort?: string
+  reuseWorktree?: SpawnOpts['reuseWorktree']
+  replacesSessionId?: string
+}): Promise<SpawnResult | null> {
   try {
-    return await doSpawnSession(topic, undefined, undefined, {
-      existingThreadId: threadId,
-      resurrectFrom,
-      model,
+    const result = await doSpawnSession(opts.topic, undefined, undefined, {
+      existingThreadId: opts.threadId,
+      resurrectFrom: opts.resurrectFrom,
+      model: opts.model,
+      engine: opts.engine,
+      effort: opts.effort,
+      reuseWorktree: opts.reuseWorktree,
+      replacesSessionId: opts.replacesSessionId,
     })
+    await assertHealthySpawn(result, opts.engine ?? 'claude', {
+      preserveWorktree: !!opts.reuseWorktree,
+      previousSessionId: opts.replacesSessionId,
+    })
+    if (opts.replacesSessionId) completeSessionContinuity(opts.threadId, opts.replacesSessionId, result.sessionId)
+    return result
   } catch {
     return null
   }

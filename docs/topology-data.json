@@ -290,6 +290,10 @@
     ],
     [
       "daemon",
+      "shared_constants"
+    ],
+    [
+      "daemon",
       "daemon_bridge-transport"
     ],
     [
@@ -397,6 +401,10 @@
       "daemon_anchor-state"
     ],
     [
+      "daemon_bridge-dispatch",
+      "daemon_dashboard"
+    ],
+    [
       "daemon_bridge-server",
       "daemon_config"
     ],
@@ -422,15 +430,7 @@
     ],
     [
       "daemon_bridge-server",
-      "daemon_permission"
-    ],
-    [
-      "daemon_bridge-server",
       "daemon_session-lifecycle"
-    ],
-    [
-      "daemon_bridge-server",
-      "daemon_access"
     ],
     [
       "daemon_bridge-server",
@@ -459,10 +459,6 @@
     [
       "daemon_bridge-server",
       "daemon_util"
-    ],
-    [
-      "daemon_permission",
-      "daemon_bridge-transport"
     ],
     [
       "daemon_permission",
@@ -498,6 +494,10 @@
     ],
     [
       "daemon_session-lifecycle",
+      "shared_constants"
+    ],
+    [
+      "daemon_session-lifecycle",
       "daemon_config"
     ],
     [
@@ -519,10 +519,6 @@
     [
       "daemon_session-lifecycle",
       "daemon_phase-budget"
-    ],
-    [
-      "daemon_session-lifecycle",
-      "shared_constants"
     ],
     [
       "daemon_session-lifecycle",
@@ -575,6 +571,10 @@
     [
       "daemon_router",
       "daemon_commands_review"
+    ],
+    [
+      "daemon_router",
+      "daemon_adversarial"
     ],
     [
       "daemon_router",
@@ -923,6 +923,14 @@
     [
       "daemon_commands_thread",
       "daemon_util"
+    ],
+    [
+      "daemon_commands_thread",
+      "daemon_protocol-registry"
+    ],
+    [
+      "daemon_commands_thread",
+      "daemon_idempotency"
     ],
     [
       "daemon_commands_review",

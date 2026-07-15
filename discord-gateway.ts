@@ -22,7 +22,7 @@ import {
 // Native Discord slash commands (registered per-guild for instant availability).
 // Each maps to hydra's existing text command via slashToText() below.
 const STR = ApplicationCommandOptionType.String
-const HYDRA_SLASH_COMMANDS = [
+export const HYDRA_SLASH_COMMANDS = [
   { name: 'sessions', description: 'List active sessions' },
   { name: 'context', description: 'Show the session\'s context usage' },
   { name: 'clear', description: 'Wipe the session\'s conversation context (in place)' },
@@ -30,24 +30,40 @@ const HYDRA_SLASH_COMMANDS = [
   { name: 'reboot', description: 'Full restart: daemon + a fresh byte process' },
   { name: 'health', description: 'Daemon health' },
   { name: 'model', description: 'Switch the session model', options: [
-    { name: 'model', description: 'Model or alias', type: STR, required: true,
-      choices: ['fable', 'opus', 'sonnet', 'haiku'].map(m => ({ name: m, value: m })) }] },
+    { name: 'model', description: 'Model ID, Claude alias, or default', type: STR, required: true }] },
   { name: 'effort', description: 'Set reasoning effort', options: [
     { name: 'level', description: 'Effort level', type: STR, required: true,
-      choices: ['low', 'medium', 'high', 'xhigh', 'max'].map(m => ({ name: m, value: m })) }] },
+      choices: ['default', ...CODEX_EFFORT_LEVELS].map(m => ({ name: m, value: m })) }] },
+  { name: 'provider', description: 'Hand off this thread to Claude or Codex', options: [
+    { name: 'provider', description: 'Destination provider', type: STR, required: true,
+      choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) }] },
+  { name: 'fork', description: 'Fork this Claude or Codex session into a new thread', options: [
+    { name: 'focus', description: 'Optional focus for the forked session', type: STR, required: false }] },
   { name: 'ultracode', description: 'Toggle ultracode mode (xhigh + auto workflows)', options: [
     { name: 'mode', description: 'on or off', type: STR, required: true,
       choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] }] },
   { name: 'kill', description: 'Kill a session by name', options: [
     { name: 'name', description: 'Session name (e.g. pulse)', type: STR, required: true }] },
   { name: 'spawn', description: 'Spawn an isolated session', options: [
-    { name: 'topic', description: 'What the session should work on', type: STR, required: true }] },
+    { name: 'topic', description: 'What the session should work on', type: STR, required: true },
+    { name: 'provider', description: 'claude or codex', type: STR, required: false,
+      choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) },
+    { name: 'model', description: 'Optional model ID or Claude alias', type: STR, required: false }] },
 ]
 
 /** Translate a slash interaction into hydra's text-command form. */
-function slashToText(interaction: ChatInputCommandInteraction): string {
+export function slashToText(interaction: ChatInputCommandInteraction): string {
   const name = interaction.commandName
-  if (name === 'spawn') return `spawn: ${interaction.options.getString('topic') ?? ''}`
+  if (name === 'spawn') {
+    const topic = interaction.options.getString('topic') ?? ''
+    const provider = interaction.options.getString('provider') ?? 'claude'
+    const model = interaction.options.getString('model')
+    return `/spawn ${provider}${model ? ` ${model}` : ''}: ${topic}`
+  }
+  if (name === 'fork') {
+    const focus = interaction.options.getString('focus')?.trim()
+    return focus ? `/fork: ${focus}` : '/fork'
+  }
   const arg = interaction.options.data[0]?.value
   return arg !== undefined ? `/${name} ${arg}` : `/${name}`
 }
@@ -70,6 +86,7 @@ import type {
 } from './gateway.js'
 import { ThrottledQueue } from './throttled-queue.js'
 import { isGoneError } from './shared/discord-errors.js'
+import { CODEX_EFFORT_LEVELS } from './shared/constants.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200

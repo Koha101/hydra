@@ -197,6 +197,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const worktree = args.worktree as string | undefined
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
         const model = (args.model as string | undefined)?.trim() || undefined
+        const engine = args.provider === 'codex' ? 'codex' : 'claude'
         if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
         const budgetRaw = (args.phase_budget as string | undefined)?.trim() || undefined
         const phaseBudgetMs = budgetRaw ? parseDuration(budgetRaw) ?? undefined : undefined
@@ -204,6 +205,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const spawnerName = callerSessionId ? registry.get(callerSessionId)?.tmuxName ?? 'main' : 'main'
         const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, {
           ...(model ? { model } : {}),
+          engine,
           ...(phaseBudgetMs ? { phaseBudgetMs } : {}),
           trigger: 'spawn_session',
           initiator: spawnerName,

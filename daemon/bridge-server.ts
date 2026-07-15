@@ -17,6 +17,8 @@ import { shouldHoldIncumbentMain } from './main-guard.js'
 import { buildAutopsy, logCorrelation, tailSpawnLog, buildCrashNotice, getVitalsSample } from './observability.js'
 import { safeSend } from './util.js'
 import { createMainBridgeCycle, formatReconnectLine, mainCloseRecordsReason } from './main-bridge-cycle.js'
+import { handleLegacyCodexConfigResult, handleLegacyCodexControlResult, rejectLegacyCodexRequests } from './legacy-codex-control.js'
+import { completePendingContinuityForConnectedSession } from './session-continuity.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -137,28 +139,45 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
   switch (msg.type) {
     case 'register': {
       const sessionId = msg.sessionId as string
+      const toolBridge = msg.bridgeRole === 'tool'
       conn.sessionId = sessionId
+      conn.bridgeRole = toolBridge ? 'tool' : 'agent'
 
       const claudeSessionId = msg.claudeSessionId as string | undefined
+      const legacyCodex = !toolBridge && msg.provider === 'codex'
       const info = registry.get(sessionId)
       if (info) {
-        const resolved = claudeSessionId || discoverClaudeSessionId(info.tmuxName)
-        if (resolved) {
-          info.claudeSessionId = resolved
+        const thread = threadRegistry.get(info.threadId)
+        const histEntry = thread?.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+        if (legacyCodex) {
+          info.provider = 'codex'
+          if (typeof msg.codexSessionId === 'string') info.codexSessionId = msg.codexSessionId
+          if (info.capabilities) {
+            if (typeof msg.model === 'string') info.capabilities.model = msg.model
+            if (typeof msg.effort === 'string') info.capabilities.effort = msg.effort
+          }
+          if (histEntry) {
+            histEntry.provider = 'codex'
+            if (typeof msg.codexSessionId === 'string') histEntry.codexSessionId = msg.codexSessionId
+            if (typeof msg.model === 'string') histEntry.model = msg.model
+            if (typeof msg.effort === 'string') histEntry.effort = msg.effort
+          }
           registry.persist()
-
-          // Flow claudeSessionId to thread history
-          const thread = threadRegistry.get(info.threadId)
-          if (thread) {
-            const histEntry = thread.sessionHistory.find(h => h.sessionId === sessionId)
+          threadRegistry.persist()
+        } else if (!toolBridge) {
+          const resolved = claudeSessionId || discoverClaudeSessionId(info.tmuxName)
+          if (resolved) {
+            info.claudeSessionId = resolved
             if (histEntry) histEntry.claudeSessionId = resolved
+            registry.persist()
             threadRegistry.persist()
           }
         }
-        if (sessionId !== 'main') logCorrelation(info)
+
+        if (!toolBridge && sessionId !== 'main') logCorrelation(info)
       }
 
-      if (sessionId !== 'main' && info?.engine !== 'codex' && trackRegistration(sessionId)) {
+      if (!toolBridge && sessionId !== 'main' && info?.engine !== 'codex' && trackRegistration(sessionId)) {
         process.stderr.write(`daemon: circuit breaker: ${info?.tmuxName ?? sessionId} flapping (${FLAP_THRESHOLD}+ registrations in ${FLAP_WINDOW_MS / 1000}s) — killing session\n`)
         try { execSync(`tmux kill-session -t '${info?.tmuxName}' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
         if (info) {
@@ -213,7 +232,7 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         }
       }
 
-      const existing = transport.get(sessionId)
+      const existing = toolBridge ? transport.getTool(sessionId) : transport.get(sessionId)
       if (existing && existing.socket !== conn.socket) {
         if (sessionId !== 'main') process.stderr.write(`daemon: replacing bridge for session ${sessionId}\n`)
         // The main replace is otherwise silent — record it as the disconnect
@@ -225,7 +244,8 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         try { existing.socket.end() } catch {}
       }
 
-      transport.set(sessionId, conn)
+      if (toolBridge) transport.setTool(sessionId, conn)
+      else transport.set(sessionId, conn)
       // Deliberately kept (diagnostics-only). This self-wipes the flap counter
       // that trackRegistration('main') just fed, so the flap threshold can never
       // trip and shouldHoldIncumbentMain stays inert. Removing it is the actual
@@ -250,13 +270,18 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
           platform: PLATFORM,
         },
       })
-      transport.flushQueue(sessionId)
-      dispatchReconnect(sessionId)
-      if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
+      if (!toolBridge) {
+        completePendingContinuityForConnectedSession(sessionId)
+        transport.flushQueue(sessionId)
+        dispatchReconnect(sessionId)
+        if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
+      }
       if (sessionId === 'main') {
         const r = mainBridge.connect(mainHadOtherIncumbent, Date.now())
         if (r.kind === 'first') process.stderr.write('daemon: main bridge connected\n')
         else if (!r.throttled) process.stderr.write(formatReconnectLine(r) + '\n')
+      } else if (toolBridge) {
+        process.stderr.write(`daemon: tool bridge registered for session ${sessionId}\n`)
       } else {
         process.stderr.write(`daemon: bridge registered for session ${sessionId}\n`)
         if (info?.ephemeral) startEphemeralTtl(sessionId)
@@ -343,6 +368,35 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
       break
     }
 
+    case 'session_config_result': {
+      if (conn.sessionId) handleLegacyCodexConfigResult(conn.sessionId, msg)
+      break
+    }
+
+    case 'session_identity': {
+      const sessionId = msg.sessionId as string
+      const info = registry.get(sessionId)
+      if (!info || conn.sessionId !== sessionId || msg.provider !== 'codex') break
+      info.provider = 'codex'
+      if (typeof msg.codexSessionId === 'string') info.codexSessionId = msg.codexSessionId
+      else if (msg.codexSessionId === null) delete info.codexSessionId
+      const thread = threadRegistry.get(info.threadId)
+      const entry = thread?.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
+      if (entry) {
+        entry.provider = 'codex'
+        if (typeof msg.codexSessionId === 'string') entry.codexSessionId = msg.codexSessionId
+        else if (msg.codexSessionId === null) delete entry.codexSessionId
+      }
+      registry.persist()
+      threadRegistry.persist()
+      break
+    }
+
+    case 'session_control_result': {
+      if (conn.sessionId) handleLegacyCodexControlResult(conn.sessionId, msg)
+      break
+    }
+
     default:
       process.stderr.write(`daemon: unknown message type from bridge: ${msg.type}\n`)
   }
@@ -381,6 +435,10 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
         histEntry.endedAt = Date.now()
         histEntry.messageCount = info.messageCount ?? 0
         histEntry.claudeSessionId = info.claudeSessionId
+        histEntry.codexThreadId = info.codexThreadId
+        histEntry.codexSessionId = info.codexSessionId
+        histEntry.engine = info.engine
+        histEntry.provider = info.provider
       }
       threadRegistry.persist()
     }
@@ -424,7 +482,8 @@ export const socketServer = createServer((socket: Socket) => {
 
   function handleSocketClose(reason: string): void {
     if (!conn.sessionId) return
-    const isOwner = transport.get(conn.sessionId) === conn
+    const toolBridge = conn.bridgeRole === 'tool'
+    const isOwner = (toolBridge ? transport.getTool(conn.sessionId) : transport.get(conn.sessionId)) === conn
     // First reason wins. A socket can emit both 'error' and 'end'; the owner's
     // first close records the cause (and the transport.delete below then makes any
     // later close a non-owner), so this flag is belt-and-suspenders that keeps the
@@ -434,13 +493,15 @@ export const socketServer = createServer((socket: Socket) => {
       mainBridge.disconnect(reason, Date.now())
     }
     if (isOwner) {
-      transport.delete(conn.sessionId)
+      if (toolBridge) transport.deleteTool(conn.sessionId)
+      else transport.delete(conn.sessionId)
     }
-    if (conn.sessionId !== 'main') {
+    if (!toolBridge) rejectLegacyCodexRequests(conn.sessionId)
+    if (!toolBridge && conn.sessionId !== 'main') {
       const sid = conn.sessionId
       setTimeout(() => checkSessionDeath(sid), DEATH_DETECT_DELAY_MS)
     }
-    dispatchDisconnect(conn.sessionId)
+    if (!toolBridge) dispatchDisconnect(conn.sessionId)
   }
 
   socket.on('end', () => {

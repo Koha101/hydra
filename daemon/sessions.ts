@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { STATE_DIR } from './config.js'
@@ -13,9 +13,13 @@ export type SessionCapabilities = {
   role: 'main' | 'worker'
   tools: string[]
   model: string
+  effort?: string
   cwd: string
   platform: string
 }
+
+export type SessionEngine = 'claude' | 'codex'
+export type WorktreeRef = { repo: string; path: string; branch?: string; name?: string }
 
 export type SessionInfo = {
   sessionId: string
@@ -41,6 +45,8 @@ export type SessionInfo = {
   lastReplyId?: string
   worktreeRepo?: string
   worktreePath?: string
+  worktreeBranch?: string
+  worktreeName?: string
   isJoinMember?: boolean
   deadAt?: number
   contextLinks?: string[]
@@ -48,11 +54,14 @@ export type SessionInfo = {
   budgetDeadline?: number  // epoch ms; phase-budget nudge fires here, reap at +grace (persisted so restarts re-arm)
   spawnAnnounceId?: string // message ID of the spawn announce line — edited on death to show completion
   spawnLogPath?: string    // black-box recorder: tmux pane output captured via `pipe-pane`, read on crash
-  engine?: 'claude' | 'codex'  // which backend runs this session (default: claude)
+  engine?: SessionEngine  // which backend runs this session (default: claude)
   codexThreadId?: string       // persisted codex thread ID for resume on daemon restart
   codexPaneRoots?: Array<{ pid: number; lstart: string }>  // all tmux pane PIDs for process tree cleanup
   codexAppServerPid?: number   // PID of the codex app-server process (fallback when pane dies)
   codexAppServerLstart?: string
+  provider?: SessionEngine     // legacy private Codex bridge; remove after those sessions end
+  codexSessionId?: string      // legacy private Codex bridge thread ID
+  pendingInitialPrompt?: string
 }
 
 export type ThreadMember = {
@@ -66,7 +75,7 @@ export type ThreadMember = {
 export type SpawnResult = { name: string; sessionId: string; threadId: string; url: string }
 
 // ---------------------------------------------------------------------------
-// Thread metadata — observational, not load-bearing for message routing
+// Durable thread and recovery metadata
 // ---------------------------------------------------------------------------
 
 export type ThreadSessionEntry = {
@@ -78,7 +87,43 @@ export type ThreadSessionEntry = {
   endedAt?: number
   messageCount: number
   claudeSessionId?: string
+  codexThreadId?: string
   model?: string
+  effort?: string
+  engine?: SessionEngine
+  provider?: SessionEngine
+  codexSessionId?: string
+  worktreeRepo?: string
+  worktreePath?: string
+  worktreeBranch?: string
+  worktreeName?: string
+}
+
+export function sessionEngine(info: Pick<SessionInfo, 'engine' | 'provider'>): SessionEngine {
+  return info.engine ?? info.provider ?? 'claude'
+}
+
+type ConversationRef = Pick<SessionInfo, 'engine' | 'provider' | 'claudeSessionId' | 'codexThreadId' | 'codexSessionId'>
+
+export function conversationId(info: ConversationRef, engine: SessionEngine = sessionEngine(info)): string | undefined {
+  return engine === 'codex' ? info.codexThreadId ?? info.codexSessionId : info.claudeSessionId
+}
+
+type WorktreeOwner = Pick<SessionInfo, 'tmuxName' | 'worktreeRepo' | 'worktreePath' | 'worktreeBranch' | 'worktreeName'>
+
+export function worktreeRef(info: WorktreeOwner): WorktreeRef | undefined {
+  if (!info.worktreeRepo || !info.worktreePath) return undefined
+  return {
+    repo: info.worktreeRepo,
+    path: info.worktreePath,
+    branch: info.worktreeBranch ?? `wt/${info.tmuxName}`,
+    name: info.worktreeName ?? info.tmuxName,
+  }
+}
+
+export function recoverableWorktreeRef(info: WorktreeOwner): WorktreeRef | undefined {
+  const ref = worktreeRef(info)
+  return ref && existsSync(ref.path) ? ref : undefined
 }
 
 export type ThreadMetadata = {
@@ -95,10 +140,11 @@ export type ThreadMetadata = {
   sessionHistory: ThreadSessionEntry[]
   listenOverride?: boolean
   parentChannelId?: string
+  pendingContinuitySessionId?: string
 }
 
 export type SpawnOpts = {
-  forkFrom?: { claudeSessionId: string; parentName: string; codexThreadId?: string }
+  forkFrom?: { claudeSessionId?: string; parentName: string; codexThreadId?: string }
   handedOffFrom?: string
   artifact?: string
   existingThreadId?: string                                    // reuse an existing thread instead of creating a new one
@@ -111,9 +157,13 @@ export type SpawnOpts = {
   initiator?: string
   ephemeral?: boolean    // auto-kill on [done] sentinel, skip death visuals
   model?: string         // per-spawn model override (falls back to spawnModel() / HYDRA_MODEL)
+  effort?: string        // Codex reasoning effort override
   phaseBudgetMs?: number // max lifetime: nudge at T (write checkpoint), reap at T+grace
   trigger?: string       // what caused this spawn, for the announce line (e.g. 'spawn:', 'review 2:', 'CLI'); falls back to originType
-  engine?: 'claude' | 'codex'  // which backend to use (default: claude)
+  engine?: SessionEngine  // which backend to use (default: claude)
+  reuseWorktree?: WorktreeRef
+  forkWorktreeFrom?: WorktreeRef
+  replacesSessionId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +386,7 @@ export class SessionRegistry {
 export const registry = new SessionRegistry()
 
 // ---------------------------------------------------------------------------
-// ThreadRegistry — lightweight thread metadata (not load-bearing for message routing)
+// ThreadRegistry — durable thread and recovery metadata
 // ---------------------------------------------------------------------------
 
 export class ThreadRegistry {
@@ -371,11 +421,21 @@ export class ThreadRegistry {
 
   get size(): number { return this.threads.size }
 
+  setPendingContinuity(threadId: string, sessionId?: string): void {
+    const thread = this.threads.get(threadId)
+    if (!thread) return
+    if (sessionId) thread.pendingContinuitySessionId = sessionId
+    else delete thread.pendingContinuitySessionId
+    this.persist()
+  }
+
   recordSpawn(threadId: string, opts: {
     anchorMessageId?: string, threadUrl?: string, topic: string,
     respawnCount: number, sessionId: string, tmuxName: string,
     originType: 'spawn' | 'fork' | 'handoff' | 'resurrect', originFrom?: string,
-    model?: string, parentChannelId?: string,
+    model?: string, effort?: string, engine?: SessionEngine, parentChannelId?: string,
+    codexThreadId?: string,
+    worktreeRepo?: string, worktreePath?: string, worktreeBranch?: string, worktreeName?: string,
   }): void {
     const now = Date.now()
     let thread = this.threads.get(threadId)
@@ -406,11 +466,18 @@ export class ThreadRegistry {
       startedAt: now,
       messageCount: 0,
       model: opts.model,
+      effort: opts.effort,
+      engine: opts.engine,
+      codexThreadId: opts.codexThreadId,
+      worktreeRepo: opts.worktreeRepo,
+      worktreePath: opts.worktreePath,
+      worktreeBranch: opts.worktreeBranch,
+      worktreeName: opts.worktreeName,
     })
     this.persist()
   }
 
-  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string): void {
+  recordKill(threadId: string, sessionId: string, messageCount: number, claudeSessionId?: string, codexThreadId?: string): void {
     const thread = this.threads.get(threadId)
     if (!thread) return
     const entry = thread.sessionHistory.find(h => h.sessionId === sessionId && !h.endedAt)
@@ -418,6 +485,8 @@ export class ThreadRegistry {
       entry.endedAt = Date.now()
       entry.messageCount = messageCount
       entry.claudeSessionId = claudeSessionId
+      entry.codexThreadId = codexThreadId
+      if (codexThreadId) entry.engine = 'codex'
     }
     this.persist()
   }
@@ -470,6 +539,16 @@ export class ThreadRegistry {
           startedAt: session.createdAt,
           messageCount: session.messageCount ?? 0,
           claudeSessionId: session.claudeSessionId,
+          codexThreadId: session.codexThreadId,
+          model: session.capabilities?.model,
+          effort: session.capabilities?.effort,
+          engine: session.engine,
+          provider: session.provider,
+          codexSessionId: session.codexSessionId,
+          worktreeRepo: session.worktreeRepo,
+          worktreePath: session.worktreePath,
+          worktreeBranch: session.worktreeBranch,
+          worktreeName: session.worktreeName,
         }],
       })
       created++

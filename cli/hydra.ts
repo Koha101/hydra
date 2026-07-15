@@ -48,6 +48,7 @@ Spawn options (required):
   --channel <id>                       Target channel for the spawned thread
   --message <id>                       Create thread on this message (requires --channel)
   --model <id|alias>                   Model ID or alias (sonnet, haiku, fable, opus-4-7, etc)
+  --provider <claude|codex>            Session provider (default: claude)
 
 Global options:
   --daemon <name>                      Target a specific daemon
@@ -120,6 +121,7 @@ async function main(): Promise<void> {
       let quiet = false
       let ephemeral = false
       let model: string | undefined
+      let provider: 'claude' | 'codex' | undefined
       const promptParts: string[] = []
 
       for (let i = 1; i < filtered.length; i++) {
@@ -137,6 +139,13 @@ async function main(): Promise<void> {
           ephemeral = true
         } else if (filtered[i] === '--model' && i + 1 < filtered.length) {
           model = filtered[++i]
+        } else if (filtered[i] === '--provider' && i + 1 < filtered.length) {
+          const value = filtered[++i]
+          if (value !== 'claude' && value !== 'codex') {
+            console.error('error: --provider must be claude or codex')
+            process.exit(1)
+          }
+          provider = value
         } else {
           promptParts.push(filtered[i])
         }
@@ -163,7 +172,7 @@ async function main(): Promise<void> {
         type: 'cli',
         command: 'spawn',
         id: randomUUID(),
-        params: { prompt, idempotencyKey, initiator, model, ...(channel && { channel }), ...(message && { message }), ...(quiet && { quiet }), ...(ephemeral && { ephemeral }) },
+        params: { prompt, idempotencyKey, initiator, model, provider, ...(channel && { channel }), ...(message && { message }), ...(quiet && { quiet }), ...(ephemeral && { ephemeral }) },
       })
       printResponse(response, json)
       break

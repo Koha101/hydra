@@ -8,10 +8,13 @@
 
 import { CodexEngine, codexSocketPath } from './codex-engine.js'
 import { transport } from './bridge-transport.js'
-import { registry } from './sessions.js'
+import { registry, threadRegistry } from './sessions.js'
+import type { SessionInfo } from './sessions.js'
 import { dispatchDisconnect } from './protocol-registry.js'
 import { appendFileSync } from 'fs'
 import { tmuxHasSession, safeSend } from './util.js'
+import { buildCodexWorkspaceContext } from './codex-context.js'
+import { completePendingContinuityForConnectedSession } from './session-continuity.js'
 
 // ---------------------------------------------------------------------------
 // Singleton
@@ -21,6 +24,24 @@ export const codexEngine = new CodexEngine()
 
 // Register with transport so sendOrQueue can route to it
 transport.setCodexEngine(codexEngine)
+
+export async function replayPendingInitialPrompt(
+  info: SessionInfo,
+  startTurn: (sessionId: string, prompt: string) => Promise<void> = (sessionId, prompt) => codexEngine.startTurn(sessionId, prompt),
+  disconnect: (sessionId: string) => void = sessionId => codexEngine.disconnect(sessionId),
+): Promise<boolean> {
+  if (!info.pendingInitialPrompt) return true
+  try {
+    await startTurn(info.sessionId, info.pendingInitialPrompt)
+    delete info.pendingInitialPrompt
+    registry.persist()
+    return true
+  } catch (err: any) {
+    process.stderr.write(`codex-bootstrap: initial handoff prompt failed for ${info.tmuxName}: ${err?.message || err}\n`)
+    try { disconnect(info.sessionId) } catch {}
+    return false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Event wiring — Codex engine events → daemon protocol dispatch
@@ -56,9 +77,12 @@ codexEngine.on('usageWarning', (sessionId: string, usedPercent: number) => {
 
 codexEngine.on('disconnected', (sessionId: string) => {
   const info = registry.get(sessionId)
-  if (info && !info.deadAt && !tmuxHasSession(info.tmuxName)) {
+  if (info && !info.deadAt) {
+    try { Bun.spawnSync(['tmux', 'kill-session', '-t', info.tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
+    threadRegistry.recordKill(info.threadId, info.sessionId, info.messageCount ?? 0, info.claudeSessionId, info.codexThreadId)
     info.deadAt = Date.now()
     registry.persist()
+    if (!info.ephemeral) void safeSend(info.threadId, `⚠️ Codex connection lost for **${info.tmuxName}**. Use \`resume\` to recover the conversation.`)
   }
   dispatchDisconnect(sessionId)
 })
@@ -78,12 +102,17 @@ export async function reconnectCodexSessions(): Promise<void> {
       continue
     }
     const sockPath = codexSocketPath(info.tmuxName)
+    const runtimeConfig = {
+      model: info.capabilities?.model === 'codex-default' ? undefined : info.capabilities?.model,
+      effort: info.capabilities?.effort,
+      developerInstructions: buildCodexWorkspaceContext(process.env.SPAWN_CWD ?? info.capabilities?.cwd ?? process.cwd()) || undefined,
+    }
     let connected = false
 
     // Strategy 1: resume existing thread (preserves conversation)
     if (info.codexThreadId) {
       try {
-        await codexEngine.connectAndResume(info.sessionId, sockPath, info.codexThreadId)
+        await codexEngine.connectAndResume(info.sessionId, sockPath, info.codexThreadId, runtimeConfig)
         connected = true
         process.stderr.write(`codex-bootstrap: reconnected ${info.tmuxName} (resumed)\n`)
       } catch (err: any) {
@@ -97,7 +126,7 @@ export async function reconnectCodexSessions(): Promise<void> {
     if (!connected) {
       const hadPriorThread = !!info.codexThreadId
       try {
-        const result = await codexEngine.connect(info.sessionId, sockPath)
+        const result = await codexEngine.connect(info.sessionId, sockPath, runtimeConfig)
         info.codexThreadId = result.threadId
         connected = true
         if (hadPriorThread) {
@@ -110,9 +139,14 @@ export async function reconnectCodexSessions(): Promise<void> {
       }
     }
 
+    if (connected) connected = await replayPendingInitialPrompt(info)
+
     if (!connected) {
+      try { Bun.spawnSync(['tmux', 'kill-session', '-t', info.tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
       info.deadAt = Date.now()
     } else {
+      completePendingContinuityForConnectedSession(info.sessionId)
+      transport.flushCodexQueue(info.sessionId)
       reconnected++
     }
   }

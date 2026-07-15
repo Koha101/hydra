@@ -9,6 +9,7 @@ process.stderr.write = (() => true) as any
 // ---------------------------------------------------------------------------
 
 const SPAWN_RE = /^(?:new session:|spawn:|\/spawn)\s*([\s\S]+)/i
+const SPAWN_ENGINE_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
 const SPAWN_WT_RE = /^(?:spawn-wt:|\/spawn-wt)\s*(\S+)\s+([\s\S]+)/i
 const KILL_RE = /^(?:kill session:|kill:|\/kill)\s*(.+)/i
 const LIST_RE = /^(?:\/sessions|list sessions)\s*$/i
@@ -64,6 +65,12 @@ describe('spawn command', () => {
     const m = 'spawn: '.match(SPAWN_RE)
     expect(m).not.toBeNull() // regex matches but topic is whitespace
     expect(m![1].trim()).toBe('') // router checks this
+  })
+
+  test('provider and optional model', () => {
+    expect('spawn codex: fix it'.match(SPAWN_ENGINE_RE)?.slice(1)).toEqual(['codex', undefined, 'fix it'])
+    expect('/spawn codex gpt-5.5: fix it'.match(SPAWN_ENGINE_RE)?.slice(1)).toEqual(['codex', 'gpt-5.5', 'fix it'])
+    expect('/spawn claude opus: fix it'.match(SPAWN_ENGINE_RE)?.slice(1)).toEqual(['claude', 'opus', 'fix it'])
   })
 })
 

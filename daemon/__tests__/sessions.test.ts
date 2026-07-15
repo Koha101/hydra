@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'bun:test'
-import { SessionRegistry, ThreadRegistry, sessionEmoji, type SessionInfo, type ThreadMetadata } from '../sessions.js'
+import { SessionRegistry, ThreadRegistry, recoverableWorktreeRef, sessionEmoji, type SessionInfo, type ThreadMetadata } from '../sessions.js'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -115,6 +118,15 @@ describe('ThreadRegistry', () => {
     expect(tr.has('thread-tr-2')).toBe(false)
   })
 
+  test('persists and clears a pending continuity session', () => {
+    const tr = new ThreadRegistry()
+    tr.set('thread-continuity', makeThread({ threadId: 'thread-continuity' }))
+    tr.setPendingContinuity('thread-continuity', 'source-session')
+    expect(tr.get('thread-continuity')?.pendingContinuitySessionId).toBe('source-session')
+    tr.setPendingContinuity('thread-continuity')
+    expect(tr.get('thread-continuity')?.pendingContinuitySessionId).toBeUndefined()
+  })
+
   test('boot creates threads from sessions', () => {
     const tr = new ThreadRegistry()
     const reg = new SessionRegistry()
@@ -125,6 +137,36 @@ describe('ThreadRegistry', () => {
     expect(thread!.topic).toBe('boot test')
     expect(thread!.sessionHistory).toHaveLength(1)
     expect(thread!.sessionHistory[0].sessionId).toBe('sid-boot-1')
+  })
+
+  test('boot preserves worktree recovery metadata', () => {
+    const tr = new ThreadRegistry()
+    const reg = new SessionRegistry()
+    reg.set('sid-wt', makeInfo({
+      sessionId: 'sid-wt', threadId: 'thread-wt', worktreeRepo: '/repo', worktreePath: '/repo/.worktrees/wt',
+      worktreeBranch: 'wt/spark', worktreeName: 'spark',
+    }))
+    tr.boot(reg)
+    expect(tr.get('thread-wt')!.sessionHistory[0]).toMatchObject({
+      worktreeRepo: '/repo', worktreePath: '/repo/.worktrees/wt', worktreeBranch: 'wt/spark', worktreeName: 'spark',
+    })
+  })
+
+  test('recordSpawn persists a native Codex conversation ID', () => {
+    const tr = new ThreadRegistry()
+    tr.recordSpawn('thread-codex', {
+      topic: 'codex', respawnCount: 0, sessionId: 'sid-codex', tmuxName: 'spark',
+      originType: 'spawn', engine: 'codex', codexThreadId: 'codex-thread',
+    })
+    expect(tr.get('thread-codex')!.sessionHistory[0].codexThreadId).toBe('codex-thread')
+  })
+
+  test('only reuses worktrees that still exist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'hydra-worktree-'))
+    const info = makeInfo({ worktreeRepo: '/repo', worktreePath: root })
+    expect(recoverableWorktreeRef(info)?.path).toBe(root)
+    rmSync(root, { recursive: true })
+    expect(recoverableWorktreeRef(info)).toBeUndefined()
   })
 
   test('boot skips join members', () => {

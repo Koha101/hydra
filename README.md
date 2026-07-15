@@ -2,7 +2,7 @@
 
 A new interface to building — run coding agents over Discord/Slack.
 
-- Spawn and manage parallel agents from chat
+- Spawn and manage parallel Claude Code and Codex agents from chat
 - tmux in to manage from terminal
 
 ## Architecture
@@ -47,6 +47,7 @@ A new interface to building — run coding agents over Discord/Slack.
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - [tmux](https://github.com/tmux/tmux) — `brew install tmux`
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
+- [Codex CLI](https://developers.openai.com/codex/cli/) — optional; install and authenticate before spawning Codex
 
 ## Quick Start
 
@@ -96,6 +97,7 @@ hydra restart <platform>       # Restart daemon (picks up code changes)
 
 ```bash
 hydra spawn <prompt>           # Spawn a new session
+hydra spawn --provider codex <prompt>
 hydra list                     # List active sessions
 hydra status <name>            # Session details
 hydra kill <name>              # Kill a session
@@ -224,17 +226,22 @@ live-but-slow one delays only the voice message itself, up to
 | `fetch_messages` | Pull recent history (up to 100). |
 | `download_attachment` | Download attachments from a message to local inbox. |
 | `create_thread` | Create a thread on a message or standalone. |
-| `spawn_session` | Spawn a new Claude session for a topic (main session only). |
+| `spawn_session` | Spawn a new Claude or Codex session for a topic (main session only). |
 | `list_sessions` | List active spawned sessions (main session only). |
 | `kill_session` | Kill a spawned session (main session only). |
 
 ## Sessions
 
-Spawn isolated Claude sessions from chat:
+Spawn isolated Claude or Codex sessions from chat:
 
 | Command | Action |
 |---------|--------|
 | `spawn: <topic>` | Create a new session with a thread |
+| `spawn codex [model]: <topic>` | Create a Codex session |
+| `/provider claude\|codex` | Hand the current thread to the other provider |
+| `/model <id>` / `/effort <level>` | Configure the active session |
+| `/context` / `/clear` | Inspect or reset conversation context |
+| `/fork[: focus]` | Fork the active Claude or Codex conversation |
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
