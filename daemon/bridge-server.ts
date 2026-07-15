@@ -8,7 +8,7 @@ import { executeTool } from './bridge-dispatch.js'
 import { computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-tools.js'
 import { spawnModel } from '../shared/constants.js'
 import { pendingPermissions } from './permission.js'
-import { discoverClaudeSessionId, killSession } from './session-lifecycle.js'
+import { discoverClaudeSessionId, killSession, killCodexProcessTree } from './session-lifecycle.js'
 import { loadAccess } from './access.js'
 import { dispatchReconnect, dispatchReply, dispatchDisconnect } from './protocol-registry.js'
 import { maybeNudgeMissingSentinel } from './sentinel-nudge.js'
@@ -421,6 +421,10 @@ async function checkSessionDeath(sessionId: string): Promise<void> {
 
     info.deadAt = Date.now()
     registry.persist()
+
+    if (info.engine === 'codex') {
+      try { killCodexProcessTree(info) } catch {}
+    }
 
     // Ephemeral sessions die silently — no crash message or skull visual
     if (!info.ephemeral) {
