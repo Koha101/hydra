@@ -33,8 +33,7 @@ export function isAlive(info: { tmuxName: string; deadAt?: number }): boolean {
 
 export function tmuxHasSession(name: string): boolean {
   try {
-    execSync(`tmux has-session -t '${name}' 2>/dev/null`, { stdio: 'pipe' })
-    return true
+    return Bun.spawnSync(['tmux', 'has-session', '-t', name], { stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
   } catch {
     return false
   }
