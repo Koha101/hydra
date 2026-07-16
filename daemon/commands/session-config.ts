@@ -2,7 +2,7 @@
 // are configured through the app-server connection that already owns the thread.
 import { readFileSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
-import { gateway, PLATFORM, CLAUDE_CONFIG } from '../config.js'
+import { gateway, PLATFORM, CLAUDE_CONFIG, byteTmux } from '../config.js'
 import { registry, threadRegistry, type SessionInfo } from '../sessions.js'
 import { codexEngine } from '../codex-bootstrap.js'
 import type { CodexContext } from '../codex-engine.js'
@@ -16,8 +16,6 @@ import { resolveModelAlias, EFFORT_LEVELS, CODEX_EFFORT_LEVELS } from '../../sha
 import type { InboundMessage } from '../../gateway.js'
 import { buildCodexWorkspaceContext } from '../codex-context.js'
 import { paneText, paneBusy, tmuxKeys } from '../delivery-wake.js'
-
-const byteTmux = (): string => process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
 
 function targetTmux(msg: InboundMessage): string {
   if (msg.isThread) {
@@ -145,13 +143,19 @@ export async function handleModelIntercept(msg: InboundMessage, arg: string): Pr
   }
 
   const resolved = resolveModelAlias(arg.trim()) ?? arg.trim()
-  const tmux = targetTmux(msg)
+  const outcome = await applyClaudeModelSwitch(targetTmux(msg), resolved)
+  const note = outcome === 'applied' ? '' : ' _(unconfirmed — check the session with `/context` or `!`)_'
+  await gateway.send(msg.channelId, `⚙️ model → \`${resolved}\`${note}`, { replyTo: msg.id }).catch(() => {})
+}
+
+/** Type /model into the pane and answer the confirm modal. Cache-invalidating
+ * switches pop a "Switch model? 1. Yes / 2. No" confirm — possibly only after
+ * the in-flight turn ends, and possibly slow to render on a booting session.
+ * Wait it out (busy-aware) and answer with a literal "1"; a bare Enter does not
+ * reliably confirm it. Unanswered, the modal wedges the whole pane — every
+ * later delivery to this session hangs on it. */
+export async function applyClaudeModelSwitch(tmux: string, resolved: string): Promise<'applied' | 'unconfirmed'> {
   await sendSlash(tmux, `/model ${resolved}`)
-  // Cache-invalidating switches pop a "Switch model? 1. Yes / 2. No" confirm —
-  // possibly only after the in-flight turn ends, and possibly slow to render on
-  // a booting session. Wait it out (busy-aware) and answer with a literal "1";
-  // a bare Enter does not reliably confirm it. Unanswered, the modal wedges the
-  // whole pane — every later delivery to this session hangs on it.
   let answered = 0
   let idlePolls = 0
   for (let i = 0; i < 600; i++) {
@@ -162,16 +166,15 @@ export async function handleModelIntercept(msg: InboundMessage, arg: string): Pr
       if (answered >= 2) break // answered twice and it's still up — stop typing at it
       await tmuxKeys(tmux, ...(answered === 0 ? ['-l', '1'] : ['Enter']))
       answered++
-      idlePolls = 0
       continue
     }
-    if (answered > 0) break // modal gone after our answer — confirmed
+    if (answered > 0) return 'applied' // modal gone after our answer — confirmed
     // No "Set model to" toast check: a stale toast from a prior switch can sit
     // in the visible pane and would end the wait before the real modal renders.
     if (paneBusy(pane)) { idlePolls = 0; continue } // modal often renders only at turn end
-    if (++idlePolls >= 4) break // idle with no modal — switch applied without confirm
+    if (++idlePolls >= 4) return 'applied' // idle with no modal — applied without confirm
   }
-  await gateway.send(msg.channelId, `⚙️ model → \`${resolved}\``, { replyTo: msg.id }).catch(() => {})
+  return 'unconfirmed'
 }
 
 export async function handleEffortIntercept(msg: InboundMessage, arg: string): Promise<void> {
