@@ -188,9 +188,11 @@ async function deliverToSession(
   }
   transport.sendOrQueue(deliverySessionId, { type: 'notification', content, meta })
   // Only arm the wake once the message actually reached a live bridge. A queued
-  // message flushes on bridge registration, which arms its own wake — arming here
-  // would poll a still-booting pane and the dedup would shadow that later arm.
-  if (sessionInfo && transport.get(deliverySessionId)) void wakeIfStuck(sessionInfo.tmuxName)
+  // or held message flushes via releaseWhenReady, which arms its own wake —
+  // arming here would poll a still-booting pane and the dedup would shadow it.
+  if (sessionInfo && transport.get(deliverySessionId) && !transport.held(deliverySessionId)) {
+    void wakeIfStuck(sessionInfo.tmuxName)
+  }
 }
 
 // ---------------------------------------------------------------------------

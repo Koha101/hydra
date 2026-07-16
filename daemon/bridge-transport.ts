@@ -79,6 +79,10 @@ export class BridgeTransport {
     this.heldSessions.add(sessionId)
   }
 
+  held(sessionId: string): boolean {
+    return this.heldSessions.has(sessionId)
+  }
+
   release(sessionId: string): void {
     this.heldSessions.delete(sessionId)
     this.flushCodexQueue(sessionId)

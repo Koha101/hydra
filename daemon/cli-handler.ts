@@ -217,10 +217,10 @@ function handleSend(req: CLIRequest): CLIResponse {
     content: text,
     meta: { chat_id: info.threadId, message_id: '', user: 'cli', user_id: 'cli', ts: new Date().toISOString() },
   })
-  const delivered = transport.has(info.sessionId)
+  const delivered = transport.has(info.sessionId) && !transport.held(info.sessionId)
   // Wake is CC-pane-specific — legacy codex sessions also hold an agent bridge,
   // so gate on the engine, not just the bridge.
-  if (transport.get(info.sessionId) && sessionEngine(info) !== 'codex') {
+  if (delivered && transport.get(info.sessionId) && sessionEngine(info) !== 'codex') {
     void wakeIfStuck(info.tmuxName)
   }
   return respond(req, true, { session: info.tmuxName, delivery: delivered ? 'sent' : 'queued' })

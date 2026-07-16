@@ -20,7 +20,7 @@ import { safeSend } from './util.js'
 import { createMainBridgeCycle, formatReconnectLine, mainCloseRecordsReason } from './main-bridge-cycle.js'
 import { handleLegacyCodexConfigResult, handleLegacyCodexControlResult, rejectLegacyCodexRequests } from './legacy-codex-control.js'
 import { completePendingContinuityForConnectedSession } from './session-continuity.js'
-import { wakeIfStuck } from './delivery-wake.js'
+import { releaseWhenReady } from './delivery-wake.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -273,16 +273,17 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         },
       })
       if (!toolBridge) {
-        // Continuity completion flushes transferred messages itself, so a
-        // completed handoff leaves flushQueue with nothing — arm on either.
-        const continued = completePendingContinuityForConnectedSession(sessionId)
-        const flushed = transport.flushQueue(sessionId)
-        // Messages flushed into a just-(re)connected CC can stage as the
-        // never-auto-submitted queued widget — arm the wake to recover them.
-        if ((flushed > 0 || continued) && (!info || sessionEngine(info) !== 'codex')) {
-          const tmux = sessionId === 'main' ? byteTmux() : info?.tmuxName
-          if (tmux) void wakeIfStuck(tmux)
-        }
+        // A notification forwarded while CC is still booting is silently
+        // dropped before the model sees it. Hold the queue (before continuity
+        // completion, whose transfer would otherwise flush immediately) and
+        // release once the pane is interactive; releaseWhenReady arms the
+        // stuck-widget wake when it flushes. Codex has no pane-boot window.
+        const claudePane = !info || sessionEngine(info) !== 'codex'
+        const tmux = sessionId === 'main' ? byteTmux() : info?.tmuxName
+        if (claudePane && tmux) transport.hold(sessionId)
+        completePendingContinuityForConnectedSession(sessionId)
+        if (claudePane && tmux) void releaseWhenReady(sessionId, tmux)
+        else transport.flushQueue(sessionId)
         dispatchReconnect(sessionId)
         if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
       }

@@ -19,6 +19,8 @@
 // conclude "processed normally" until the CC UI has actually rendered.
 // Disable with HYDRA_DELIVERY_WAKE=0.
 // ---------------------------------------------------------------------------
+import { transport } from './bridge-transport.js'
+
 const DELIVERY_WAKE = process.env.HYDRA_DELIVERY_WAKE !== '0'
 const QUEUED_WIDGET_PREFIX = String.fromCharCode(0x276f, 0xa0) // angle-prompt + non-breaking space (the stuck queued widget)
 const WAKE_NUDGE =
@@ -44,6 +46,31 @@ export async function tmuxKeys(tmux: string, ...keys: string[]): Promise<void> {
  *  the tail so the same substring quoted in transcript/output can't wedge us. */
 export function paneBusy(pane: string): boolean {
   return pane.split('\n').filter(l => l.trim()).slice(-4).some(l => l.includes('esc to interrupt'))
+}
+
+/** Hold a just-registered claude bridge's queue until its pane is interactive
+ *  (CC UI rendered and idle) — a notification forwarded during CC boot is
+ *  silently dropped before the model ever sees it (verified live: flushed at
+ *  registration on a fresh spawn, never appeared in the transcript). Bounded;
+ *  always releases, and arms the wake when the release actually flushed. */
+export async function releaseWhenReady(sessionId: string, tmux: string): Promise<void> {
+  try {
+    let uiSeen = false
+    for (let poll = 0; poll < MAX_WAKE_POLLS; poll++) {
+      const pane = await paneText(tmux)
+      if (!pane) break // pane gone — release; the queue persists for a future resume
+      if (paneBusy(pane)) { uiSeen = true }
+      else {
+        uiSeen ||= CLAUDE_UI_RE.test(pane)
+        if (uiSeen) break // interactive and idle — safe to deliver
+      }
+      await new Promise(r => setTimeout(r, 2000))
+    }
+  } finally {
+    const hadQueued = (transport.messageQueues.get(sessionId)?.length ?? 0) > 0
+    transport.release(sessionId)
+    if (hadQueued) void wakeIfStuck(tmux)
+  }
 }
 
 /** After a delivery or queue flush, wake the session iff it's idle with an
