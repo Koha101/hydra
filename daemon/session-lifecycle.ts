@@ -24,6 +24,7 @@ import { loadAccess } from './access.js'
 import { codexEngine } from './codex-bootstrap.js'
 import { codexSocketPath } from './codex-engine.js'
 import { buildCodexWorkspaceContext } from './codex-context.js'
+import { applyCodexSpawnMetadata, captureLstart, getDescendants, killCodexProcessTree } from './codex-process.js'
 
 // ---------------------------------------------------------------------------
 // Session death events
@@ -66,102 +67,6 @@ function removeOwnedWorktree(ref: { repo: string; path: string; branch: string; 
 // crash still leaves it on disk.
 
 const SPAWN_LOGS_DIR = join(STATE_DIR, 'spawn-logs')
-
-function getDescendants(pid: number): number[] {
-  try {
-    const out = execSync(`pgrep -P ${pid} 2>/dev/null || true`, { stdio: 'pipe' }).toString().trim()
-    if (!out) return []
-    const children = out.split('\n').map(s => parseInt(s, 10)).filter(n => n > 0)
-    const all: number[] = []
-    for (const child of children) {
-      all.push(child)
-      all.push(...getDescendants(child))
-    }
-    return all
-  } catch { return [] }
-}
-
-function verifyPid(pid: number, expectedLstart: string): boolean {
-  try {
-    const actual = execSync(`ps -p ${pid} -o lstart= 2>/dev/null`, { stdio: 'pipe' }).toString().trim()
-    return actual === expectedLstart
-  } catch { return false }
-}
-
-function captureLstart(pid: number): string | undefined {
-  try {
-    const s = execSync(`ps -p ${pid} -o lstart= 2>/dev/null`, { stdio: 'pipe' }).toString().trim()
-    return s || undefined
-  } catch { return undefined }
-}
-
-function killTreeFromPid(pid: number): void {
-  const descendants = getDescendants(pid)
-  const allPids = [pid, ...descendants.reverse()]
-  // Snapshot lstart before SIGTERM for revalidation
-  const lstarts = new Map<number, string>()
-  for (const p of allPids) {
-    const ls = captureLstart(p)
-    if (ls) lstarts.set(p, ls)
-  }
-  // Signal root first to stop it spawning new children, then descendants
-  for (const p of allPids) {
-    try { process.kill(p, 'SIGTERM') } catch {}
-  }
-  setTimeout(() => {
-    for (const p of allPids) {
-      const expected = lstarts.get(p)
-      if (!expected) continue
-      if (verifyPid(p, expected)) {
-        try { process.kill(p, 'SIGKILL') } catch {}
-      }
-    }
-  }, 3000)
-}
-
-function findAppServerPidBySocket(tmuxName: string): number | undefined {
-  try {
-    const sockPath = codexSocketPath(tmuxName)
-    const out = execFileSync('lsof', ['-a', '-U', '-c', 'codex', '-F', 'p'], { stdio: 'pipe' }).toString()
-    // lsof -F p outputs lines like "p12345\n" for each matching process
-    const pids = out.split('\n').filter(l => l.startsWith('p')).map(l => parseInt(l.slice(1), 10))
-    // Verify each candidate owns the session socket
-    for (const pid of pids) {
-      try {
-        const fds = execFileSync('lsof', ['-a', '-p', String(pid), '-U', '-F', 'n'], { stdio: 'pipe' }).toString()
-        if (fds.includes(sockPath)) return pid
-      } catch {}
-    }
-    return undefined
-  } catch { return undefined }
-}
-
-export function killCodexProcessTree(info: SessionInfo): void {
-  let killedAny = false
-
-  // Strategy 1: kill all stored pane root trees (app-server pane + TUI pane)
-  if (info.codexPaneRoots) {
-    for (const root of info.codexPaneRoots) {
-      if (verifyPid(root.pid, root.lstart)) {
-        killTreeFromPid(root.pid)
-        killedAny = true
-      }
-    }
-  }
-  if (killedAny) return
-
-  // Strategy 2: panes died (reparented children) — use stored app-server PID
-  if (info.codexAppServerPid && info.codexAppServerLstart && verifyPid(info.codexAppServerPid, info.codexAppServerLstart)) {
-    killTreeFromPid(info.codexAppServerPid)
-    return
-  }
-
-  // Strategy 3: resolve app-server from its unix socket
-  const socketPid = findAppServerPidBySocket(info.tmuxName)
-  if (socketPid) {
-    killTreeFromPid(socketPid)
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Listen state resolution: thread override → channel group → global → false
@@ -371,6 +276,12 @@ async function spawnCodexSession(p: {
     }
   } catch {}
 
+  const cleanupFailedStartup = () => {
+    try { codexEngine.disconnect(p.sessionId) } catch {}
+    killCodexProcessTree({ tmuxName: p.tmuxName, codexPaneRoots })
+    try { execFileSync('tmux', ['kill-session', '-t', p.tmuxName], { stdio: 'pipe' }) } catch {}
+  }
+
   // Capture server pane for crash diagnostics
   let spawnLogPath: string | undefined
   try {
@@ -406,13 +317,15 @@ async function spawnCodexSession(p: {
     } catch (err: any) {
       lastErr = err?.message || String(err)
       try { codexEngine.disconnect(p.sessionId) } catch {}
-      if (!tmuxHasSession(p.tmuxName)) throw new Error(`codex tmux ${p.tmuxName} died during startup`)
+      if (!tmuxHasSession(p.tmuxName)) {
+        cleanupFailedStartup()
+        throw new Error(`codex tmux ${p.tmuxName} died during startup`)
+      }
       await new Promise(r => setTimeout(r, 500))
     }
   }
   if (!codexThreadId) {
-    try { codexEngine.disconnect(p.sessionId) } catch {}
-    try { execFileSync('tmux', ['kill-session', '-t', p.tmuxName], { stdio: 'pipe' }) } catch {}
+    cleanupFailedStartup()
     throw new Error(`codex socket not ready after 15s (last: ${lastErr})`)
   }
   process.stderr.write(`daemon: codex connected for ${p.tmuxName}, thread=${codexThreadId}\n`)
@@ -791,11 +704,11 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       }
       throw error
     }
-    const { spawnLogPath, codexThreadId, codexPaneRoots, codexAppServerPid, codexAppServerLstart } = spawned
+    const { codexThreadId } = spawned
     const context = codexEngine.getContext(sessionId)
     const provisional = registry.get(sessionId)
     if (provisional) {
-      provisional.codexThreadId = codexThreadId
+      applyCodexSpawnMetadata(provisional, spawned)
       registry.persist()
     }
     if (isHandoff) {
@@ -807,6 +720,7 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
         }
       } catch (error) {
         try { codexEngine.disconnect(sessionId) } catch {}
+        if (provisional) killCodexProcessTree(provisional)
         try { Bun.spawnSync(['tmux', 'kill-session', '-t', tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
         discardHandoffProvisional()
         throw error
@@ -828,20 +742,19 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       platform: PLATFORM,
     }
     const url = await gateway.getThreadUrl(threadId!)
-    registry.set(sessionId, {
+    const sessionInfo: SessionInfo = {
       sessionId, topic, threadId: threadId!, anchorMessageId, anchorChannelId, createdAt: now, lastActive: now,
       tmuxName, listening: resolveListenState(threadId!, chatId), originType, originFrom, capabilities,
-      threadUrl: url || undefined, engine: 'codex', codexThreadId: codexThreadId!,
-      ...(codexPaneRoots.length > 0 ? { codexPaneRoots } : {}),
-      ...(codexAppServerPid ? { codexAppServerPid, codexAppServerLstart } : {}),
-      ...(spawnLogPath ? { spawnLogPath } : {}),
+      threadUrl: url || undefined, engine: 'codex',
       ...(respawnCount > 0 ? { respawnCount } : {}),
       ...(worktreeRepo ? { worktreeRepo, worktreePath, worktreeBranch, worktreeName } : {}),
       ...(isJoin ? { isJoinMember: true } : {}),
       initiator: opts?.initiator,
       ephemeral: opts?.ephemeral,
       ...(phaseBudgetMs ? { budgetDeadline: now + phaseBudgetMs } : {}),
-    })
+    }
+    applyCodexSpawnMetadata(sessionInfo, spawned)
+    registry.set(sessionId, sessionInfo)
     if (phaseBudgetMs) startPhaseBudget(sessionId)
     if (!isJoin) registry.setThread(threadId!, sessionId)
     else registry.addMember(threadId!, sessionId, opts?.memberLabel)

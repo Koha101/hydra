@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { execSync } from 'child_process'
+import { applyCodexSpawnMetadata, killCodexProcessTree } from '../codex-process.js'
 import type { SessionInfo } from '../sessions.js'
 
 // Test the exported killCodexProcessTree by spawning real (short-lived) processes.
@@ -27,16 +28,20 @@ function isAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
+async function exitsWithin(pid: number, timeoutMs = 1000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (isAlive(pid) && Date.now() < deadline) await new Promise(r => setTimeout(r, 25))
+  return !isAlive(pid)
+}
+
 describe('killCodexProcessTree — live process tests', () => {
-  test('no-op when no pane roots and no stored PIDs', async () => {
-    const { killCodexProcessTree } = await import('../session-lifecycle.js')
+  test('no-op when no pane roots and no stored PIDs', () => {
     const info = makeInfo({})
     // Should not throw
     killCodexProcessTree(info)
   })
 
-  test('skips pane root with mismatched lstart (PID reuse guard)', async () => {
-    const { killCodexProcessTree } = await import('../session-lifecycle.js')
+  test('skips pane root with mismatched lstart (PID reuse guard)', () => {
     // Spawn a real process
     const child = Bun.spawn(['sleep', '60'], { stdout: 'ignore', stderr: 'ignore' })
     const pid = child.pid
@@ -53,7 +58,6 @@ describe('killCodexProcessTree — live process tests', () => {
   })
 
   test('kills verified pane root', async () => {
-    const { killCodexProcessTree } = await import('../session-lifecycle.js')
     const child = Bun.spawn(['sleep', '60'], { stdout: 'ignore', stderr: 'ignore' })
     const pid = child.pid
     const lstart = captureLstart(pid)
@@ -61,13 +65,42 @@ describe('killCodexProcessTree — live process tests', () => {
       codexPaneRoots: [{ pid, lstart }],
     })
     killCodexProcessTree(info)
-    // Give SIGTERM a moment to land
-    await new Promise(r => setTimeout(r, 200))
-    expect(isAlive(pid)).toBe(false)
+    expect(await exitsWithin(pid)).toBe(true)
   })
 
-  // NOTE: app-server PID fallback and socket fallback are tested via the
-  // standalone run (`bun test codex-cleanup.test.ts`). They use live processes
-  // and execSync which conflicts with other test files' global mocks in the
-  // full suite. The core PID verification + kill logic is covered above.
+  test('persists provisional metadata for failed handoff cleanup', async () => {
+    const child = Bun.spawn(['sleep', '60'], { stdout: 'ignore', stderr: 'ignore' })
+    const pid = child.pid
+    const lstart = captureLstart(pid)
+    const info = makeInfo({ pendingInitialPrompt: 'handoff context' })
+    applyCodexSpawnMetadata(info, {
+      codexThreadId: 'codex-thread',
+      codexPaneRoots: [{ pid, lstart }],
+      codexAppServerPid: pid,
+      codexAppServerLstart: lstart,
+      spawnLogPath: '/tmp/codex.log',
+    })
+    expect(info.codexThreadId).toBe('codex-thread')
+    expect(info.spawnLogPath).toBe('/tmp/codex.log')
+    killCodexProcessTree(info)
+    expect(await exitsWithin(pid)).toBe(true)
+  })
+
+  test('falls back to stored app-server PID when another pane root is valid', () => {
+    const killed: number[] = []
+    const info = makeInfo({
+      codexPaneRoots: [
+        { pid: 10, lstart: 'stale' },
+        { pid: 20, lstart: 'valid' },
+      ],
+      codexAppServerPid: 30,
+      codexAppServerLstart: 'valid',
+    })
+    killCodexProcessTree(info, {
+      verifyPid: (_pid, lstart) => lstart === 'valid',
+      killTreeFromPid: pid => { killed.push(pid); return [pid] },
+      findAppServerPidBySocket: () => undefined,
+    })
+    expect(killed).toEqual([20, 30])
+  })
 })

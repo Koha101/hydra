@@ -15,6 +15,7 @@ import { appendFileSync } from 'fs'
 import { tmuxHasSession, safeSend } from './util.js'
 import { buildCodexWorkspaceContext } from './codex-context.js'
 import { completePendingContinuityForConnectedSession } from './session-continuity.js'
+import { killCodexProcessTree } from './codex-process.js'
 
 // ---------------------------------------------------------------------------
 // Singleton
@@ -78,6 +79,7 @@ codexEngine.on('usageWarning', (sessionId: string, usedPercent: number) => {
 codexEngine.on('disconnected', (sessionId: string) => {
   const info = registry.get(sessionId)
   if (info && !info.deadAt) {
+    killCodexProcessTree(info)
     try { Bun.spawnSync(['tmux', 'kill-session', '-t', info.tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
     threadRegistry.recordKill(info.threadId, info.sessionId, info.messageCount ?? 0, info.claudeSessionId, info.codexThreadId)
     info.deadAt = Date.now()
@@ -98,6 +100,7 @@ export async function reconnectCodexSessions(): Promise<void> {
   let reconnected = 0
   for (const info of codexSessions) {
     if (!tmuxHasSession(info.tmuxName)) {
+      killCodexProcessTree(info)
       info.deadAt = Date.now()
       continue
     }
@@ -142,6 +145,7 @@ export async function reconnectCodexSessions(): Promise<void> {
     if (connected) connected = await replayPendingInitialPrompt(info)
 
     if (!connected) {
+      killCodexProcessTree(info)
       try { Bun.spawnSync(['tmux', 'kill-session', '-t', info.tmuxName], { stdout: 'ignore', stderr: 'ignore' }) } catch {}
       info.deadAt = Date.now()
     } else {
