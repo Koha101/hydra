@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { chunk, formatDuration, fallbackDescription, transformProtocolTag, formatSpawnLine, parseDuration, extractPhaseBudget } from '../util.js'
+import { chunk, clearWaiting, formatDuration, fallbackDescription, markWaiting, transformProtocolTag, formatSpawnLine, parseDuration, extractPhaseBudget } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -319,6 +319,21 @@ describe('extractPhaseBudget', () => {
     expect(extractPhaseBudget('task --phase-budget banana'))
       .toEqual({ topic: 'task --phase-budget banana' })
   })
+})
+
+describe('waiting state', () => {
+  for (const engine of ['claude', 'codex'] as const) {
+    test(`${engine} sets, replaces, and clears waiting metadata`, () => {
+      const state: { engine: typeof engine; waiting?: boolean; waitingDate?: string } = { engine }
+      markWaiting(state, '2026-07-20')
+      expect(state).toEqual({ engine, waiting: true, waitingDate: '2026-07-20' })
+      markWaiting(state)
+      expect(state).toEqual({ engine, waiting: true })
+      expect(clearWaiting(state)).toBe(true)
+      expect(state).toEqual({ engine })
+      expect(clearWaiting(state)).toBe(false)
+    })
+  }
 })
 // transformProtocolTag()
 // ---------------------------------------------------------------------------

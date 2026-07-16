@@ -21,6 +21,7 @@ import type {
   ButtonClick,
   AttachmentInfo,
   ReactionEvent,
+  SessionVisualOpts,
 } from './gateway.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -744,18 +745,7 @@ export class SlackGateway implements ChatGateway {
 
   private static readonly COUNT_EMOJI = COUNT_EMOJI
 
-  async updateSessionVisual(threadId: string, opts: {
-    state: 'live' | 'killed' | 'crashed' | 'zombie'
-    emoji: string
-    sessionName: string
-    description?: string
-    topic?: string
-    badge?: string
-    respawnCount?: number
-    paused?: boolean
-    anchorChannelId?: string
-    anchorMessageId?: string
-  }): Promise<void> {
+  async updateSessionVisual(threadId: string, opts: SessionVisualOpts): Promise<void> {
     const anchor = this.getThreadAnchor(threadId)
     if (!anchor) return
 
@@ -764,7 +754,13 @@ export class SlackGateway implements ChatGateway {
       this.unreact(anchor.channelId, anchor.messageId, '☠️'),
       this.unreact(anchor.channelId, anchor.messageId, '💥'),
       this.unreact(anchor.channelId, anchor.messageId, '🧟'),
+      this.unreact(anchor.channelId, anchor.messageId, '⏳'),
     ])
+
+    if (opts.waiting && opts.state !== 'killed' && opts.state !== 'crashed') {
+      await this.react(anchor.channelId, anchor.messageId, '⏳')
+      return
+    }
 
     switch (opts.state) {
       case 'live':

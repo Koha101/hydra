@@ -37,6 +37,8 @@ export const HYDRA_SLASH_COMMANDS = [
   { name: 'provider', description: 'Hand off this thread to Claude or Codex', options: [
     { name: 'provider', description: 'Destination provider', type: STR, required: true,
       choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) }] },
+  { name: 'waiting', description: 'Mark this session as waiting', options: [
+    { name: 'date', description: 'Optional date to show in the thread name', type: STR, required: false }] },
   { name: 'fork', description: 'Fork this Claude or Codex session into a new thread', options: [
     { name: 'focus', description: 'Optional focus for the forked session', type: STR, required: false }] },
   { name: 'ultracode', description: 'Toggle ultracode mode (xhigh + auto workflows)', options: [
@@ -102,21 +104,25 @@ const HEARTBEAT_TICK_MS = 30_000
 //
 // Precedence for position 1 (highest wins):
 //   1. Dead/crashed: › ☠️ / › 💥         (session is gone — everything else is moot)
-//   2. Paused:       › ⏸                  (alive but not listening)
-//   3. Protocol:     {emoji}{badge}        (identity + protocol as compound: 🔣⚔²⁄³)
-//   4. Identity:     session emoji         (default — alive and idle)
+//   2. Waiting:      › ⏳                  (alive and waiting on something external)
+//   3. Paused:       › ⏸                  (alive but not listening)
+//   4. Protocol:     {emoji}{badge}        (identity + protocol as compound: 🔣⚔²⁄³)
+//   5. Identity:     session emoji         (default — alive and idle)
 // Turn archetypes: ✦ = self/owner/builder, ⚔ = critic/outsider/challenger
 // ---------------------------------------------------------------------------
 
 export function formatThreadName(opts: SessionVisualOpts): { name: string; priority: 'high' | 'normal' } {
   const dead = opts.state === 'killed' || opts.state === 'crashed'
+  const waiting = !!opts.waiting && !dead
   const paused = !!opts.paused && !dead
-  const isStateOverride = dead || paused
+  const isStateOverride = dead || waiting || paused
 
-  // Position 1 — presence indicator (precedence: dead > paused > identity • protocol > identity)
+  // Position 1 — presence indicator (precedence: dead > waiting > paused > identity • protocol > identity)
   let position1: string
   if (dead) {
     position1 = opts.state === 'killed' ? '› ☠️' : '› 💥'
+  } else if (waiting) {
+    position1 = '› ⏳'
   } else if (paused) {
     position1 = '› ⏸'
   } else if (opts.badge) {
@@ -128,13 +134,17 @@ export function formatThreadName(opts: SessionVisualOpts): { name: string; prior
   // Position 2 — focus (description > topic > session name)
   const title = (opts.description || opts.topic || opts.sessionName)
     .replace(/\*\*/g, '').replace(/\*/g, '').replace(/[\[\]<>]/g, '').replace(/\s+/g, ' ').trim()
+  const waitingDate = waiting && opts.waitingDate
+    ? opts.waitingDate.replace(/[\[\]<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40)
+    : ''
+  const datedTitle = waitingDate ? `[${waitingDate}] ${title}` : title
 
   // Position 4 — lineage suffix
   const countSuffix = opts.respawnCount && opts.respawnCount >= 2
     ? (opts.respawnCount <= 9 ? SUPERSCRIPT[opts.respawnCount] : '⁹⁺')
     : ''
 
-  const name = `${position1} ${title} · ${opts.sessionName}${countSuffix}`.slice(0, 100)
+  const name = `${position1} ${datedTitle} · ${opts.sessionName}${countSuffix}`.slice(0, 100)
   return { name, priority: isStateOverride ? 'high' : 'normal' }
 }
 
@@ -645,7 +655,7 @@ export class DiscordGateway implements ChatGateway {
 
   async updateSessionVisual(threadId: string, opts: SessionVisualOpts): Promise<void> {
     const { name, priority } = formatThreadName(opts)
-    process.stderr.write(`discord gateway: visual update: state=${opts.state} paused=${opts.paused} priority=${priority}\n`)
+    process.stderr.write(`discord gateway: visual update: state=${opts.state} paused=${opts.paused} waiting=${opts.waiting} priority=${priority}\n`)
     await this.renameThread(threadId, name, priority)
 
     if (!opts.anchorMessageId) {
@@ -653,7 +663,7 @@ export class DiscordGateway implements ChatGateway {
     }
     if (opts.anchorChannelId && opts.anchorMessageId) {
       const dead = opts.state === 'killed' || opts.state === 'crashed'
-      const emoji = dead ? (opts.state === 'killed' ? '☠️' : '💥') : opts.emoji
+      const emoji = dead ? (opts.state === 'killed' ? '☠️' : '💥') : opts.waiting ? '⏳' : opts.emoji
       const countEmoji = opts.state === 'zombie' && opts.respawnCount && opts.respawnCount > 0
         ? DiscordGateway.COUNT_EMOJI[Math.min(opts.respawnCount - 1, DiscordGateway.COUNT_EMOJI.length - 1)]
         : undefined

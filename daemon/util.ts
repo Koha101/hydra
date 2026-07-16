@@ -15,6 +15,28 @@ export function fallbackDescription(topic: string): string {
   return firstLine.length > 100 ? firstLine.slice(0, 97) + '...' : firstLine
 }
 
+type WaitingState = { waiting?: boolean; waitingDate?: string }
+
+export function parseWaitingCommand(content: string): { date?: string } | null {
+  const match = content.match(/^\/?waiting(?:[ \t]+([^\r\n]+?))?[ \t]*$/i)
+  if (!match) return null
+  const date = match[1]?.trim()
+  return date ? { date: date.slice(0, 40) } : {}
+}
+
+export function markWaiting(state: WaitingState, date?: string): void {
+  state.waiting = true
+  if (date) state.waitingDate = date
+  else delete state.waitingDate
+}
+
+export function clearWaiting(state: WaitingState): boolean {
+  if (!state.waiting && state.waitingDate === undefined) return false
+  delete state.waiting
+  delete state.waitingDate
+  return true
+}
+
 export function formatDuration(ms: number): string {
   const mins = Math.floor(ms / 60000)
   if (mins < 60) return `${mins}m`

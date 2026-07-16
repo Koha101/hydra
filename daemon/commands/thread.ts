@@ -19,6 +19,8 @@ const providerHandoffsInProgress = new Set<string>()
 function restoreSessionPresentation(source: SessionInfo, replacement: SessionInfo): void {
   replacement.listening = source.listening
   replacement.paused = source.paused
+  replacement.waiting = source.waiting
+  replacement.waitingDate = source.waitingDate
   replacement.description = source.description
   replacement.contentEmoji = source.contentEmoji
   replacement.contextLinks = source.contextLinks

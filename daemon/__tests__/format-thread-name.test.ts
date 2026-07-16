@@ -69,8 +69,29 @@ describe('formatThreadName', () => {
     expect(priority).toBe('high')
   })
 
+  test('waiting session — high priority, wait prefix', () => {
+    const { name, priority } = formatThreadName({ ...base, waiting: true })
+    expect(name).toBe('› ⏳ fixing auth middleware · glyph')
+    expect(priority).toBe('high')
+  })
+
+  test('waiting date prefixes the focus', () => {
+    const { name } = formatThreadName({ ...base, waiting: true, waitingDate: '2026-07-20' })
+    expect(name).toBe('› ⏳ [2026-07-20] fixing auth middleware · glyph')
+  })
+
+  test('waiting date is sanitized', () => {
+    const { name } = formatThreadName({ ...base, waiting: true, waitingDate: '[next]  Monday' })
+    expect(name).toBe('› ⏳ [next Monday] fixing auth middleware · glyph')
+  })
+
   test('dead overrides paused', () => {
     const { name } = formatThreadName({ ...base, state: 'killed', paused: true })
+    expect(name).toBe('› ☠️ fixing auth middleware · glyph')
+  })
+
+  test('dead overrides waiting and its date', () => {
+    const { name } = formatThreadName({ ...base, state: 'killed', waiting: true, waitingDate: 'tomorrow' })
     expect(name).toBe('› ☠️ fixing auth middleware · glyph')
   })
 
@@ -82,6 +103,11 @@ describe('formatThreadName', () => {
   test('paused drops protocol badge', () => {
     const { name } = formatThreadName({ ...base, paused: true, badge: '⚔️²▼₃' })
     expect(name).toBe('› ⏸ fixing auth middleware · glyph')
+  })
+
+  test('waiting drops protocol badge', () => {
+    const { name } = formatThreadName({ ...base, waiting: true, badge: '⚔️²▼₃' })
+    expect(name).toBe('› ⏳ fixing auth middleware · glyph')
   })
 
   test('falls back to topic when no description', () => {
