@@ -126,18 +126,20 @@ export class BridgeTransport {
     }
   }
 
-  flushQueue(sessionId: string): void {
-    if (this.heldSessions.has(sessionId)) return
+  /** Returns the number of messages flushed. */
+  flushQueue(sessionId: string): number {
+    if (this.heldSessions.has(sessionId)) return 0
     const queue = this.messageQueues.get(sessionId)
-    if (!queue || queue.length === 0) return
+    if (!queue || queue.length === 0) return 0
     const bridge = this.bridges.get(sessionId)
-    if (!bridge) return
+    if (!bridge) return 0
     process.stderr.write(`daemon: flushing ${queue.length} queued message(s) for ${sessionId}\n`)
     for (const msg of queue) {
       this.sendToBridge(bridge, msg)
     }
     this.messageQueues.delete(sessionId)
     this.persistQueues()
+    return queue.length
   }
 
   flushCodexQueue(sessionId: string): void {

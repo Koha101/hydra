@@ -20,7 +20,8 @@ import { refreshSessionVisual } from './anchor-state.js'
 import { handleListIntercept, handleUsageIntercept, handleHealthIntercept, handleProtocolsIntercept } from './commands/status.js'
 import { handleModelIntercept, handleEffortIntercept, handleContextIntercept, handleClearIntercept, handleRebootIntercept, handleUltracodeIntercept } from './commands/session-config.js'
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
-import { killSession } from './session-lifecycle.js'
+import { killSession, spawnsInFlight } from './session-lifecycle.js'
+import { wakeIfStuck } from './delivery-wake.js'
 import { isAlive, reportError } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
 import { chooseDeliverySession, isRecoveryCommand, isSessionCommand, providerHandoffRoute } from './provider-handoff.js'
@@ -145,69 +146,6 @@ function extractContextLinks(text: string): string[] {
   return links
 }
 
-// ---------------------------------------------------------------------------
-// Delivery wake
-//
-// Claude Code delivers an inbound channel message as an MCP notification the
-// session normally processes on its own. But once a bridge has reconnected
-// (e.g. after a daemon restart), CC can instead stage the notification as a
-// *queued-message widget* in the composer that never auto-submits — so the
-// session silently never sees the message. The widget is un-submittable (Enter
-// is a no-op on it) and its prompt is "❯" + a NON-BREAKING space, distinct from
-// the real composer prompt (regular space).
-//
-// After delivering, poll the pane: once the session is idle with such a stuck
-// widget, clear it and nudge the session to pull the message from chat history
-// and reply. Gated on "idle AND stuck-widget-present", so a session that
-// processed the notification normally is never touched, and a busy session is
-// left alone until its turn ends. Disable with HYDRA_DELIVERY_WAKE=0.
-// ---------------------------------------------------------------------------
-const DELIVERY_WAKE = process.env.HYDRA_DELIVERY_WAKE !== '0'
-const QUEUED_WIDGET_PREFIX = String.fromCharCode(0x276f, 0xa0) // angle-prompt + non-breaking space (the stuck queued widget)
-const WAKE_NUDGE =
-  'You have unread messages in your thread that were not delivered to you. ' +
-  'Call fetch_messages on your own chat_id, read anything after your last reply, and respond.'
-const wakePending = new Set<string>()
-const MAX_WAKE_POLLS = 300 // ~10 min backstop while a turn runs; a longer turn re-arms on the next delivery
-
-async function paneText(tmux: string): Promise<string> {
-  try {
-    const p = Bun.spawn(['tmux', 'capture-pane', '-t', tmux, '-p'], { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
-    return await new Response(p.stdout).text()
-  } catch { return '' }
-}
-
-async function tmuxKeys(tmux: string, ...keys: string[]): Promise<void> {
-  try { await Bun.spawn(['tmux', 'send-keys', '-t', tmux, ...keys], { stdio: ['ignore', 'ignore', 'ignore'] }).exited } catch {}
-}
-
-/** After a delivery, wake the session iff it's idle with an un-submitted queued
- *  widget. Waits out a busy turn (bounded), dedupes per session, no-ops otherwise. */
-async function wakeIfStuck(tmux: string): Promise<void> {
-  if (!DELIVERY_WAKE || wakePending.has(tmux)) return
-  wakePending.add(tmux)
-  try {
-    for (let poll = 0; poll < MAX_WAKE_POLLS; poll++) {
-      await new Promise(r => setTimeout(r, 2000))
-      const pane = await paneText(tmux)
-      if (!pane) return
-      const lines = pane.split('\n')
-      // "esc to interrupt" appears only in the status footer during a turn; scan
-      // just the tail so the same substring quoted in transcript/output can't wedge us.
-      if (lines.filter(l => l.trim()).slice(-4).some(l => l.includes('esc to interrupt'))) continue
-      const stuck = lines.some(l => l.startsWith(QUEUED_WIDGET_PREFIX) && l.slice(QUEUED_WIDGET_PREFIX.length).trim())
-      if (!stuck) return // processed normally — leave it alone
-      await tmuxKeys(tmux, 'Escape')
-      await tmuxKeys(tmux, '-l', WAKE_NUDGE)
-      await tmuxKeys(tmux, 'Enter')
-      process.stderr.write(`daemon: woke ${tmux} — queued channel message never auto-submitted\n`)
-      return
-    }
-  } finally {
-    wakePending.delete(tmux)
-  }
-}
-
 async function deliverToSession(
   msg: InboundMessage,
   targetSessionId: string,
@@ -249,7 +187,10 @@ async function deliverToSession(
     }
   }
   transport.sendOrQueue(deliverySessionId, { type: 'notification', content, meta })
-  if (sessionInfo) void wakeIfStuck(sessionInfo.tmuxName)
+  // Only arm the wake once the message actually reached a live bridge. A queued
+  // message flushes on bridge registration, which arms its own wake — arming here
+  // would poll a still-booting pane and the dedup would shadow that later arm.
+  if (sessionInfo && transport.get(deliverySessionId)) void wakeIfStuck(sessionInfo.tmuxName)
 }
 
 // ---------------------------------------------------------------------------
@@ -842,14 +783,17 @@ gateway.onMessage(async (msg: InboundMessage) => {
     if (handoffSession) {
       targetSessionId = handoffSession
       effectiveChatId = rtid
-    } else if (mappedSession && registry.has(mappedSession)) {
+    } else if (mappedSession && registry.has(mappedSession) && isAlive(registry.get(mappedSession)!)) {
       const info = registry.get(mappedSession)!
-      if (isAlive(info)) {
-        targetSessionId = mappedSession
-        info.lastActive = Date.now()
-        registry.debouncedPersist()
-        effectiveChatId = info.threadId
-      }
+      targetSessionId = mappedSession
+      info.lastActive = Date.now()
+      registry.debouncedPersist()
+      effectiveChatId = info.threadId
+    } else if (spawnsInFlight.has(rtid)) {
+      // A spawn is mid-flight for this thread (thread exists on Discord, session
+      // not yet registered) — queue for the spawning session instead of the byte.
+      targetSessionId = spawnsInFlight.get(rtid)!
+      effectiveChatId = rtid
     }
   }
   await deliverToSession(msg, targetSessionId, result.access, effectiveChatId)

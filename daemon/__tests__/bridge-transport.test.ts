@@ -88,7 +88,7 @@ describe('BridgeTransport', () => {
     expect((queue![49] as any).content).toBe('msg-49')
   })
 
-  test('flushQueue delivers all queued messages', () => {
+  test('flushQueue delivers all queued messages and returns the count', () => {
     bt.sendOrQueue('s4', { type: 'notification', content: 'a' })
     bt.sendOrQueue('s4', { type: 'notification', content: 'b' })
     bt.sendOrQueue('s4', { type: 'notification', content: 'c' })
@@ -97,7 +97,7 @@ describe('BridgeTransport', () => {
     const { written, socket } = mockSocket()
     const conn = { sessionId: 's4', socket, buf: '' }
     bt.set('s4', conn)
-    bt.flushQueue('s4')
+    expect(bt.flushQueue('s4')).toBe(3)
 
     expect(written).toHaveLength(3)
     expect(bt.messageQueues.has('s4')).toBe(false)
@@ -105,7 +105,7 @@ describe('BridgeTransport', () => {
 
   test('flushQueue does nothing without bridge', () => {
     bt.sendOrQueue('s5', { type: 'notification', content: 'x' })
-    bt.flushQueue('s5') // no bridge connected
+    expect(bt.flushQueue('s5')).toBe(0) // no bridge connected
     expect(bt.messageQueues.get('s5')).toHaveLength(1) // still queued
   })
 

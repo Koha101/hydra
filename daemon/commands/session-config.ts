@@ -15,6 +15,7 @@ import {
 import { resolveModelAlias, EFFORT_LEVELS, CODEX_EFFORT_LEVELS } from '../../shared/constants.js'
 import type { InboundMessage } from '../../gateway.js'
 import { buildCodexWorkspaceContext } from '../codex-context.js'
+import { paneText, paneBusy, tmuxKeys } from '../delivery-wake.js'
 
 const byteTmux = (): string => process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
 
@@ -146,17 +147,29 @@ export async function handleModelIntercept(msg: InboundMessage, arg: string): Pr
   const resolved = resolveModelAlias(arg.trim()) ?? arg.trim()
   const tmux = targetTmux(msg)
   await sendSlash(tmux, `/model ${resolved}`)
-  // Cache-invalidating switches show a confirmation asynchronously. Wait for
-  // the actual modal instead of sending Enter on a fixed timer.
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 250))
-    let pane = ''
-    try { pane = Bun.spawnSync(['tmux', 'capture-pane', '-t', tmux, '-p', '-S', '-30']).stdout.toString() } catch {}
+  // Cache-invalidating switches pop a "Switch model? 1. Yes / 2. No" confirm —
+  // possibly only after the in-flight turn ends, and possibly slow to render on
+  // a booting session. Wait it out (busy-aware) and answer with a literal "1";
+  // a bare Enter does not reliably confirm it. Unanswered, the modal wedges the
+  // whole pane — every later delivery to this session hangs on it.
+  let answered = 0
+  let idlePolls = 0
+  for (let i = 0; i < 600; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    const pane = await paneText(tmux)
+    if (!pane) break
     if (/Switch model\?/i.test(pane)) {
-      try { await Bun.spawn(['tmux', 'send-keys', '-t', tmux, 'Enter'], { stdio: ['ignore', 'ignore', 'ignore'] }).exited } catch {}
-      break
+      if (answered >= 2) break // answered twice and it's still up — stop typing at it
+      await tmuxKeys(tmux, ...(answered === 0 ? ['-l', '1'] : ['Enter']))
+      answered++
+      idlePolls = 0
+      continue
     }
-    if (/Set model to/i.test(pane)) break
+    if (answered > 0) break // modal gone after our answer — confirmed
+    // No "Set model to" toast check: a stale toast from a prior switch can sit
+    // in the visible pane and would end the wait before the real modal renders.
+    if (paneBusy(pane)) { idlePolls = 0; continue } // modal often renders only at turn end
+    if (++idlePolls >= 4) break // idle with no modal — switch applied without confirm
   }
   await gateway.send(msg.channelId, `⚙️ model → \`${resolved}\``, { replyTo: msg.id }).catch(() => {})
 }
