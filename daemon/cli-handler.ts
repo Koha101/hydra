@@ -1,10 +1,13 @@
-import { registry } from './sessions.js'
+import { registry, sessionEngine } from './sessions.js'
 import { transport } from './bridge-transport.js'
 import { doSpawnSession, killSession, sessionDeathEmitter } from './session-lifecycle.js'
 import { fallbackDescription, formatDuration, getContextPercent } from './util.js'
 import { checkIdempotency, registerIdempotency, updateIdempotency, getBySessionId, clearIdempotency, listIdempotencyEntries } from './idempotency.js'
 import { gateway } from './config.js'
 import { loadAccess } from './access.js'
+import { wakeIfStuck } from './delivery-wake.js'
+import { applyClaudeModelSwitch } from './commands/session-config.js'
+import { resolveModelAlias } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Idempotency completion on session death
@@ -134,7 +137,7 @@ function handleStatus(req: CLIRequest): CLIResponse {
   const { name } = req.params as { name?: string }
   if (!name) return respond(req, false, 'name is required')
 
-  const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
+  const info = registry.findByName(name)
   if (!info) return respond(req, false, `session "${name}" not found`)
 
   const tmuxAlive = (() => {
@@ -163,7 +166,7 @@ async function handleKill(req: CLIRequest): Promise<CLIResponse> {
   const { name } = req.params as { name?: string }
   if (!name) return respond(req, false, 'name is required')
 
-  const info = [...registry.values()].find(s => s.tmuxName === name || s.sessionId === name)
+  const info = registry.findByName(name)
   if (!info) return respond(req, false, `session "${name}" not found`)
 
   // Capture key before kill — getBySessionId only finds spawned/pending,
@@ -196,6 +199,50 @@ function handleHealth(req: CLIRequest): CLIResponse {
     tmux: tmuxRunning ? 'running' : 'not running',
     idempotency: { active: listIdempotencyEntries().length },
   })
+}
+
+/** Deliver a text into a session exactly like an inbound channel message —
+ * queued if its bridge isn't up yet, wake armed if it is. Ops/testing hatch for
+ * talking to sessions without Discord. */
+function handleSend(req: CLIRequest): CLIResponse {
+  const { name, text } = req.params as { name?: string; text?: string }
+  if (!name) return respond(req, false, 'name is required')
+  if (!text) return respond(req, false, 'text is required')
+
+  const info = registry.findByName(name)
+  if (!info) return respond(req, false, `session "${name}" not found`)
+
+  transport.sendOrQueue(info.sessionId, {
+    type: 'notification',
+    content: text,
+    meta: { chat_id: info.threadId, message_id: '', user: 'cli', user_id: 'cli', ts: new Date().toISOString() },
+  })
+  const delivered = transport.has(info.sessionId)
+  // Wake is CC-pane-specific — legacy codex sessions also hold an agent bridge,
+  // so gate on the engine, not just the bridge.
+  if (transport.get(info.sessionId) && sessionEngine(info) !== 'codex') {
+    void wakeIfStuck(info.tmuxName)
+  }
+  return respond(req, true, { session: info.tmuxName, delivery: delivered ? 'sent' : 'queued' })
+}
+
+/** Switch a claude session's model without Discord (e.g. a wedged session whose
+ * thread delivery is broken). Fire-and-forget: the confirm-modal wait can outlive
+ * any sane socket timeout. */
+function handleModel(req: CLIRequest): CLIResponse {
+  const { name, model } = req.params as { name?: string; model?: string }
+  if (!name) return respond(req, false, 'name is required')
+  if (!model) return respond(req, false, 'model is required')
+
+  const info = registry.findByName(name)
+  if (!info) return respond(req, false, `session "${name}" not found`)
+  if (sessionEngine(info) === 'codex') {
+    return respond(req, false, 'model via CLI supports claude sessions only')
+  }
+
+  const resolved = resolveModelAlias(model) ?? model
+  void applyClaudeModelSwitch(info.tmuxName, resolved)
+  return respond(req, true, { session: info.tmuxName, model: resolved, status: 'switching' })
 }
 
 function handleClearKey(req: CLIRequest): CLIResponse {
@@ -232,6 +279,8 @@ export async function handleCLIRequest(req: CLIRequest): Promise<CLIResponse> {
       case 'status': response = handleStatus(req); break
       case 'kill': response = await handleKill(req); break
       case 'health': response = handleHealth(req); break
+      case 'send': response = handleSend(req); break
+      case 'model': response = handleModel(req); break
       case 'clear-key': response = handleClearKey(req); break
       case 'check-key': response = handleCheckKey(req); break
       default:

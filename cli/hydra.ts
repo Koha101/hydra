@@ -34,6 +34,8 @@ Session management:
   hydra list                           List active sessions
   hydra status <name>                  Session details
   hydra kill <name>                    Kill a session
+  hydra send <name> <text>             Deliver a message to a session (no Discord)
+  hydra model <name> <id|alias>        Switch a claude session's model (no Discord)
   hydra peek [name]                    Read-only view of live sessions
   hydra attach <name>                  Attach codex TUI to a running codex session
   hydra health                         Daemon diagnostics
@@ -207,6 +209,34 @@ async function main(): Promise<void> {
       }
       const response = await sendRequest(socketPath, {
         type: 'cli', command: 'kill', id: randomUUID(), params: { name },
+      })
+      printResponse(response, json)
+      break
+    }
+
+    case 'send': {
+      const name = filtered[1]
+      const text = filtered.slice(2).join(' ')
+      if (!name || !text) {
+        console.error('error: usage: hydra send <name> <text>')
+        process.exit(1)
+      }
+      const response = await sendRequest(socketPath, {
+        type: 'cli', command: 'send', id: randomUUID(), params: { name, text },
+      })
+      printResponse(response, json)
+      break
+    }
+
+    case 'model': {
+      const name = filtered[1]
+      const model = filtered[2]
+      if (!name || !model) {
+        console.error('error: usage: hydra model <name> <id|alias>')
+        process.exit(1)
+      }
+      const response = await sendRequest(socketPath, {
+        type: 'cli', command: 'model', id: randomUUID(), params: { name, model },
       })
       printResponse(response, json)
       break

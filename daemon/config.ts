@@ -47,6 +47,9 @@ export const DEFAULT_SESSION_CHANNEL = process.env.DEFAULT_SESSION_CHANNEL ?? ''
 
 export const PLATFORM = (process.env.CHAT_PLATFORM ?? 'discord') as 'discord' | 'slack'
 
+/** tmux session name of the byte (the main always-on session). Late-bound: BYTE_SESSION_NAME is env-configurable. */
+export const byteTmux = (): string => process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
+
 let TOKEN: string | undefined
 let SLACK_APP_TOKEN: string | undefined
 

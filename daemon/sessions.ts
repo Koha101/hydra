@@ -231,6 +231,11 @@ export class SessionRegistry {
   get(id: string): SessionInfo | undefined { return this.sessions.get(id) }
   has(id: string): boolean { return this.sessions.has(id) }
 
+  /** Lookup by tmux name or session id — the form CLI/user-facing commands take. */
+  findByName(name: string): SessionInfo | undefined {
+    return [...this.sessions.values()].find(s => s.tmuxName === name || s.sessionId === name)
+  }
+
   set(id: string, info: SessionInfo): void {
     this.sessions.set(id, info)
   }

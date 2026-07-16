@@ -493,6 +493,10 @@
       "daemon_access"
     ],
     [
+      "daemon_cli-handler",
+      "shared_constants"
+    ],
+    [
       "daemon_session-lifecycle",
       "shared_constants"
     ],

@@ -1,8 +1,8 @@
 import { existsSync, unlinkSync, mkdirSync, chmodSync } from 'fs'
 import { execSync } from 'child_process'
 import { createServer, type Socket } from 'net'
-import { gateway, SOCK_PATH, STATE_DIR, PLATFORM } from './config.js'
-import { registry, threadRegistry } from './sessions.js'
+import { gateway, SOCK_PATH, STATE_DIR, PLATFORM, byteTmux } from './config.js'
+import { registry, threadRegistry, sessionEngine } from './sessions.js'
 import { transport, type BridgeConn } from './bridge-transport.js'
 import { executeTool } from './bridge-dispatch.js'
 import { computeToolsForSession, MAIN_ONLY_TOOLS } from './bridge-tools.js'
@@ -279,10 +279,8 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         const flushed = transport.flushQueue(sessionId)
         // Messages flushed into a just-(re)connected CC can stage as the
         // never-auto-submitted queued widget — arm the wake to recover them.
-        if ((flushed > 0 || continued) && info?.engine !== 'codex' && info?.provider !== 'codex') {
-          const tmux = sessionId === 'main'
-            ? process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
-            : info?.tmuxName
+        if ((flushed > 0 || continued) && (!info || sessionEngine(info) !== 'codex')) {
+          const tmux = sessionId === 'main' ? byteTmux() : info?.tmuxName
           if (tmux) void wakeIfStuck(tmux)
         }
         dispatchReconnect(sessionId)
