@@ -8,7 +8,8 @@
 // *queued-message widget* in the composer that never auto-submits, so the
 // session silently never sees the message. The widget is un-submittable (Enter
 // is a no-op on it) and its prompt is "❯" + a NON-BREAKING space, distinct from
-// the real composer prompt (regular space).
+// the real composer prompt (regular space). CC's AI composer suggestions use
+// the same "❯"+NBSP prefix but render dim — see paneHasStuckWidget.
 //
 // After a delivery (or a registration-time queue flush), poll the pane: once
 // the session is idle with such a stuck widget, clear it and nudge the session
@@ -36,6 +37,26 @@ export async function paneText(tmux: string): Promise<string> {
     const p = Bun.spawn(['tmux', 'capture-pane', '-t', tmux, '-p'], { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
     return await new Response(p.stdout).text()
   } catch { return '' }
+}
+
+const DIM_SGR = '\x1b[2m'
+
+/** True iff the pane shows a stuck queued-message widget. Needs an SGR-preserving
+ *  capture: CC's AI composer suggestions render as the SAME "❯"+NBSP prefix but
+ *  dim — plain capture can't tell a suggestion from a staged message. */
+async function paneHasStuckWidget(tmux: string): Promise<boolean> {
+  let raw = ''
+  try {
+    const p = Bun.spawn(['tmux', 'capture-pane', '-t', tmux, '-e', '-p'], { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+    raw = await new Response(p.stdout).text()
+  } catch { return false }
+  return raw.split('\n').some(l => {
+    const i = l.indexOf(QUEUED_WIDGET_PREFIX)
+    if (i === -1) return false
+    const after = l.slice(i + QUEUED_WIDGET_PREFIX.length)
+    if (after.startsWith(DIM_SGR)) return false // dim ghost suggestion, not a message
+    return after.replace(/\x1b\[[0-9;]*m/g, '').trim().length > 0
+  })
 }
 
 export async function tmuxKeys(tmux: string, ...keys: string[]): Promise<void> {
@@ -87,8 +108,7 @@ export async function wakeIfStuck(tmux: string): Promise<void> {
       const pane = await paneText(tmux)
       if (!pane) return
       if (paneBusy(pane)) { uiSeen = true; calmPolls = 0; continue }
-      const stuck = pane.split('\n').some(l => l.startsWith(QUEUED_WIDGET_PREFIX) && l.slice(QUEUED_WIDGET_PREFIX.length).trim())
-      if (stuck) {
+      if (await paneHasStuckWidget(tmux)) {
         await tmuxKeys(tmux, 'Escape')
         await tmuxKeys(tmux, '-l', WAKE_NUDGE)
         await tmuxKeys(tmux, 'Enter')
