@@ -74,15 +74,6 @@ describe('cli-handler', () => {
     expect(res.error).toContain('initiator is required')
   })
 
-  test('spawn rejects an unknown provider before creating a session', async () => {
-    const res = await handleCLIRequest(makeReq({
-      command: 'spawn',
-      params: { prompt: 'test', idempotencyKey: 'provider-test', initiator: 'test', provider: 'other' },
-    }))
-    expect(res.ok).toBe(false)
-    expect(res.error).toContain('provider must be claude or codex')
-  })
-
   test('spawn with idempotency key blocks duplicate', async () => {
     const key = `cli-test-idem-${Date.now()}`
     const { registerIdempotency } = await import('../idempotency.js')

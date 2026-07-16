@@ -33,8 +33,7 @@ export function isAlive(info: { tmuxName: string; deadAt?: number }): boolean {
 
 export function tmuxHasSession(name: string): boolean {
   try {
-    execSync(`tmux has-session -t '${name}' 2>/dev/null`, { stdio: 'pipe' })
-    return true
+    return Bun.spawnSync(['tmux', 'has-session', '-t', name], { stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
   } catch {
     return false
   }
@@ -110,16 +109,12 @@ export function formatSpawnLine(p: {
   emoji: string
   name: string
   model: string
-  provider?: string
-  effort?: string
   trigger: string
   initiator?: string
 }): string {
   const title = p.roleLabel ? `The ${titleCaseRole(p.roleLabel)} • ` : ''
   const by = p.initiator ? `${p.trigger} from ${p.initiator}` : p.trigger
-  const provider = p.provider && p.provider !== 'claude' ? ` · provider \`${p.provider}\`` : ''
-  const effort = p.effort && p.effort !== 'default' ? ` · effort \`${p.effort}\`` : ''
-  return `> ⚡ spawned [ ${title}${p.emoji} ${p.name} ] · model \`${p.model}\`${provider}${effort} · by ${by}`
+  return `> ⚡ spawned [ ${title}${p.emoji} ${p.name} ] · model \`${p.model}\` · by ${by}`
 }
 
 export type StatusLineState = {

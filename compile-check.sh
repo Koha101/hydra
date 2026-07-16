@@ -9,7 +9,7 @@ _compile_check() {
   # pre-commit + post-merge hooks), NOT on the restart hot-path where speed
   # matters most (watchdog revives, incident recovery).
   local rc=0 out=""
-  for entry in daemon.ts bridge.ts codex-bridge.ts; do
+  for entry in daemon.ts bridge.ts; do
     err=$(cd "$1" && bun build "$entry" --target=bun 2>&1 >/dev/null) || rc=1
     [ -n "$err" ] && out="${out}[$entry] ${err}"$'\n'
   done

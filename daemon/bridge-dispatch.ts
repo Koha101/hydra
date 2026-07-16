@@ -9,6 +9,7 @@ import { fallbackDescription, formatDuration, getContextPercent, chunk, assertSe
 import { isProtocolPost } from './protocol-registry.js'
 import { watchPr, unwatchPr, listWatches, getWatchesBySession, formatWatchEntry, detectPrUrl, WATCH_ERRORS } from './pr-watch.js'
 import { refreshSessionVisual } from './anchor-state.js'
+import { refreshDashboard } from './dashboard.js'
 
 const SEND_RETRY_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
@@ -196,7 +197,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const worktree = args.worktree as string | undefined
         const topic = worktree ? `worktree:${worktree} ${args.topic}` : args.topic as string
         const model = (args.model as string | undefined)?.trim() || undefined
-        const provider = args.provider === 'codex' ? 'codex' : 'claude'
+        const engine = args.provider === 'codex' ? 'codex' : 'claude'
         if (model) process.stderr.write(`daemon: spawn_session model override: ${model}\n`)
         const budgetRaw = (args.phase_budget as string | undefined)?.trim() || undefined
         const phaseBudgetMs = budgetRaw ? parseDuration(budgetRaw) ?? undefined : undefined
@@ -204,8 +205,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const spawnerName = callerSessionId ? registry.get(callerSessionId)?.tmuxName ?? 'main' : 'main'
         const result = await doSpawnSession(topic, args.chat_id as string | undefined, args.message_id as string | undefined, {
           ...(model ? { model } : {}),
+          engine,
           ...(phaseBudgetMs ? { phaseBudgetMs } : {}),
-          ...(provider === 'codex' ? { provider } : {}),
           trigger: 'spawn_session',
           initiator: spawnerName,
         })
@@ -225,7 +226,6 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
             messages: s.messageCount ?? 0,
             running_for: formatDuration(Date.now() - s.createdAt),
             status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-            provider: s.provider ?? 'claude',
             origin_type: s.originType ?? 'spawn',
             origin_from: s.originFrom ?? null,
           }
@@ -242,6 +242,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         info.description = description.slice(0, 120)
         registry.persist()
         refreshSessionVisual(info.threadId)
+        refreshDashboard()
         return { content: [{ type: 'text', text: `description set for ${info.tmuxName}` }] }
       }
 

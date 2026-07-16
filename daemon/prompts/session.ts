@@ -30,28 +30,6 @@ export function buildSpawnPrompt(p: PromptParams): string {
   ].join('\n')
 }
 
-export function buildCodexSpawnPrompt(p: PromptParams): string {
-  return [
-    `You are ${p.tmuxName}, a Codex session connected to a Hydra Discord thread.`,
-    `Work on this topic: ${p.topic}`,
-    `Your working directory is the workspace Hydra started you in. Follow its loaded CLAUDE.md instructions.`,
-    `Before working inside a child repository, read the closest applicable CLAUDE.md files there too.`,
-    `Your final response is delivered directly to Discord, so make it self-contained and useful to the user.`,
-    `Do not attempt to call Hydra or Discord MCP tools; the bridge sends your final response for you.`,
-  ].join('\n')
-}
-
-export function buildCodexForkPrompt(p: PromptParams & { originFrom: string }): string {
-  return [
-    `You are ${p.tmuxName}, a Codex session forked from ${p.originFrom}.`,
-    `Continue from the inherited conversation while focusing on this topic: ${p.topic}`,
-    `This is a separate Hydra Discord thread; the parent conversation remains unchanged.`,
-    `Your working directory is the workspace Hydra started you in. Follow its loaded CLAUDE.md instructions.`,
-    `Your final response is delivered directly to Discord, so briefly identify the forked focus and then proceed with the work.`,
-    `Do not attempt to call Hydra or Discord MCP tools; the bridge sends your final response for you.`,
-  ].join('\n')
-}
-
 export function buildForkPrompt(p: PromptParams & { originFrom: string }): string {
   return [
     `You are ${p.tmuxName}, forked from ${p.originFrom}.`,

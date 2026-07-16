@@ -1,25 +1,62 @@
 import type { FetchedMessage } from '../gateway.js'
-import type { SessionProvider, ThreadSessionEntry } from './sessions.js'
+import { conversationId, sessionEngine, threadRegistry, type SessionEngine, type ThreadSessionEntry } from './sessions.js'
+import { holdPendingContinuityForBoot } from './session-continuity.js'
 
 const MAX_HANDOFF_CHARS = 24_000
+const handoffRoutes = new Map<string, string>()
+const SESSION_COMMAND_RE = /^(?:\/(?:provider|model|effort|context|clear|ultracode|forks?|kill|listen|unlisten|pause|unpause|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|reboot|restart|reconnect)\b|(?:forks?|kill(?:\s+(?:review|build|design))?|listen|unlisten|pause|unpause|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|restart|reconnect)(?:\s|:|$)|(?:allow|deny)$)/i
 
-export function findLatestProviderConversation(
+export function setProviderHandoffRoute(threadId: string, sessionId: string): void {
+  handoffRoutes.set(threadId, sessionId)
+}
+
+export function providerHandoffRoute(threadId: string): string | undefined {
+  return handoffRoutes.get(threadId)
+}
+
+export function clearProviderHandoffRoute(threadId: string): void {
+  handoffRoutes.delete(threadId)
+}
+
+export function isSessionCommand(content: string): boolean {
+  return SESSION_COMMAND_RE.test(content.trim())
+}
+
+export function isRecoveryCommand(content: string): boolean {
+  return /^(?:resume|respawn|\/(?:resume|respawn))(?::|\s|$)/i.test(content.trim())
+}
+
+export function chooseDeliverySession(
+  requestedSessionId: string,
+  transitionSessionId: string | undefined,
+  pendingSessionId: string | undefined,
+  mappedSessionId: string | undefined,
+): string {
+  return transitionSessionId ?? pendingSessionId ?? mappedSessionId ?? requestedSessionId
+}
+
+export function reconcilePendingContinuityOnBoot(): void {
+  for (const thread of threadRegistry.values()) {
+    const pendingSessionId = thread.pendingContinuitySessionId
+    if (!pendingSessionId) continue
+    holdPendingContinuityForBoot(thread.threadId, pendingSessionId)
+    process.stderr.write(`daemon: preserved interrupted provider handoff for ${thread.threadId}; awaiting reconnect or resume\n`)
+  }
+}
+
+export function findLatestEngineConversation(
   history: ThreadSessionEntry[],
-  provider: SessionProvider,
+  engine: SessionEngine,
 ): ThreadSessionEntry | undefined {
   return [...history].reverse().find(entry =>
-    (entry.provider ?? 'claude') === provider
-      && (provider === 'codex' ? !!entry.codexSessionId : !!entry.claudeSessionId),
+    sessionEngine(entry) === engine && !!conversationId(entry, engine),
   )
 }
 
-/** Build a bounded, chronological transcript for the destination provider.
- * When it has been active in this thread before, only messages posted after
- * that provider's last session ended are included. */
 export function buildProviderHandoffContext(
   messages: FetchedMessage[],
-  source: SessionProvider,
-  target: SessionProvider,
+  source: SessionEngine,
+  target: SessionEngine,
   since?: number,
 ): string {
   const lines = messages
@@ -46,7 +83,7 @@ export function buildProviderHandoffContext(
   return [
     '[Hydra provider handoff]',
     `Continue the same job in the same Discord thread. Provider changed from ${source} to ${target}.`,
-    'The transcript below is the handoff context. Treat the latest user request and current workspace state as authoritative. Do not restart completed work.',
+    'Treat the latest user request and current workspace state as authoritative. Do not restart completed work.',
     '',
     since ? 'Messages since this provider was last active:' : 'Recent thread transcript:',
     selected.length > 0 ? selected.join('\n') : '(no intervening thread messages)',

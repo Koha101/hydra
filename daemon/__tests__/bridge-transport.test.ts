@@ -1,5 +1,9 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
 import { BridgeTransport } from '../bridge-transport.js'
+import { STATE_DIR } from '../config.js'
+import { threadRegistry } from '../sessions.js'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -44,12 +48,33 @@ describe('BridgeTransport', () => {
     expect(bt.messageQueues.has('s1')).toBe(false)
   })
 
+  test('holds messages for a connected session until release', () => {
+    const { written, socket } = mockSocket()
+    bt.set('held', { sessionId: 'held', socket, buf: '' })
+    bt.hold('held')
+    bt.sendOrQueue('held', { content: 'during transition' })
+    expect(written).toHaveLength(0)
+    expect(bt.messageQueues.get('held')).toEqual([{ content: 'during transition' }])
+    bt.release('held')
+    expect(written).toHaveLength(1)
+    expect(bt.messageQueues.has('held')).toBe(false)
+  })
+
   test('sendOrQueue queues when no bridge connected', () => {
     bt.sendOrQueue('s2', { type: 'notification', content: 'queued' })
     const queue = bt.messageQueues.get('s2')
     expect(queue).toBeDefined()
     expect(queue!).toHaveLength(1)
     expect(queue![0]).toEqual({ type: 'notification', content: 'queued' })
+  })
+
+  test('tool bridge is not an agent transport', () => {
+    const { written, socket } = mockSocket()
+    bt.setTool('tool-session', { sessionId: 'tool-session', socket, buf: '', bridgeRole: 'tool' })
+    expect(bt.has('tool-session')).toBe(false)
+    bt.sendOrQueue('tool-session', { type: 'notification', content: 'queued' })
+    expect(written).toHaveLength(0)
+    expect(bt.messageQueues.get('tool-session')).toHaveLength(1)
   })
 
   test('queue respects max size (50)', () => {
@@ -84,6 +109,37 @@ describe('BridgeTransport', () => {
     expect(bt.messageQueues.get('s5')).toHaveLength(1) // still queued
   })
 
+  test('transfers queued messages to a replacement session', () => {
+    bt.sendOrQueue('old', { content: 'queued' })
+    expect(bt.transferQueue('old', 'new')).toBe(1)
+    expect(bt.messageQueues.get('old')).toBeUndefined()
+    expect(bt.messageQueues.get('new')).toEqual([{ content: 'queued' }])
+  })
+
+  test('restored pending-continuity queues survive another restart', () => {
+    const threadId = 'queue-restart-thread'
+    const sessionId = 'queue-restart-source'
+    const queueFile = join(STATE_DIR, 'message-queue.json')
+    threadRegistry.set(threadId, {
+      threadId, topic: 'test', respawnCount: 0, createdAt: Date.now(), lastActive: Date.now(),
+      totalMessages: 0, sessionHistory: [], pendingContinuitySessionId: sessionId,
+    })
+    writeFileSync(queueFile, JSON.stringify({ [sessionId]: [{ content: 'preserve me' }] }))
+
+    const first = new BridgeTransport()
+    first.restoreQueues()
+    expect(first.messageQueues.get(sessionId)).toEqual([{ content: 'preserve me' }])
+    expect(existsSync(queueFile)).toBe(true)
+    expect(JSON.parse(readFileSync(queueFile, 'utf8'))[sessionId]).toEqual([{ content: 'preserve me' }])
+
+    const second = new BridgeTransport()
+    second.restoreQueues()
+    expect(second.messageQueues.get(sessionId)).toEqual([{ content: 'preserve me' }])
+    second.messageQueues.clear()
+    second.persistQueues()
+    threadRegistry.delete(threadId)
+  })
+
   test('disconnect closes socket and removes bridge', () => {
     let ended = false
     const socket = { write() {}, end() { ended = true }, destroyed: false }
@@ -104,8 +160,10 @@ describe('BridgeTransport', () => {
     const { socket } = mockSocket()
     bt.set('a', { sessionId: 'a', socket, buf: '' })
     bt.set('b', { sessionId: 'b', socket, buf: '' })
+    bt.setTool('c', { sessionId: 'c', socket, buf: '', bridgeRole: 'tool' })
     expect(bt.bridges.size).toBe(2)
     bt.clear()
     expect(bt.bridges.size).toBe(0)
+    expect(bt.toolBridges.size).toBe(0)
   })
 })

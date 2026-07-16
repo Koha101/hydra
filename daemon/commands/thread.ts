@@ -1,25 +1,20 @@
 import { execSync } from 'child_process'
 import { gateway } from '../config.js'
-import { registry, sessionEmoji, threadRegistry } from '../sessions.js'
+import { conversationId, recoverableWorktreeRef, registry, sessionEmoji, sessionEngine, threadRegistry, worktreeRef } from '../sessions.js'
 import { transport } from '../bridge-transport.js'
-import { killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn, waitForBridge, HEALTH_TIMEOUT_MS } from '../session-lifecycle.js'
+import { assertHealthySpawn, killSession, doSpawnSession, discoverClaudeSessionId, tryResume, tryRespawn } from '../session-lifecycle.js'
+import { completeSessionContinuity, transferSessionContinuity } from '../session-continuity.js'
 import { COUNT_EMOJI, refreshSessionVisual } from '../anchor-state.js'
 import { debouncedRefreshListDisplay } from './status.js'
 import { fallbackDescription, formatDuration, getContextPercent, tmuxHasSession, reportError } from '../util.js'
 import { isThreadOccupied } from '../protocol-registry.js'
-import { transferWatches } from '../pr-watch.js'
-import { buildProviderHandoffContext, findLatestProviderConversation } from '../provider-handoff.js'
+import { buildProviderHandoffContext, clearProviderHandoffRoute, findLatestEngineConversation, setProviderHandoffRoute } from '../provider-handoff.js'
 import { getBySessionId, updateIdempotency } from '../idempotency.js'
-import { getCodexContext } from '../codex-control.js'
-import { forkCodexSession } from '../codex-app-server.js'
+import { codexEngine } from '../codex-bootstrap.js'
 import type { InboundMessage } from '../../gateway.js'
-import type { SessionInfo, SessionProvider, SpawnResult } from '../sessions.js'
+import type { SessionEngine, SessionInfo, SpawnResult } from '../sessions.js'
 
 const providerHandoffsInProgress = new Set<string>()
-
-function nativeConversationId(info: SessionInfo, provider: SessionProvider): string | undefined {
-  return provider === 'codex' ? info.codexSessionId : info.claudeSessionId
-}
 
 function restoreSessionPresentation(source: SessionInfo, replacement: SessionInfo): void {
   replacement.listening = source.listening
@@ -32,26 +27,107 @@ function restoreSessionPresentation(source: SessionInfo, replacement: SessionInf
   refreshSessionVisual(replacement.threadId)
 }
 
-function sendHandoffNotification(result: SpawnResult, provider: SessionProvider, resumed: boolean, context: string): void {
-  // A fresh Claude process receives the handoff as its startup prompt. Claude
-  // --resume does not accept a prompt, so deliver it after its channel bridge
-  // reconnects. Codex accepts a prompt on both exec and exec resume.
-  if (provider === 'claude' && resumed) {
-    transport.sendOrQueue(result.sessionId, {
-      type: 'notification',
-      content: context,
-      meta: {
-        chat_id: result.threadId,
-        message_id: '',
-        user: 'system',
-        user_id: 'system',
-        ts: new Date().toISOString(),
-      },
-    })
+function claudeTurnActive(tmuxName: string): boolean {
+  try {
+    const pane = execSync(`tmux capture-pane -p -t '${tmuxName}' -S -10`, { encoding: 'utf8' })
+    return pane.split('\n').filter(line => line.trim()).slice(-4).some(line => /esc to interrupt/i.test(line))
+  } catch {
+    return false
   }
 }
 
-export async function handleProviderIntercept(msg: InboundMessage, target: SessionProvider): Promise<void> {
+function legacyCodexTurnActive(tmuxName: string): boolean {
+  try {
+    const roots = execSync(`tmux list-panes -t '${tmuxName}' -F '#{pane_pid}'`, { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+    const seen = new Set(roots)
+    let frontier = roots
+    for (let depth = 0; depth < 5 && frontier.length > 0; depth++) {
+      const next: string[] = []
+      for (const pid of frontier) {
+        let children = ''
+        try { children = execSync(`pgrep -P ${pid}`, { encoding: 'utf8' }).trim() } catch {}
+        for (const child of children.split('\n').filter(Boolean)) {
+          if (!seen.has(child)) { seen.add(child); next.push(child) }
+        }
+      }
+      frontier = next
+    }
+    for (const pid of seen) {
+      const command = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8' })
+      if (/\bcodex\b.*\bexec\b/.test(command)) return true
+    }
+  } catch {}
+  return false
+}
+
+function remainingPhaseBudget(source: SessionInfo): number | undefined {
+  return source.budgetDeadline ? Math.max(1, source.budgetDeadline - Date.now()) : undefined
+}
+
+type HandoffLeg = {
+  sourceInfo: SessionInfo
+  target: SessionEngine
+  topic: string
+  context: string
+  handedOffFrom: string
+  resumeFrom?: string
+  model?: string
+  effort?: string
+  idempotencyKey?: string
+}
+
+async function spawnHandoffLeg(opts: HandoffLeg): Promise<{ result: SpawnResult; resumed: boolean }> {
+  const reuseWorktree = worktreeRef(opts.sourceInfo)
+  const attempts = opts.resumeFrom ? [opts.resumeFrom, undefined] : [undefined]
+  let lastError: unknown
+
+  for (const resumeFrom of attempts) {
+    let result: SpawnResult | undefined
+    let continuity = { watches: 0, messages: 0 }
+    try {
+      result = await doSpawnSession(opts.topic, undefined, undefined, {
+        existingThreadId: opts.sourceInfo.threadId,
+        handedOffFrom: opts.handedOffFrom,
+        engine: opts.target,
+        model: opts.model,
+        effort: opts.effort,
+        promptPrefix: opts.context,
+        initiator: opts.sourceInfo.initiator,
+        ephemeral: opts.sourceInfo.ephemeral,
+        phaseBudgetMs: remainingPhaseBudget(opts.sourceInfo),
+        ...(resumeFrom ? { resumeFrom } : {}),
+        ...(reuseWorktree ? { reuseWorktree } : {}),
+      })
+      await assertHealthySpawn(result, opts.target, { preserveWorktree: true })
+      const replacement = registry.get(result.sessionId)
+      if (replacement) restoreSessionPresentation(opts.sourceInfo, replacement)
+      setProviderHandoffRoute(opts.sourceInfo.threadId, result.sessionId)
+      if (opts.idempotencyKey) updateIdempotency(opts.idempotencyKey, { sessionId: result.sessionId })
+      continuity = completeSessionContinuity(opts.sourceInfo.threadId, opts.sourceInfo.sessionId, result.sessionId)
+      return { result, resumed: !!resumeFrom }
+    } catch (error) {
+      lastError = error
+      if (result && (continuity.watches > 0 || continuity.messages > 0)) {
+        transferSessionContinuity(result.sessionId, opts.sourceInfo.sessionId)
+      }
+      setProviderHandoffRoute(opts.sourceInfo.threadId, opts.sourceInfo.sessionId)
+      if (result) {
+        const failed = registry.get(result.sessionId)
+        if (failed) {
+          await killSession(failed, 'provider handoff failed', {
+            silent: true,
+            preserveWorktree: true,
+            preserveWatches: true,
+            emitDeath: false,
+          }).catch(() => {})
+        }
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+export async function handleProviderIntercept(msg: InboundMessage, target: SessionEngine): Promise<void> {
   if (!msg.isThread) {
     await reportError(msg.channelId, msg.id, 'provider', 'must be used in a session thread')
     return
@@ -63,9 +139,19 @@ export async function handleProviderIntercept(msg: InboundMessage, target: Sessi
     return
   }
 
-  const source = sourceInfo.provider ?? 'claude'
+  const source = sessionEngine(sourceInfo)
   if (source === target) {
     await gateway.send(msg.channelId, `Already using provider \`${target}\`.`, { replyTo: msg.id }).catch(() => {})
+    return
+  }
+
+  const sourceBusy = sourceInfo.engine === 'codex'
+    ? codexEngine.isBusy(sourceInfo.sessionId)
+    : sourceInfo.provider === 'codex'
+      ? legacyCodexTurnActive(sourceInfo.tmuxName)
+      : source === 'claude' && claudeTurnActive(sourceInfo.tmuxName)
+  if (sourceBusy) {
+    await reportError(msg.channelId, msg.id, 'provider', `${source} is processing a turn`, 'Wait for it to finish or interrupt it before switching providers.')
     return
   }
 
@@ -74,7 +160,6 @@ export async function handleProviderIntercept(msg: InboundMessage, target: Sessi
     await reportError(msg.channelId, msg.id, 'provider', `a ${occupied} is active in this thread`, `Cancel the active ${occupied} before switching providers.`)
     return
   }
-
   if (providerHandoffsInProgress.has(sourceInfo.threadId)) {
     await gateway.send(msg.channelId, 'A provider handoff is already in progress.', { replyTo: msg.id }).catch(() => {})
     return
@@ -82,116 +167,81 @@ export async function handleProviderIntercept(msg: InboundMessage, target: Sessi
   providerHandoffsInProgress.add(sourceInfo.threadId)
 
   try {
+    void gateway.react(msg.channelId, msg.id, '🔀').catch(() => {})
 
-  void gateway.react(msg.channelId, msg.id, '🔀').catch(() => {})
-
-  if (source === 'claude' && !sourceInfo.claudeSessionId) {
-    sourceInfo.claudeSessionId = discoverClaudeSessionId(sourceInfo.tmuxName) ?? undefined
-    registry.persist()
-  }
-
-  const thread = threadRegistry.get(sourceInfo.threadId)
-  const priorTarget = findLatestProviderConversation(thread?.sessionHistory ?? [], target)
-  const resumeFrom = target === 'codex' ? priorTarget?.codexSessionId : priorTarget?.claudeSessionId
-  const messages = await gateway.fetchMessages(sourceInfo.threadId, 100).catch(() => [])
-  const handoffContext = buildProviderHandoffContext(messages, source, target, priorTarget?.endedAt)
-  const rollbackContext = buildProviderHandoffContext(messages, target, source)
-  const topic = thread?.topic ?? sourceInfo.topic
-  const sourceSessionId = sourceInfo.sessionId
-  const idempotencyKey = getBySessionId(sourceSessionId)?.key
-  const sourceResumeFrom = nativeConversationId(sourceInfo, source)
-  const reuseWorktree = sourceInfo.worktreeRepo && sourceInfo.worktreePath ? {
-    repo: sourceInfo.worktreeRepo,
-    path: sourceInfo.worktreePath,
-    branch: sourceInfo.worktreeBranch ?? `wt/${sourceInfo.tmuxName}`,
-    name: sourceInfo.worktreeName ?? sourceInfo.tmuxName,
-  } : undefined
-
-  const targetModel = priorTarget?.model
-  const targetEffort = target === 'codex' ? priorTarget?.effort : undefined
-  let result: SpawnResult | undefined
-
-  try {
-    await killSession(sourceInfo, `provider handoff: ${source} → ${target}`, {
-      silent: true,
-      preserveWorktree: true,
-      preserveWatches: true,
-      emitDeath: false,
-    })
-
-    result = await doSpawnSession(topic, undefined, undefined, {
-      existingThreadId: sourceInfo.threadId,
-      handedOffFrom: sourceInfo.tmuxName,
-      provider: target,
-      model: targetModel,
-      effort: targetEffort,
-      promptPrefix: handoffContext,
-      initiator: sourceInfo.initiator,
-      ephemeral: sourceInfo.ephemeral,
-      ...(resumeFrom ? { resumeFrom } : {}),
-      ...(reuseWorktree ? { reuseWorktree } : {}),
-    })
-
-    if (!await waitForBridge(result.sessionId, HEALTH_TIMEOUT_MS)) {
-      throw new Error(`${target} bridge did not connect`)
+    if (source === 'claude' && !sourceInfo.claudeSessionId) {
+      sourceInfo.claudeSessionId = discoverClaudeSessionId(sourceInfo.tmuxName) ?? undefined
+      registry.persist()
     }
 
-    const replacement = registry.get(result.sessionId)
-    if (replacement) restoreSessionPresentation(sourceInfo, replacement)
-    transferWatches(sourceSessionId, result.sessionId)
-    if (idempotencyKey) updateIdempotency(idempotencyKey, { sessionId: result.sessionId })
-    sendHandoffNotification(result, target, !!resumeFrom, handoffContext)
-
-    const method = resumeFrom ? 'resumed its earlier conversation' : 'started a new conversation with thread history'
-    await gateway.send(msg.channelId, `🔀 Provider \`${source}\` → \`${target}\` — ${method}.`, { replyTo: msg.id }).catch(() => {})
-    debouncedRefreshListDisplay()
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-
-    // If the destination registered before failing its health check, retire it
-    // without destroying the shared worktree, then restore the source provider.
-    if (result) {
-      const failedTarget = registry.get(result.sessionId)
-      if (failedTarget) {
-        await killSession(failedTarget, 'provider handoff failed', {
-          silent: true,
-          preserveWorktree: true,
-          preserveWatches: true,
-          emitDeath: false,
-        }).catch(() => {})
-      }
+    const sourceResumeFrom = conversationId(sourceInfo, source)
+    if (!sourceResumeFrom) {
+      await reportError(msg.channelId, msg.id, 'provider', `could not resolve the active ${source} conversation ID`, 'The current provider was left running.')
+      return
     }
 
+    const thread = threadRegistry.get(sourceInfo.threadId)
+    const sourceSessionId = sourceInfo.sessionId
+    threadRegistry.setPendingContinuity(sourceInfo.threadId, sourceSessionId)
+    transport.hold(sourceSessionId)
+    setProviderHandoffRoute(sourceInfo.threadId, sourceSessionId)
+    const priorTarget = findLatestEngineConversation(thread?.sessionHistory ?? [], target)
+    const resumeFrom = priorTarget ? conversationId(priorTarget, target) : undefined
+    const messages = await gateway.fetchMessages(sourceInfo.threadId, 100).catch(() => [])
+    const handoffContext = buildProviderHandoffContext(messages, source, target, priorTarget?.endedAt)
+    const rollbackContext = buildProviderHandoffContext(messages, target, source)
+    const topic = thread?.topic ?? sourceInfo.topic
+    const idempotencyKey = getBySessionId(sourceSessionId)?.key
+    const targetModel = priorTarget?.model
+    const targetEffort = target === 'codex' ? priorTarget?.effort : undefined
     try {
-      const restored = await doSpawnSession(topic, undefined, undefined, {
-        existingThreadId: sourceInfo.threadId,
-        handedOffFrom: result?.name ?? sourceInfo.tmuxName,
-        provider: source,
-        model: sourceInfo.capabilities?.model,
-        effort: source === 'codex' ? sourceInfo.capabilities?.effort : undefined,
-        promptPrefix: rollbackContext,
-        initiator: sourceInfo.initiator,
-        ephemeral: sourceInfo.ephemeral,
-        ...(sourceResumeFrom ? { resumeFrom: sourceResumeFrom } : {}),
-        ...(reuseWorktree ? { reuseWorktree } : {}),
+      await killSession(sourceInfo, `provider handoff: ${source} → ${target}`, {
+        silent: true,
+        preserveWorktree: true,
+        preserveWatches: true,
+        emitDeath: false,
       })
-      if (!await waitForBridge(restored.sessionId, HEALTH_TIMEOUT_MS)) {
-        throw new Error(`${source} bridge did not reconnect`)
+
+      const { result, resumed } = await spawnHandoffLeg({
+        sourceInfo,
+        target,
+        topic,
+        context: handoffContext,
+        handedOffFrom: sourceInfo.tmuxName,
+        resumeFrom,
+        model: targetModel,
+        effort: targetEffort,
+        idempotencyKey,
+      })
+      const method = resumed ? 'resumed its earlier conversation' : 'started a new conversation with thread history'
+      await gateway.send(msg.channelId, `🔀 Provider \`${source}\` → \`${target}\` — ${method}.`, { replyTo: msg.id }).catch(() => {})
+      debouncedRefreshListDisplay()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+
+      try {
+        await spawnHandoffLeg({
+          sourceInfo,
+          target: source,
+          topic,
+          context: rollbackContext,
+          handedOffFrom: sourceInfo.tmuxName,
+          resumeFrom: sourceResumeFrom,
+          model: sourceInfo.capabilities?.model,
+          effort: source === 'codex' ? sourceInfo.capabilities?.effort : undefined,
+          idempotencyKey,
+        })
+        await gateway.send(msg.channelId, `❌ Could not switch to \`${target}\`: ${detail}. Restored \`${source}\`.`, { replyTo: msg.id }).catch(() => {})
+      } catch (restoreError) {
+        const restoreDetail = restoreError instanceof Error ? restoreError.message : String(restoreError)
+        if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
+        await gateway.send(msg.channelId, `❌ Could not switch to \`${target}\` (${detail}), and \`${source}\` could not be restored (${restoreDetail}). Use \`resume\` to recover.`, { replyTo: msg.id }).catch(() => {})
       }
-      const replacement = registry.get(restored.sessionId)
-      if (replacement) restoreSessionPresentation(sourceInfo, replacement)
-      transferWatches(sourceSessionId, restored.sessionId)
-      if (idempotencyKey) updateIdempotency(idempotencyKey, { sessionId: restored.sessionId })
-      sendHandoffNotification(restored, source, !!sourceResumeFrom, rollbackContext)
-      await gateway.send(msg.channelId, `❌ Could not switch to \`${target}\`: ${detail}. Restored \`${source}\`.`, { replyTo: msg.id }).catch(() => {})
-    } catch (restoreError) {
-      const restoreDetail = restoreError instanceof Error ? restoreError.message : String(restoreError)
-      if (idempotencyKey) updateIdempotency(idempotencyKey, { status: 'failed' })
-      await gateway.send(msg.channelId, `❌ Could not switch to \`${target}\` (${detail}), and \`${source}\` could not be restored (${restoreDetail}). Use \`resume\` to recover.`, { replyTo: msg.id }).catch(() => {})
+      debouncedRefreshListDisplay()
     }
-    debouncedRefreshListDisplay()
-  }
   } finally {
+    clearProviderHandoffRoute(sourceInfo.threadId)
+    transport.release(sourceInfo.sessionId)
     providerHandoffsInProgress.delete(sourceInfo.threadId)
   }
 }
@@ -214,17 +264,8 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     return
   }
 
-  const provider = info.provider ?? 'claude'
-  if (provider === 'codex' && !info.codexSessionId) {
-    const current = await getCodexContext(info.sessionId).catch(() => undefined)
-    if (current?.codexSessionId) {
-      info.codexSessionId = current.codexSessionId
-      registry.persist()
-    } else {
-      void gateway.send(msg.channelId, 'Fork unavailable — the Codex conversation ID is not available yet. Wait for the current turn to finish and retry.', { replyTo: msg.id }).catch(() => {})
-      return
-    }
-  } else if (provider === 'claude' && !info.claudeSessionId) {
+  const engine = sessionEngine(info)
+  if (engine === 'claude' && !info.claudeSessionId) {
     const discovered = discoverClaudeSessionId(info.tmuxName)
     if (discovered) {
       info.claudeSessionId = discovered
@@ -233,6 +274,9 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
       void gateway.send(msg.channelId, 'Fork unavailable — could not resolve Claude session ID.', { replyTo: msg.id }).catch(() => {})
       return
     }
+  } else if (engine === 'codex' && !conversationId(info, engine)) {
+    void gateway.send(msg.channelId, 'Fork unavailable — could not resolve Codex thread ID.', { replyTo: msg.id }).catch(() => {})
+    return
   }
 
   if (!tmuxHasSession(info.tmuxName)) {
@@ -249,23 +293,27 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
   const thread = threadRegistry.get(info.threadId)
   const forkTopic = description || `continuing: ${thread?.topic ?? info.description ?? 'session'}`
   const baseChatId = msg.parentChannelId ?? msg.channelId
+  const parentWorktree = worktreeRef(info)
+  if (parentWorktree) {
+    const status = Bun.spawnSync(['git', '-C', parentWorktree.path, 'status', '--porcelain'], { stderr: 'ignore' })
+    if (status.exitCode !== 0 || status.stdout.toString().trim()) {
+      await gateway.send(msg.channelId, 'Fork unavailable while this worktree has uncommitted changes; commit or stash them first.', { replyTo: msg.id }).catch(() => {})
+      return
+    }
+  }
 
   try {
-    const forkFrom = provider === 'codex'
-      ? {
-        codexSessionId: await forkCodexSession(info.codexSessionId!, {
-          cwd: info.capabilities?.cwd,
-          model: info.capabilities?.model,
-        }),
-        parentName,
-      }
+    const forkFrom = engine === 'codex'
+      ? { codexThreadId: conversationId(info, engine)!, parentName }
       : { claudeSessionId: info.claudeSessionId!, parentName }
     const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
       forkFrom,
       model: info.capabilities?.model,
-      effort: provider === 'codex' ? info.capabilities?.effort : undefined,
-      provider,
+      effort: engine === 'codex' ? info.capabilities?.effort : undefined,
+      engine,
+      ...(parentWorktree ? { forkWorktreeFrom: parentWorktree } : {}),
     })
+    await assertHealthySpawn(result, engine)
 
     const pe = sessionEmoji(parentName)
     const ce = sessionEmoji(result.name)
@@ -287,18 +335,17 @@ export async function handleForkIntercept(msg: InboundMessage, description?: str
     debouncedRefreshListDisplay()
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    if (provider === 'codex') {
-      process.stderr.write(`daemon: Codex fork failed: ${errMsg}\n`)
-      try { await gateway.send(msg.channelId, `Codex fork failed: ${errMsg}. The parent session is unchanged.`, { replyTo: msg.id }) } catch {}
-      return
-    }
     process.stderr.write(`daemon: fork failed, falling back to spawn: ${errMsg}\n`)
     try {
       await gateway.send(msg.channelId, `⚠️ Fork failed — spawning fresh session that will read the thread for context.`, { replyTo: msg.id })
       const result = await doSpawnSession(forkTopic, baseChatId, undefined, {
         resurrectFrom: parentName,
         model: info.capabilities?.model,
+        effort: engine === 'codex' ? info.capabilities?.effort : undefined,
+        engine,
+        ...(parentWorktree ? { forkWorktreeFrom: parentWorktree } : {}),
       })
+      await assertHealthySpawn(result, engine)
       const e = sessionEmoji(result.name)
       await gateway.send(msg.channelId, `${e} \`${result.name}\` spawned (reading thread from **${parentName}**)${result.url ? ` — ${result.url}` : ''}`, { replyTo: msg.id })
       debouncedRefreshListDisplay()
@@ -392,37 +439,64 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
   if (liveSessionId) {
     const liveInfo = registry.get(liveSessionId)
     if (liveInfo) {
-      if (tmuxHasSession(liveInfo.tmuxName)) {
-        void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
-        try { await gateway.send(msg.channelId, `Session **${liveInfo.tmuxName}** is already running.`, { replyTo: msg.id }) } catch {}
-        return
+      if (!liveInfo.deadAt && tmuxHasSession(liveInfo.tmuxName)) {
+        if (thread.pendingContinuitySessionId) {
+          const pendingSessionId = thread.pendingContinuitySessionId
+          if (liveSessionId === pendingSessionId || transport.has(liveSessionId)) {
+            completeSessionContinuity(threadId, pendingSessionId, liveSessionId)
+            void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+            try { await gateway.send(msg.channelId, `Recovered live session **${liveInfo.tmuxName}** and restored queued messages.`, { replyTo: msg.id }) } catch {}
+            return
+          }
+          try {
+            await killSession(liveInfo, 'interrupted provider handoff recovery', {
+              silent: true,
+              preserveWorktree: true,
+              preserveWatches: true,
+              emitDeath: false,
+            })
+          } catch (error) {
+            await reportError(msg.channelId, msg.id, 'resume', `could not stop the incomplete handoff session: ${error instanceof Error ? error.message : error}`)
+            return
+          }
+        } else {
+          void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
+          try { await gateway.send(msg.channelId, `Session **${liveInfo.tmuxName}** is already running.`, { replyTo: msg.id }) } catch {}
+          return
+        }
       }
     }
   }
 
-  // Thread is detached — find the provider conversation ID from history.
+  // Thread is detached — recover the last provider's native conversation.
   const lastSession = thread.sessionHistory[thread.sessionHistory.length - 1]
-  const claudeSessionId = lastSession?.claudeSessionId
-  const codexSessionId = lastSession?.codexSessionId
-  const provider = lastSession?.provider ?? 'claude'
+  const continuitySessionId = thread.pendingContinuitySessionId ?? lastSession?.sessionId
+  const deadInfo = registry.get(lastSession?.sessionId ?? '')
+  const claudeSessionId = lastSession?.claudeSessionId ?? deadInfo?.claudeSessionId
+  const codexThreadId = lastSession?.codexThreadId ?? lastSession?.codexSessionId ?? deadInfo?.codexThreadId ?? deadInfo?.codexSessionId
+  const engine = lastSession ? sessionEngine(lastSession) : deadInfo ? sessionEngine(deadInfo) : 'claude'
   const lastTmuxName = lastSession?.tmuxName ?? thread.threadId.slice(0, 8)
-  const deadModel = lastSession?.model ?? registry.get(lastSession?.sessionId ?? '')?.capabilities?.model
-  const deadEffort = lastSession?.effort ?? registry.get(lastSession?.sessionId ?? '')?.capabilities?.effort
+  const deadModel = lastSession?.model ?? deadInfo?.capabilities?.model
+  const deadEffort = lastSession?.effort ?? deadInfo?.capabilities?.effort
+  const reuseWorktree = (lastSession ? recoverableWorktreeRef(lastSession) : undefined)
+    ?? (deadInfo ? recoverableWorktreeRef(deadInfo) : undefined)
 
   void gateway.react(msg.channelId, msg.id, '⏯️').catch(() => {})
 
   // Three-tier cascade: resume → fork-from-dead → respawn
-  if (claudeSessionId || codexSessionId) {
+  if (claudeSessionId || codexThreadId) {
     // Tier 1: full resume (--resume, same conversation)
     const result = await tryResume({
+      sessionId: continuitySessionId,
       topic: thread.topic,
       threadId: thread.threadId,
       claudeSessionId,
-      codexSessionId,
-      provider,
+      codexThreadId,
+      engine,
       threadUrl: thread.threadUrl,
       model: deadModel,
       effort: deadEffort,
+      reuseWorktree,
     })
     if (result) {
       await announceRecovery(msg, result, thread, 'resumed — full context restored', '⏯️', lastTmuxName)
@@ -430,13 +504,25 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
     }
     process.stderr.write(`daemon: resume tier 1 (--resume) failed for ${lastTmuxName}, trying fork-from-dead\n`)
 
-    // Tier 2 is Claude-only: Codex resume already preserves its conversation.
-    if (provider === 'claude' && claudeSessionId) try {
+    // Tier 2: fork from the dead provider conversation.
+    try {
+      const forkFrom = engine === 'codex'
+        ? { codexThreadId: codexThreadId!, parentName: lastTmuxName }
+        : { claudeSessionId: claudeSessionId!, parentName: lastTmuxName }
       const forkResult = await doSpawnSession(thread.topic, undefined, undefined, {
         existingThreadId: thread.threadId,
-        forkFrom: { claudeSessionId, parentName: lastTmuxName },
+        forkFrom,
         model: deadModel,
+        effort: deadEffort,
+        engine,
+        reuseWorktree,
+        replacesSessionId: continuitySessionId,
       })
+      await assertHealthySpawn(forkResult, engine, {
+        preserveWorktree: !!reuseWorktree,
+        previousSessionId: continuitySessionId,
+      })
+      if (continuitySessionId) completeSessionContinuity(thread.threadId, continuitySessionId, forkResult.sessionId)
       await announceRecovery(msg, forkResult, thread, 'resumed (forked from dead session — transcript preserved)', '⏯️', lastTmuxName)
       return
     } catch {
@@ -445,7 +531,10 @@ export async function handleResumeIntercept(msg: InboundMessage): Promise<void> 
   }
 
   // Tier 3: respawn (fresh session reads thread history)
-  const t3result = await tryRespawn(threadId, thread.topic, lastTmuxName, deadModel, provider, deadEffort)
+  const t3result = await tryRespawn({
+    threadId, topic: thread.topic, resurrectFrom: lastTmuxName, model: deadModel, engine, effort: deadEffort,
+    reuseWorktree, replacesSessionId: continuitySessionId,
+  })
   if (t3result) {
     await announceRecovery(msg, t3result, thread, 'respawned (resume unavailable — reading thread history)', '🔁', lastTmuxName)
   } else {
@@ -466,7 +555,7 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
   if (respawnLiveId) {
     const liveInfo = registry.get(respawnLiveId)
     if (liveInfo) {
-      if (tmuxHasSession(liveInfo.tmuxName)) {
+      if (!liveInfo.deadAt && tmuxHasSession(liveInfo.tmuxName)) {
         await reportError(msg.channelId, msg.id, 'respawn', `thread has a live session (**${liveInfo.tmuxName}**)`, 'Use `kill` first, or `spawn:` for a new thread.')
         return
       }
@@ -476,13 +565,20 @@ export async function handleRespawnIntercept(msg: InboundMessage, topic?: string
   void gateway.react(msg.channelId, msg.id, '🔁').catch(() => {})
 
   const lastSession = thread?.sessionHistory[thread.sessionHistory.length - 1]
+  const continuitySessionId = thread?.pendingContinuitySessionId ?? lastSession?.sessionId
   const resolvedTopic = topic || thread?.topic || 'respawned session'
   const resurrectFrom = lastSession?.tmuxName
-  const deadModel = lastSession?.model ?? registry.get(lastSession?.sessionId ?? '')?.capabilities?.model
-  const deadEffort = lastSession?.effort ?? registry.get(lastSession?.sessionId ?? '')?.capabilities?.effort
-  const provider = lastSession?.provider ?? 'claude'
+  const deadInfo = registry.get(lastSession?.sessionId ?? '')
+  const deadModel = lastSession?.model ?? deadInfo?.capabilities?.model
+  const engine = lastSession ? sessionEngine(lastSession) : 'claude'
+  const deadEffort = lastSession?.effort ?? deadInfo?.capabilities?.effort
+  const reuseWorktree = (lastSession ? recoverableWorktreeRef(lastSession) : undefined)
+    ?? (deadInfo ? recoverableWorktreeRef(deadInfo) : undefined)
 
-  const result = await tryRespawn(threadId, resolvedTopic, resurrectFrom, deadModel, provider, deadEffort)
+  const result = await tryRespawn({
+    threadId, topic: resolvedTopic, resurrectFrom, model: deadModel, engine, effort: deadEffort,
+    reuseWorktree, replacesSessionId: continuitySessionId,
+  })
   if (result) {
     const e = sessionEmoji(result.name)
     const count = thread?.respawnCount ?? 0

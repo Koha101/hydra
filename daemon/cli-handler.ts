@@ -91,7 +91,7 @@ async function handleSpawn(req: CLIRequest): Promise<CLIResponse> {
 
   let result
   try {
-    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral, provider, trigger: 'CLI' })
+    result = await doSpawnSession(prompt, channel ?? undefined, message ?? undefined, { initiator, model, ephemeral, engine: provider, trigger: 'CLI' })
   } catch (err) {
     updateIdempotency(idempotencyKey, { status: 'failed' })
     throw err
@@ -126,7 +126,6 @@ function handleList(req: CLIRequest): CLIResponse {
     context: getContextPercent(s.tmuxName),
     running_for: formatDuration(Date.now() - s.createdAt),
     status: transport.has(s.sessionId) ? 'connected' : 'disconnected',
-    provider: s.provider ?? 'claude',
   }))
   return respond(req, true, list)
 }
@@ -157,7 +156,6 @@ function handleStatus(req: CLIRequest): CLIResponse {
     bridge: transport.has(info.sessionId) ? 'connected' : 'disconnected',
     tmux: tmuxAlive ? 'alive' : 'dead',
     origin: info.originType,
-    provider: info.provider ?? 'claude',
   })
 }
 

@@ -56,6 +56,7 @@ export type BuildState = StatusLineState & {
   worktreePath?: string
   worktreeBranch?: string
   model?: string
+  engine?: 'claude' | 'codex'
   _closing?: { approved: boolean; lastCriticText: string }  // set on closing entry, cleared at completion
 }
 
@@ -150,6 +151,7 @@ export async function startBuild(
   task?: string,
   worktreeTarget?: string,
   model?: string,
+  engine?: 'claude' | 'codex',
 ): Promise<BuildState> {
   if (threadToBuild.has(ownerThreadId)) {
     throw new Error('A build is already in progress in this thread')
@@ -209,6 +211,7 @@ export async function startBuild(
     worktreePath,
     worktreeBranch,
     model,
+    ...(engine ? { engine } : {}),
   }
 
   builds.set(buildId, state)
@@ -309,6 +312,9 @@ export function onBuildReply(sessionId: string, text: string, chatId: string, se
     state.messageIds.push(...sentMessageIds)
     if (isLgtm || isFinal) {
       state.phase = result.to
+      // Set before the async requestBuildSummary — its killSession await
+      // creates a window where the owner can post [summary] and read _closing.
+      state._closing = { approved: isLgtm, lastCriticText: bodyText }
       void requestBuildSummary(state, bodyText, isLgtm).catch(err => {
         process.stderr.write(`daemon: requestBuildSummary failed: ${err}\n`)
         void cancelBuild(state.buildId).catch(e => process.stderr.write(`daemon: cancelBuild failed: ${e}\n`))
@@ -485,7 +491,6 @@ async function requestBuildSummary(state: BuildState, lastCriticText: string, ap
   if (state._heartbeat) clearInterval(state._heartbeat)
   if (state._criticDisconnectTimer) clearTimeout(state._criticDisconnectTimer)
   if (state._ownerDisconnectTimer) clearTimeout(state._ownerDisconnectTimer)
-  state._closing = { approved, lastCriticText }
 
   // Backstop: complete without a summary rather than hold the thread hostage.
   if (state.timeout) clearTimeout(state.timeout)
@@ -595,6 +600,7 @@ async function spawnCritic(state: BuildState, implementationText: string): Promi
       trigger: 'build',
       joinThread: state.ownerThreadId,
       model: criticModel,
+      ...(state.engine ? { engine: state.engine } : {}),
       promptBuilder: (sessionId, tmuxName) =>
         buildCriticPrompt({ sessionId, tmuxName, rounds: state.rounds, threadId: state.ownerThreadId, task: state.task, ownerCwd, implementationText }),
     })
@@ -672,3 +678,6 @@ registerProtocol('build', {
   },
 })
 
+export const __test = process.env.NODE_ENV === 'test'
+  ? { builds, sessionToBuild, ownerToBuild, threadToBuild } as const
+  : undefined

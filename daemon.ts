@@ -46,6 +46,7 @@ import { setupPermissionHandler } from './daemon/permission.js'
 import { setupGateApproval, writeApprovalDecision } from './daemon/gate-approval.js'
 import { socketServer, startBridgeServer, initEphemeralTimers } from './daemon/bridge-server.js'
 import { announceRestartComplete } from './daemon/commands/global.js'
+import { reconcilePendingContinuityOnBoot } from './daemon/provider-handoff.js'
 
 threadRegistry.boot(registry)
 
@@ -67,12 +68,25 @@ if (existsSync(SOCK_PATH)) {
   }
 }
 
+transport.restoreQueues()
+reconcilePendingContinuityOnBoot()
 startBridgeServer()
 initEphemeralTimers()
+
+// Reconnect persisted codex sessions to their app-server sockets
+import { reconnectCodexSessions } from './daemon/codex-bootstrap.js'
+reconnectCodexSessions().then(() => {
+  process.stderr.write('daemon: codex reconnection sweep complete\n')
+}).catch(err => {
+  process.stderr.write(`daemon: codex reconnection failed: ${err}\n`)
+})
 
 import { initPhaseBudgets } from './daemon/phase-budget.js'
 import { killSession } from './daemon/session-lifecycle.js'
 initPhaseBudgets(killSession)
+
+import { startVitalsSnapshots } from './daemon/observability.js'
+startVitalsSnapshots((id) => transport.has(id))
 
 import { refreshDashboard, refreshDashboardNow } from './daemon/dashboard.js'
 registry.onPersist = refreshDashboard

@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileS
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync, execFileSync } from 'child_process'
-import { spawnModel, marketplaceName } from '../shared/constants.js'
+import { spawnModel, marketplaceName, TRANSCRIBE_TMUX } from '../shared/constants.js'
 
 // ---------------------------------------------------------------------------
 // Config resolution (replaces env-setup.sh)
@@ -17,6 +17,7 @@ export type HydraConfig = {
   hydraDir: string
   daemonTmux: string
   byteTmux: string
+  transcribeTmux: string
   daemonLog: string
   byteLog: string
   watchdogLog: string
@@ -100,6 +101,7 @@ export function resolveConfig(platform?: string): HydraConfig {
     hydraDir,
     daemonTmux: `${platform}-daemon`,
     byteTmux: process.env.BYTE_SESSION_NAME ?? `${platform}-byte`,
+    transcribeTmux: TRANSCRIBE_TMUX,
     daemonLog: process.env.HYDRA_LOG ?? join(homedir(), `hydra-${platform}-daemon.log`),
     byteLog: process.env.HYDRA_BYTE_LOG ?? join(homedir(), `hydra-${platform}-byte.log`),
     watchdogLog: process.env.HYDRA_WATCHDOG_LOG ?? join(homedir(), 'hydra-watchdog.log'),
@@ -173,7 +175,7 @@ export function tmuxSessionAge(name: string): number | null {
 
 export async function compileCheck(hydraDir: string): Promise<{ ok: boolean; errors: string }> {
   const errors: string[] = []
-  for (const entry of ['daemon.ts', 'bridge.ts', 'codex-bridge.ts']) {
+  for (const entry of ['daemon.ts', 'bridge.ts']) {
     const result = await Bun.build({
       entrypoints: [join(hydraDir, entry)],
       target: 'bun',

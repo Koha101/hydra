@@ -554,8 +554,6 @@ export function unwatchBySession(sessionId: string): number {
   return removed
 }
 
-/** Preserve active watches when ownership moves to a replacement session in
- * the same thread (for example, a Claude → Codex provider handoff). */
 export function transferWatches(fromSessionId: string, toSessionId: string): number {
   let transferred = 0
   for (const entry of watches.values()) {

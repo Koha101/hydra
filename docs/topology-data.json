@@ -401,6 +401,10 @@
       "daemon_anchor-state"
     ],
     [
+      "daemon_bridge-dispatch",
+      "daemon_dashboard"
+    ],
+    [
       "daemon_bridge-server",
       "daemon_config"
     ],
@@ -451,6 +455,10 @@
     [
       "daemon_bridge-server",
       "daemon_main-guard"
+    ],
+    [
+      "daemon_bridge-server",
+      "daemon_util"
     ],
     [
       "daemon_permission",
@@ -563,6 +571,10 @@
     [
       "daemon_router",
       "daemon_commands_review"
+    ],
+    [
+      "daemon_router",
+      "daemon_adversarial"
     ],
     [
       "daemon_router",
@@ -915,10 +927,6 @@
     [
       "daemon_commands_thread",
       "daemon_protocol-registry"
-    ],
-    [
-      "daemon_commands_thread",
-      "daemon_pr-watch"
     ],
     [
       "daemon_commands_thread",

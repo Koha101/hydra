@@ -1,4 +1,5 @@
 export const DEFAULT_MODEL = 'claude-opus-4-8[1m]'
+export const TRANSCRIBE_TMUX = 'hydra-transcribe'
 
 export const KNOWN_MODELS = new Set([
   'claude-sonnet-5',
@@ -14,18 +15,7 @@ export const KNOWN_MODELS = new Set([
 
 /** Valid reasoning-effort levels for `/effort` (per `claude --help`). */
 export const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
-
-/** Valid Codex reasoning-effort values. Model support varies by value. */
-export const CODEX_EFFORT_LEVELS = new Set([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'ultra',
-])
+export const CODEX_EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
 
 /** Short aliases for chat commands like `spawn sonnet: topic`. */
 export const MODEL_ALIASES: Record<string, string> = {

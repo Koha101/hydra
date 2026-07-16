@@ -271,11 +271,6 @@ describe('formatSpawnLine', () => {
     expect(formatSpawnLine({ roleLabel: 'contract-lawyer', emoji: '🗺️', name: 'atlas', model: 'm', trigger: 'design' }))
       .toBe('> ⚡ spawned [ The Contract-Lawyer • 🗺️ atlas ] · model `m` · by design')
   })
-
-  test('Codex spawn includes provider and non-default effort', () => {
-    expect(formatSpawnLine({ emoji: '⚛️', name: 'qubit', model: 'gpt-5.6', provider: 'codex', effort: 'ultra', trigger: 'spawn:', initiator: 'dan' }))
-      .toBe('> ⚡ spawned [ ⚛️ qubit ] · model `gpt-5.6` · provider `codex` · effort `ultra` · by spawn: from dan')
-  })
 })
 // parseDuration() / extractPhaseBudget()
 // ---------------------------------------------------------------------------

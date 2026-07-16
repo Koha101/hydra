@@ -5,11 +5,13 @@ import { loadAccess, gate } from './access.js'
 import type { Access } from './access.js'
 import type { DownloadedFile } from '../gateway.js'
 import type { InboundMessage } from '../gateway.js'
+import { transcribeDownloads, mergeTranscripts } from './transcription.js'
 
 import { handleSpawnIntercept, handleTemplateSpawn, handleKillIntercept, handleRestartIntercept, handleReconnectIntercept, handleCommandsIntercept, handleRecoverIntercept } from './commands/global.js'
 import { resolveModelAlias, extractModelPrefix, MODEL_ALIAS_PATTERN, MODEL_ALIASES } from '../shared/constants.js'
-import { handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept, handleProviderIntercept } from './commands/thread.js'
+import { handleProviderIntercept, handleThreadKillIntercept, handleForkIntercept, handleForksIntercept, handleResumeIntercept, handleRespawnIntercept } from './commands/thread.js'
 import { handleReviewIntercept, handleCancelReviewIntercept } from './commands/review.js'
+import { listPostPasses } from './adversarial.js'
 import { handleBuildIntercept, handleCancelBuildIntercept } from './commands/build.js'
 import { handleDesignIntercept, handleCancelDesignIntercept } from './commands/design.js'
 import { getDesignByThread, handleDesignAnswer } from './design.js'
@@ -21,6 +23,7 @@ import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } 
 import { killSession } from './session-lifecycle.js'
 import { isAlive, reportError } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
+import { chooseDeliverySession, isRecoveryCommand, isSessionCommand, providerHandoffRoute } from './provider-handoff.js'
 
 // Global command prefixes — gated on top-level allowFrom. Thread-scoped
 // commands (fork, watch, build, respawn, resume) are excluded: those are
@@ -28,7 +31,6 @@ import { listTemplates, getTemplate } from './templates.js'
 // can never trigger them.
 const COMMAND_PREFIXES = [
   'new session:', 'spawn:', '/spawn', 'spawn-wt:', '/spawn-wt',
-  'spawn codex', 'new session codex', 'spawn claude', 'new session claude',
   ...Object.keys(MODEL_ALIASES).flatMap(a => [`spawn ${a}:`, `new session ${a}:`, `spawn-wt ${a}:`]),
   'kill session:', 'kill:', '/kill',
   '/sessions', 'list sessions',
@@ -44,10 +46,10 @@ const COMMAND_RE = new RegExp(
   `^(?:${COMMAND_PREFIXES.map(p => p.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')).join('|')})(?:\\s|$)`, 'i',
 )
 const SPAWN_MODEL_RE = new RegExp(`^(?:new session|spawn)\\s+(${MODEL_ALIAS_PATTERN}):\\s*([\\s\\S]+)`, 'i')
+const SPAWN_ENGINE_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
 const SPAWN_WT_MODEL_RE = new RegExp(`^(?:spawn-wt|/spawn-wt)\\s+(${MODEL_ALIAS_PATTERN}):\\s*(\\S+)\\s+([\\s\\S]+)`, 'i')
 const BARE_ALIAS_RE = new RegExp(`^(${MODEL_ALIAS_PATTERN}):?$`, 'i')
-const SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*([\s\S]+)/i
-const EMPTY_SPAWN_PROVIDER_RE = /^(?:new session|\/?spawn)\s+(claude|codex)(?:\s+(\S+))?:\s*$/i
+const BARE_ENGINE_RE = /^(claude|codex):?\s*$/i
 
 // ---------------------------------------------------------------------------
 // Notification payload builder (auto-downloads attachments)
@@ -72,7 +74,19 @@ async function buildNotificationPayload(
         const kb = (att.size / 1024).toFixed(0)
         return `${att.name} (${att.contentType ?? 'unknown'}, ${kb}KB)`
       })
-  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+
+  // Voice dictation: transcribe any audio attachments so Claude reads the
+  // spoken prompt as text. The original audio file stays in downloaded_files,
+  // so Claude can still inspect it if needed. No-op unless transcription is
+  // enabled and an audio file is present.
+  const transcripts = downloadedFiles.length > 0
+    ? await transcribeDownloads(downloadedFiles)
+    : []
+
+  let content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+  if (transcripts.length > 0) {
+    content = mergeTranscripts(content, transcripts)
+  }
 
   let threadContext: Record<string, string> = {}
   if (msg.isThread) {
@@ -95,6 +109,7 @@ async function buildNotificationPayload(
     ts: msg.createdAt.toISOString(),
     ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
     ...(downloadedFiles.length > 0 ? { downloaded_files: downloadedFiles.map(f => f.path).join('; ') } : {}),
+    ...(transcripts.length > 0 ? { voice_transcript_count: String(transcripts.length) } : {}),
     ...threadContext,
   }
 
@@ -193,13 +208,33 @@ async function wakeIfStuck(tmux: string): Promise<void> {
   }
 }
 
-async function deliverToSession(msg: InboundMessage, targetSessionId: string, access: Access): Promise<void> {
-  void gateway.typing(msg.channelId).catch(() => {})
+async function deliverToSession(
+  msg: InboundMessage,
+  targetSessionId: string,
+  access: Access,
+  chatIdOverride?: string,
+): Promise<void> {
   if (access.ackReaction) {
     void gateway.react(msg.channelId, msg.id, access.ackReaction).catch(() => {})
   }
 
-  const sessionInfo = registry.get(targetSessionId)
+  const resolvedThreadId = msg.isThread ? registry.resolveThreadId(msg) : undefined
+  const initialSessionInfo = registry.get(targetSessionId)
+  const chatId = chatIdOverride ?? resolvedThreadId ?? initialSessionInfo?.threadId ?? msg.channelId
+  const { content, meta } = await buildNotificationPayload(msg, chatId)
+
+  const transitionSession = resolvedThreadId ? providerHandoffRoute(resolvedThreadId) : undefined
+  const pendingSession = resolvedThreadId ? threadRegistry.get(resolvedThreadId)?.pendingContinuitySessionId : undefined
+  const mappedSessionId = resolvedThreadId ? registry.getByThread(resolvedThreadId) : undefined
+  const mappedInfo = mappedSessionId ? registry.get(mappedSessionId) : undefined
+  const mappedSession = mappedInfo && isAlive(mappedInfo) ? mappedSessionId : undefined
+  const deliverySessionId = chooseDeliverySession(
+    targetSessionId,
+    transitionSession,
+    pendingSession,
+    mappedSession,
+  )
+  const sessionInfo = registry.get(deliverySessionId)
   if (sessionInfo) {
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
     const thread = threadRegistry.get(sessionInfo.threadId)
@@ -213,10 +248,7 @@ async function deliverToSession(msg: InboundMessage, targetSessionId: string, ac
       registry.debouncedPersist()
     }
   }
-  const chatId = sessionInfo?.threadId ?? msg.channelId
-
-  const { content, meta } = await buildNotificationPayload(msg, chatId)
-  transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
+  transport.sendOrQueue(deliverySessionId, { type: 'notification', content, meta })
   if (sessionInfo) void wakeIfStuck(sessionInfo.tmuxName)
 }
 
@@ -284,25 +316,27 @@ gateway.onMessage(async (msg: InboundMessage) => {
   }
 
   if (isAllowed) {
-    // "/spawn codex [model]: topic" and "/spawn claude [model]: topic".
-    // Native Discord /spawn interactions are translated to this form too.
-    const spawnProviderMatch = msg.content.match(SPAWN_PROVIDER_RE)
-    if (spawnProviderMatch) {
-      const provider = spawnProviderMatch[1].toLowerCase() as 'claude' | 'codex'
-      const model = spawnProviderMatch[2]
-      const topic = spawnProviderMatch[3].trim()
-      if (topic) {
-        void handleSpawnIntercept(msg, topic, access, model, provider)
+    if (msg.isThread && isSessionCommand(msg.content)) {
+      const threadId = registry.resolveThreadId(msg)
+      const activeHandoff = providerHandoffRoute(threadId)
+      const pendingContinuity = threadRegistry.get(threadId)?.pendingContinuitySessionId
+      if (activeHandoff || (pendingContinuity && !isRecoveryCommand(msg.content))) {
+        const content = activeHandoff
+          ? 'Provider handoff in progress; retry this command after it finishes.'
+          : 'Provider handoff recovery is pending; use `resume` or `respawn` first.'
+        void gateway.send(msg.channelId, content, { replyTo: msg.id }).catch(() => {})
         return
       }
     }
 
-    const emptySpawnProviderMatch = msg.content.match(EMPTY_SPAWN_PROVIDER_RE)
-    if (emptySpawnProviderMatch) {
-      const provider = emptySpawnProviderMatch[1].toLowerCase()
-      const model = emptySpawnProviderMatch[2]
-      void gateway.send(msg.channelId, `_\`spawn ${provider}${model ? ` ${model}` : ''}:\` needs a topic._`, { replyTo: msg.id })
-      return
+    // "spawn codex: topic" / "spawn claude opus: topic" — engine with optional model
+    const spawnEngineMatch = msg.content.match(SPAWN_ENGINE_RE)
+    if (spawnEngineMatch) {
+      const topic = spawnEngineMatch[3].trim()
+      if (topic) {
+        void handleSpawnIntercept(msg, topic, access, spawnEngineMatch[2] || undefined, spawnEngineMatch[1].toLowerCase() as 'claude' | 'codex')
+        return
+      }
     }
 
     // "spawn sonnet: topic" / "new session haiku: topic" — model alias before colon
@@ -319,9 +353,10 @@ gateway.onMessage(async (msg: InboundMessage) => {
     if (spawnMatch) {
       const topic = spawnMatch[1].trim()
       // Catch "spawn sonnet:" (alias without topic) — don't spawn with "sonnet:" as topic
-      const bareAlias = topic.match(BARE_ALIAS_RE)
+      const bareAlias = topic.match(BARE_ALIAS_RE) || topic.match(BARE_ENGINE_RE)
       if (bareAlias) {
-        void gateway.send(msg.channelId, `_\`spawn ${bareAlias[1]}:\` needs a topic — e.g. \`spawn ${bareAlias[1]}: describe the task\`_`, { replyTo: msg.id })
+        const alias = bareAlias[1]
+        void gateway.send(msg.channelId, `_\`spawn ${alias}:\` needs a topic — e.g. \`spawn ${alias}: describe the task\`_`, { replyTo: msg.id })
         return
       }
       if (topic) {
@@ -531,11 +566,14 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const reviewMatch = msg.content.match(/^(?:\/review|review)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (reviewMatch) {
-        const preModel = reviewMatch[1] ? resolveModelAlias(reviewMatch[1]) : undefined
-        const postModel = reviewMatch[3] ? resolveModelAlias(reviewMatch[3]) : undefined
+        const preAlias = reviewMatch[1]?.toLowerCase()
+        const postAlias = reviewMatch[3]?.toLowerCase()
+        const isCodex = preAlias === 'codex' || postAlias === 'codex'
+        const preModel = (preAlias && preAlias !== 'codex') ? resolveModelAlias(preAlias) : undefined
+        const postModel = (postAlias && postAlias !== 'codex') ? resolveModelAlias(postAlias) : undefined
         const modelId = preModel ?? postModel
         const rounds = parseInt(reviewMatch[2] ?? '3')
-        const topic = reviewMatch[4]?.trim()
+        let topic = reviewMatch[4]?.trim()
         // Detect wrong order: "review fable 3 topic" (alias without colon)
         if (!modelId && topic) {
           const badOrder = topic.match(/^(\S+)\s+(\d+)\b/)
@@ -544,7 +582,15 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
         }
-        void handleReviewIntercept(msg, rounds, topic, modelId)
+        // Parse +pass suffixes — only match known pass names to avoid collisions with
+        // natural language (e.g. "+1 error handling" shouldn't extract "1" as a pass)
+        const knownPasses = listPostPasses()
+        const passRe = new RegExp(`\\+(${knownPasses.join('|')})\\b`, 'g')
+        const postPasses = [...(topic ?? '').matchAll(passRe)].map(m => m[1])
+        if (postPasses.length > 0) {
+          topic = topic!.replace(passRe, '').replace(/\s{2,}/g, ' ').trim() || undefined
+        }
+        void handleReviewIntercept(msg, rounds, topic, modelId, postPasses.length > 0 ? postPasses : undefined, isCodex ? 'codex' : undefined)
         return
       }
 
@@ -569,8 +615,11 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
       const buildMatch = msg.content.match(/^(?:\/build|build)\s*(?:(\S+?):\s+)?(\d+)?\s*(?:(\S+?):\s+)?([\s\S]+)?$/i)
       if (buildMatch) {
-        const preModel = buildMatch[1] ? resolveModelAlias(buildMatch[1]) : undefined
-        const postModel = buildMatch[3] ? resolveModelAlias(buildMatch[3]) : undefined
+        const buildPreAlias = buildMatch[1]?.toLowerCase()
+        const buildPostAlias = buildMatch[3]?.toLowerCase()
+        const buildIsCodex = buildPreAlias === 'codex' || buildPostAlias === 'codex'
+        const preModel = (buildPreAlias && buildPreAlias !== 'codex') ? resolveModelAlias(buildPreAlias) : undefined
+        const postModel = (buildPostAlias && buildPostAlias !== 'codex') ? resolveModelAlias(buildPostAlias) : undefined
         const buildModelId = preModel ?? postModel
         const buildRounds = parseInt(buildMatch[2] ?? '3')
         const buildTask = buildMatch[4]?.trim()
@@ -581,7 +630,7 @@ gateway.onMessage(async (msg: InboundMessage) => {
             return
           }
         }
-        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId)
+        void handleBuildIntercept(msg, buildRounds, buildTask, undefined, buildModelId, buildIsCodex ? 'codex' : undefined)
         return
       }
 
@@ -633,6 +682,12 @@ gateway.onMessage(async (msg: InboundMessage) => {
 
     if (msg.isThread) {
       const resolvedThreadId = registry.resolveThreadId(msg)
+      const transitionSession = providerHandoffRoute(resolvedThreadId)
+        ?? threadRegistry.get(resolvedThreadId)?.pendingContinuitySessionId
+      if (transitionSession) {
+        void deliverToSession(msg, transitionSession, access)
+        return
+      }
       const mappedSession = registry.getByThread(resolvedThreadId)
       process.stderr.write(`daemon: thread routing: channelId=${msg.channelId} effectiveThreadId=${msg.effectiveThreadId} resolvedThreadId=${resolvedThreadId} mappedSession=${mappedSession ?? 'none'} threadToSession keys=[${[...registry.threadToSession.keys()].join(',')}]\n`)
       if (mappedSession) {
@@ -648,6 +703,31 @@ gateway.onMessage(async (msg: InboundMessage) => {
               threadRegistry.persist()
             }
             void gateway.react(msg.channelId, msg.id, info.listening ? '👂' : '🔇').catch(() => {})
+            return
+          }
+
+          const permReplyMatch = msg.content.match(/^(allow|deny)\s*$/i)
+          if (permReplyMatch) {
+            const behavior = permReplyMatch[1].toLowerCase() === 'allow' ? 'allow' : 'deny'
+            // Find the most recent pending permission for this session
+            let foundId: string | undefined
+            for (const [reqId, perm] of pendingPermissions) {
+              if (perm.sessionId === mappedSession) foundId = reqId
+            }
+            if (foundId) {
+              const targetBridge = transport.get(mappedSession)
+              if (targetBridge) {
+                transport.sendToBridge(targetBridge, {
+                  type: 'permission_response',
+                  request_id: foundId,
+                  behavior,
+                })
+              }
+              pendingPermissions.delete(foundId)
+              void gateway.react(msg.channelId, msg.id, behavior === 'allow' ? '✅' : '❌').catch(() => {})
+            } else {
+              void gateway.send(msg.channelId, '_No pending permission for this session._', { replyTo: msg.id }).catch(() => {})
+            }
             return
           }
 
@@ -752,19 +832,17 @@ gateway.onMessage(async (msg: InboundMessage) => {
     }
   }
 
-  void gateway.typing(msg.channelId).catch(() => {})
-
-  if (result.access.ackReaction) {
-    void gateway.react(msg.channelId, msg.id, result.access.ackReaction).catch(() => {})
-  }
-
   let targetSessionId = 'main'
   let effectiveChatId = chat_id
 
   if (msg.isThread) {
     const rtid = registry.resolveThreadId(msg)
+    const handoffSession = providerHandoffRoute(rtid) ?? threadRegistry.get(rtid)?.pendingContinuitySessionId
     const mappedSession = registry.getByThread(rtid)
-    if (mappedSession && registry.has(mappedSession)) {
+    if (handoffSession) {
+      targetSessionId = handoffSession
+      effectiveChatId = rtid
+    } else if (mappedSession && registry.has(mappedSession)) {
       const info = registry.get(mappedSession)!
       if (isAlive(info)) {
         targetSessionId = mappedSession
@@ -774,6 +852,5 @@ gateway.onMessage(async (msg: InboundMessage) => {
       }
     }
   }
-  const { content, meta } = await buildNotificationPayload(msg, effectiveChatId)
-  transport.sendOrQueue(targetSessionId, { type: 'notification', content, meta })
+  await deliverToSession(msg, targetSessionId, result.access, effectiveChatId)
 })

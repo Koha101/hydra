@@ -56,9 +56,17 @@ rm -f "$STATE_DIR/daemon.sock"
 ENVS="PATH='$PATH' HYDRA_STATE_DIR='$STATE_DIR' SPAWN_CWD='$SPAWN_CWD'"
 [ -n "$CHAT_PLATFORM" ] && ENVS="$ENVS CHAT_PLATFORM='$CHAT_PLATFORM'"
 [ -n "$CLAUDE_CONFIG_DIR" ] && ENVS="$ENVS CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'"
+[ -n "${HYDRA_MODEL:-}" ] && ENVS="$ENVS HYDRA_MODEL='$HYDRA_MODEL'"
 ENVS="$ENVS HYDRA_MARKETPLACE='${HYDRA_MARKETPLACE:-claude-plugins-official}'"
 tmux new-session -d -s "$SESSION" \
   "cd '$SCRIPT_DIR' && $ENVS bun run daemon.ts 2>&1 | tee -a $LOG"
 
 echo "$(date): Daemon started in tmux session '$SESSION' (SPAWN_CWD=$SPAWN_CWD)" >> $LOG
 echo "Daemon started. Attach with: tmux attach -t $SESSION"
+
+# Voice dictation — bring the transcription sidecar up with the daemon.
+# --auto is a quiet no-op unless the sidecar is set up (or explicitly enabled)
+# and is idempotent: it never restarts a running model server. `|| true`: the
+# daemon is already up at this point — under set -e a sidecar refusal must not
+# turn a successful daemon start into a nonzero exit.
+HYDRA_STATE_DIR="$STATE_DIR" "$SCRIPT_DIR/start-transcribe.sh" --auto || true

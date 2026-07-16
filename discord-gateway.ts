@@ -30,25 +30,25 @@ export const HYDRA_SLASH_COMMANDS = [
   { name: 'reboot', description: 'Full restart: daemon + a fresh byte process' },
   { name: 'health', description: 'Daemon health' },
   { name: 'model', description: 'Switch the session model', options: [
-    { name: 'model', description: 'Claude alias or full Claude/Codex model ID', type: STR, required: true }] },
+    { name: 'model', description: 'Model ID, Claude alias, or default', type: STR, required: true }] },
   { name: 'effort', description: 'Set reasoning effort', options: [
     { name: 'level', description: 'Effort level', type: STR, required: true,
-      choices: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(m => ({ name: m, value: m })) }] },
+      choices: ['default', ...CODEX_EFFORT_LEVELS].map(m => ({ name: m, value: m })) }] },
   { name: 'provider', description: 'Hand off this thread to Claude or Codex', options: [
     { name: 'provider', description: 'Destination provider', type: STR, required: true,
       choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) }] },
   { name: 'fork', description: 'Fork this Claude or Codex session into a new thread', options: [
     { name: 'focus', description: 'Optional focus for the forked session', type: STR, required: false }] },
-  { name: 'ultracode', description: 'Toggle Claude ultracode or Codex ultra effort', options: [
+  { name: 'ultracode', description: 'Toggle ultracode mode (xhigh + auto workflows)', options: [
     { name: 'mode', description: 'on or off', type: STR, required: true,
       choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] }] },
   { name: 'kill', description: 'Kill a session by name', options: [
     { name: 'name', description: 'Session name (e.g. pulse)', type: STR, required: true }] },
   { name: 'spawn', description: 'Spawn an isolated session', options: [
     { name: 'topic', description: 'What the session should work on', type: STR, required: true },
-    { name: 'provider', description: 'Provider (defaults to Claude)', type: STR, required: false,
+    { name: 'provider', description: 'claude or codex', type: STR, required: false,
       choices: ['claude', 'codex'].map(m => ({ name: m, value: m })) },
-    { name: 'model', description: 'Optional model alias or full model ID', type: STR, required: false }] },
+    { name: 'model', description: 'Optional model ID or Claude alias', type: STR, required: false }] },
 ]
 
 /** Translate a slash interaction into hydra's text-command form. */
@@ -86,6 +86,7 @@ import type {
 } from './gateway.js'
 import { ThrottledQueue } from './throttled-queue.js'
 import { isGoneError } from './shared/discord-errors.js'
+import { CODEX_EFFORT_LEVELS } from './shared/constants.js'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 const RECENT_SENT_CAP = 200

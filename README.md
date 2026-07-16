@@ -1,6 +1,9 @@
 # Hydra
 
-Multi-platform chat bridge for Claude Code and Codex. Connect Discord, Slack, or both while keeping Claude as the default and spawning Codex sessions on demand.
+A new interface to building — run coding agents over Discord/Slack.
+
+- Spawn and manage parallel Claude Code and Codex agents from chat
+- tmux in to manage from terminal
 
 ## Architecture
 
@@ -26,10 +29,10 @@ Multi-platform chat bridge for Claude Code and Codex. Connect Discord, Slack, or
        │                 │     agnostic — doesn't import
        │  stdio ↔ socket │     any chat SDK.
        └────────┬────────┘
-                │  MCP (Claude) / CLI (Codex)
+                │  MCP (stdio)
        ┌────────▼────────┐
-       │ Claude / Codex  │     Claude uses the MCP channel bridge;
-       │                 │     Codex uses a persistent CLI sidecar.
+       │   Claude Code   │     Full Claude with tools,
+       │                 │     memory, file access, etc.
        └─────────────────┘
 ```
 
@@ -44,7 +47,7 @@ Multi-platform chat bridge for Claude Code and Codex. Connect Discord, Slack, or
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - [tmux](https://github.com/tmux/tmux) — `brew install tmux`
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
-- [Codex CLI](https://developers.openai.com/codex/cli/) (optional provider) — install it and run `codex login`
+- [Codex CLI](https://developers.openai.com/codex/cli/) — optional; install and authenticate before spawning Codex
 
 ## Quick Start
 
@@ -94,7 +97,7 @@ hydra restart <platform>       # Restart daemon (picks up code changes)
 
 ```bash
 hydra spawn <prompt>           # Spawn a new session
-hydra spawn --provider codex --initiator <name> --idempotency-key <key> <prompt>
+hydra spawn --provider codex <prompt>
 hydra list                     # List active sessions
 hydra status <name>            # Session details
 hydra kill <name>              # Kill a session
@@ -163,6 +166,56 @@ hydra up slack
 
 Each platform gets its own daemon, state dir, and watchdog. Use different `CLAUDE_CONFIG_DIR` values for separate logins.
 
+### Voice dictation
+
+Hydra can transcribe inbound audio attachments (Discord voice notes, Slack audio
+clips) to text, so you can **dictate prompts** to Claude alongside text and images.
+
+Transcription runs in a self-hosted sidecar (`transcribe-server/`) so audio never
+leaves your machine. Claude doesn't accept audio natively, so the daemon
+transcribes first and merges the text into the message as `[voice transcript] ...`;
+the original audio file stays available in `downloaded_files`. Backend by platform:
+
+- **macOS (Apple Silicon)** → **Parakeet-MLX** — NVIDIA Parakeet TDT on Apple's MLX
+  runtime. Native, fast (~50× realtime), no GPU/CUDA. _Default on macOS._
+- **Linux + NVIDIA GPU** → **Canary-Qwen 2.5B** via NeMo (top of the Open ASR
+  leaderboard for English accuracy).
+
+It's **on by default on the daemon side** — whenever a sidecar is reachable, voice
+notes are transcribed; when it isn't, audio just passes through. So the only thing
+to set up is the sidecar.
+
+**Try it right now (no model install):**
+
+```bash
+./start-transcribe.sh mock     # GPU-free stub, returns a canned transcript
+```
+
+Send a voice note → Claude receives `[voice transcript] This is a mock transcription...`.
+(The mock is manual-only: the daemon never auto-starts it, so a leftover mock
+setting can't silently feed canned text into real messages. `hydra down` or
+`tmux kill-session -t hydra-transcribe` stops it.)
+
+**Real transcription (one-time; needs ffmpeg — `brew install ffmpeg`):**
+
+```bash
+./transcribe-server/setup.sh   # venv + the right backend for your platform
+```
+
+That's it. Once set up, the sidecar starts and stays up **with the daemon** —
+`hydra up`, `start-daemon.sh`, and the watchdog all bring it along; `hydra down`
+stops it. One shared tmux session (`hydra-transcribe`) serves every platform
+daemon. Run `./start-transcribe.sh` to start it by hand. Set
+`HYDRA_TRANSCRIBE_AUTOSTART=0` to keep the daemon from managing it, or `=1` to
+force autostart even before setup (loud failure instead of a quiet skip).
+
+If the sidecar is unreachable, the daemon logs it and delivers the message without a
+transcript — dictation never blocks normal messages (a down sidecar fails fast; a
+live-but-slow one delays only the voice message itself, up to
+`HYDRA_TRANSCRIBE_TIMEOUT_MS`, 60s default). Disable entirely with
+`HYDRA_TRANSCRIBE_ENABLED=0`. Full setup, env vars, and tuning:
+[`transcribe-server/README.md`](transcribe-server/README.md).
+
 ## Tools
 
 | Tool | Description |
@@ -183,36 +236,18 @@ Spawn isolated Claude or Codex sessions from chat:
 
 | Command | Action |
 |---------|--------|
-| `/spawn` | Create a session with `topic`, optional `provider`, and optional `model` fields |
-| `spawn <provider> [model]: <topic>` | Text form; provider is `claude` or `codex` |
-| `spawn: <topic>` | Claude shorthand that creates a new session with a thread |
+| `spawn: <topic>` | Create a new session with a thread |
+| `spawn codex [model]: <topic>` | Create a Codex session |
+| `/provider claude\|codex` | Hand the current thread to the other provider |
+| `/model <id>` / `/effort <level>` | Configure the active session |
+| `/context` / `/clear` | Inspect or reset conversation context |
+| `/fork[: focus]` | Fork the active Claude or Codex conversation |
 | `kill: <name>` | Kill a session by name |
 | `/sessions` | List active sessions |
-| `/model <id>` | Change the active Claude or Codex model |
-| `/effort <level>` | Change Claude or Codex reasoning effort |
-| `/context` | Show Claude context details or Codex's latest available usage |
-| `/clear` | Reset the active Claude or Codex conversation context |
-| `/ultracode on|off` | Toggle Claude ultracode; for Codex, set effort to `ultra` or `default` |
-| `/provider claude|codex` | Hand off a live thread to the other provider |
-| `/fork` / `fork: <focus>` | Fork the current Claude or Codex conversation into a separate Hydra thread |
 | `listen` / `pause` | Toggle auto-routing in a session thread |
 | `help` / `commands` | Show all available commands |
 
 Sessions get cute names (spark, pixel, nova...) and run in their own tmux sessions. State persists across daemon restarts.
-
-Codex sessions reuse your local Codex CLI login and preserve their Codex conversation ID for `resume`/recovery. Set `CODEX_MODEL` in the platform `.env` only if you want to override the Codex CLI's configured default model.
-
-The Discord `/spawn` command exposes `topic`, `provider`, and `model`; `provider` defaults to Claude and `model` is optional. For example, choose `provider: codex` to start a Codex session, or use the text form `spawn codex gpt-5.6-sol: inspect this repository`.
-
-Inside a live session thread, `/provider codex` or `/provider claude` keeps the same Discord thread and working directory. Hydra resumes that provider's most recent conversation from the thread when one exists and supplies the messages posted while it was inactive; the first switch to a provider starts a new conversation with recent thread history. Active build/review/design protocols must be cancelled before switching.
-
-`/fork` works for both providers and leaves the parent session unchanged. Claude uses its native fork-session flow; Codex uses its persisted conversation through the Codex app-server `thread/fork` method, then resumes the returned fork ID in a new Hydra thread. Add an optional focus with `/fork: investigate the parser` or the Discord slash command's `focus` field.
-
-Inside a Codex thread, `/model <model-id>` and `/effort <level>` update that session starting with its next turn. Use `default` to remove the per-session override and return to the Codex CLI configuration. Documented Codex effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; availability depends on the selected model.
-
-For Codex, `/context` reports the last completed turn's context usage and remaining capacity, while `/clear` drops the saved Codex conversation ID so the next Discord message starts a fresh conversation and reloads workspace instructions and memory. `/clear` is rejected while a Codex turn is still running.
-
-Codex inherits `SPAWN_CWD` like Claude. Configure Codex with `project_doc_fallback_filenames = ["CLAUDE.md"]`; Hydra also includes the workspace `CLAUDE.md` and its Claude Code `memory/MEMORY.md` index on the first Codex turn. Override discovery with `CODEX_CLAUDE_INSTRUCTIONS_FILE` or `CODEX_CLAUDE_MEMORY_FILE` when needed.
 
 ## Troubleshooting
 
