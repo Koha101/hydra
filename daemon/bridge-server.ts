@@ -20,6 +20,7 @@ import { safeSend } from './util.js'
 import { createMainBridgeCycle, formatReconnectLine, mainCloseRecordsReason } from './main-bridge-cycle.js'
 import { handleLegacyCodexConfigResult, handleLegacyCodexControlResult, rejectLegacyCodexRequests } from './legacy-codex-control.js'
 import { completePendingContinuityForConnectedSession } from './session-continuity.js'
+import { wakeIfStuck } from './delivery-wake.js'
 
 const DEATH_DETECT_DELAY_MS = 3_000
 
@@ -272,8 +273,18 @@ function handleBridgeMessage(conn: BridgeConn, raw: string): void {
         },
       })
       if (!toolBridge) {
-        completePendingContinuityForConnectedSession(sessionId)
-        transport.flushQueue(sessionId)
+        // Continuity completion flushes transferred messages itself, so a
+        // completed handoff leaves flushQueue with nothing — arm on either.
+        const continued = completePendingContinuityForConnectedSession(sessionId)
+        const flushed = transport.flushQueue(sessionId)
+        // Messages flushed into a just-(re)connected CC can stage as the
+        // never-auto-submitted queued widget — arm the wake to recover them.
+        if ((flushed > 0 || continued) && info?.engine !== 'codex' && info?.provider !== 'codex') {
+          const tmux = sessionId === 'main'
+            ? process.env.BYTE_SESSION_NAME ?? `${PLATFORM}-byte`
+            : info?.tmuxName
+          if (tmux) void wakeIfStuck(tmux)
+        }
         dispatchReconnect(sessionId)
         if (info && !info.isJoinMember) refreshSessionVisual(info.threadId)
       }

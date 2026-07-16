@@ -374,6 +374,19 @@ async function spawnCodexSession(p: {
 // Main spawn orchestrator
 // ---------------------------------------------------------------------------
 
+/** Thread → session pre-registration. A comment in a freshly created spawn thread
+ * must queue for the spawning session (delivered when its bridge registers), not
+ * fall through to the byte. Entries expire instead of being deleted on every exit
+ * path; after registration the live thread mapping wins anyway. */
+export const spawnsInFlight = new Map<string, string>()
+const SPAWN_IN_FLIGHT_TTL_MS = 180_000 // outlasts worktree creation + codex socket connect + CC boot
+function markSpawnInFlight(threadId: string, sessionId: string): void {
+  spawnsInFlight.set(threadId, sessionId)
+  setTimeout(() => {
+    if (spawnsInFlight.get(threadId) === sessionId) spawnsInFlight.delete(threadId)
+  }, SPAWN_IN_FLIGHT_TTL_MS)
+}
+
 export async function doSpawnSession(topic: string, chatId?: string, messageId?: string, opts?: SpawnOpts): Promise<SpawnResult> {
   let threadId: string | undefined
   let anchorMessageId: string | undefined
@@ -527,6 +540,8 @@ export async function doSpawnSession(topic: string, chatId?: string, messageId?:
       }
     }
   }
+
+  if (!isJoin) markSpawnInFlight(threadId!, sessionId)
 
   const channelFlag = `plugin:discord@${marketplaceName()}`
   const spawnCwd = process.env.SPAWN_CWD
