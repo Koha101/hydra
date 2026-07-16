@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'bun:test'
+import { parseWaitingCommand } from '../util.js'
 
 // Suppress stderr
 process.stderr.write = (() => true) as any
@@ -183,6 +184,14 @@ describe('thread commands', () => {
     expect('pause'.match(LISTEN_RE)).not.toBeNull()
     expect('Listen'.match(LISTEN_RE)).not.toBeNull()
     expect('listen extra'.match(LISTEN_RE)).toBeNull()
+  })
+
+  test('waiting with an optional date', () => {
+    expect(parseWaitingCommand('waiting')).toEqual({})
+    expect(parseWaitingCommand('/waiting')).toEqual({})
+    expect(parseWaitingCommand('waiting 2026-07-20')).toEqual({ date: '2026-07-20' })
+    expect(parseWaitingCommand('/waiting next Monday')).toEqual({ date: 'next Monday' })
+    expect(parseWaitingCommand('waiting\nextra')).toBeNull()
   })
 
   test('fork with and without topic', () => {

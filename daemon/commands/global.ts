@@ -256,6 +256,7 @@ export async function handleCommandsIntercept(msg: InboundMessage): Promise<void
     '• ☠️ `kill` — kill this session',
     '• 👂 `listen` / 🔇 `unlisten` — mute/unmute message delivery',
     '• ⏸️ `pause` / ▶️ `unpause` — mark as paused (visual only)',
+    '• ⏳ `waiting [date]` — mark as waiting until the next routed prompt',
     '• 📈 `usage` — context %, messages, runtime',
     '',
     '**Multi-agent** (thread):',

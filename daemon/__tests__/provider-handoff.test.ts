@@ -42,6 +42,8 @@ describe('provider handoff', () => {
     expect(isSessionCommand('allow')).toBe(true)
     expect(isSessionCommand('/health')).toBe(false)
     expect(isSessionCommand('/restart')).toBe(true)
+    expect(isSessionCommand('/waiting 2026-07-20')).toBe(true)
+    expect(isSessionCommand('waiting next Monday')).toBe(true)
     expect(isSessionCommand('continue the job')).toBe(false)
     expect(isRecoveryCommand('/resume')).toBe(true)
     expect(isRecoveryCommand('respawn: retry')).toBe(true)

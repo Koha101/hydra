@@ -117,6 +117,8 @@ export type SessionVisualOpts = {
   badge?: string
   respawnCount?: number
   paused?: boolean
+  waiting?: boolean
+  waitingDate?: string
   anchorChannelId?: string
   anchorMessageId?: string
 }

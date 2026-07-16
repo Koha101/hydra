@@ -4,7 +4,7 @@ import { holdPendingContinuityForBoot } from './session-continuity.js'
 
 const MAX_HANDOFF_CHARS = 24_000
 const handoffRoutes = new Map<string, string>()
-const SESSION_COMMAND_RE = /^(?:\/(?:provider|model|effort|context|clear|ultracode|forks?|kill|listen|unlisten|pause|unpause|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|reboot|restart|reconnect)\b|(?:forks?|kill(?:\s+(?:review|build|design))?|listen|unlisten|pause|unpause|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|restart|reconnect)(?:\s|:|$)|(?:allow|deny)$)/i
+const SESSION_COMMAND_RE = /^(?:\/(?:provider|model|effort|context|clear|ultracode|forks?|kill|listen|unlisten|pause|unpause|waiting|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|reboot|restart|reconnect)\b|(?:forks?|kill(?:\s+(?:review|build|design))?|listen|unlisten|pause|unpause|waiting|resume|respawn|usage|watch|unwatch|watches|review|build(?:-wt)?|design|recover|restart|reconnect)(?:\s|:|$)|(?:allow|deny)$)/i
 
 export function setProviderHandoffRoute(threadId: string, sessionId: string): void {
   handoffRoutes.set(threadId, sessionId)

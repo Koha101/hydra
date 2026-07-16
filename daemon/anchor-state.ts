@@ -83,6 +83,8 @@ export function refreshSessionVisual(threadId: string, opts?: { state?: AnchorSt
     badge,
     respawnCount: info.respawnCount,
     paused: info.paused,
+    waiting: info.waiting,
+    waitingDate: info.waitingDate,
     anchorChannelId: anchor?.channelId ?? info.anchorChannelId ?? DEFAULT_SESSION_CHANNEL,
     anchorMessageId: info.anchorMessageId,
   }).catch(e => process.stderr.write(`daemon: visual update failed: ${e}\n`))

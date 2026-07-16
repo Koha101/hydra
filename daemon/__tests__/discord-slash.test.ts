@@ -15,7 +15,7 @@ function interaction(commandName: string, values: Record<string, string | undefi
 describe('Discord slash commands', () => {
   test('registers Codex controls', () => {
     const names = HYDRA_SLASH_COMMANDS.map(command => command.name)
-    for (const name of ['model', 'effort', 'provider', 'context', 'clear', 'fork', 'ultracode']) {
+    for (const name of ['model', 'effort', 'provider', 'context', 'clear', 'fork', 'ultracode', 'waiting']) {
       expect(names).toContain(name)
     }
   })
@@ -25,5 +25,7 @@ describe('Discord slash commands', () => {
       .toBe('/spawn codex gpt-5.5: fix it')
     expect(slashToText(interaction('fork', { focus: 'tests' }))).toBe('/fork: tests')
     expect(slashToText(interaction('provider', { provider: 'claude' }))).toBe('/provider claude')
+    expect(slashToText(interaction('waiting', { date: '2026-07-20' }))).toBe('/waiting 2026-07-20')
+    expect(slashToText(interaction('waiting', {}))).toBe('/waiting')
   })
 })

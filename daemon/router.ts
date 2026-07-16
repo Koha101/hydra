@@ -22,7 +22,7 @@ import { handleModelIntercept, handleEffortIntercept, handleContextIntercept, ha
 import { handleWatchIntercept, handleUnwatchIntercept, handleWatchesIntercept } from './commands/watch.js'
 import { killSession, spawnsInFlight } from './session-lifecycle.js'
 import { wakeIfStuck } from './delivery-wake.js'
-import { isAlive, reportError } from './util.js'
+import { clearWaiting, isAlive, markWaiting, parseWaitingCommand, reportError } from './util.js'
 import { listTemplates, getTemplate } from './templates.js'
 import { chooseDeliverySession, isRecoveryCommand, isSessionCommand, providerHandoffRoute } from './provider-handoff.js'
 
@@ -174,6 +174,7 @@ async function deliverToSession(
   )
   const sessionInfo = registry.get(deliverySessionId)
   if (sessionInfo) {
+    const resumedFromWaiting = clearWaiting(sessionInfo)
     sessionInfo.messageCount = (sessionInfo.messageCount ?? 0) + 1
     const thread = threadRegistry.get(sessionInfo.threadId)
     if (thread) thread.totalMessages++
@@ -184,6 +185,10 @@ async function deliverToSession(
       for (const url of links) existing.add(url)
       sessionInfo.contextLinks = [...existing].slice(-MAX_CONTEXT_LINKS)
       registry.debouncedPersist()
+    }
+    if (resumedFromWaiting) {
+      registry.persist()
+      refreshSessionVisual(sessionInfo.threadId)
     }
   }
   transport.sendOrQueue(deliverySessionId, { type: 'notification', content, meta })
@@ -686,6 +691,15 @@ gateway.onMessage(async (msg: InboundMessage) => {
             info.paused = pauseMatch[1].toLowerCase() === 'pause'
             registry.persist()
             void gateway.react(msg.channelId, msg.id, info.paused ? '⏸' : '▶️').catch(() => {})
+            refreshSessionVisual(resolvedThreadId)
+            return
+          }
+
+          const waitingCommand = parseWaitingCommand(msg.content)
+          if (waitingCommand) {
+            markWaiting(info, waitingCommand.date)
+            registry.persist()
+            void gateway.react(msg.channelId, msg.id, '⏳').catch(() => {})
             refreshSessionVisual(resolvedThreadId)
             return
           }

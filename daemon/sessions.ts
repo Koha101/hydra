@@ -32,6 +32,8 @@ export type SessionInfo = {
   tmuxName: string
   listening: boolean
   paused?: boolean
+  waiting?: boolean
+  waitingDate?: string
   description?: string
   contentEmoji?: string
   messageCount?: number
