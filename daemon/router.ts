@@ -811,6 +811,15 @@ gateway.onMessage(async (msg: InboundMessage) => {
       targetSessionId = spawnsInFlight.get(rtid)!
       effectiveChatId = rtid
     }
+
+    // No live/in-flight/handoff session claims this thread (session ended, or the
+    // ping arrived before its spawn registered). Do NOT fall back to the byte —
+    // that leaks orphan-thread pings into the always-on session. Notify + drop.
+    if (targetSessionId === 'main') {
+      void gateway.react(msg.channelId, msg.id, '⚠️').catch(() => {})
+      void gateway.send(msg.channelId, '_No live session in this thread — it may have ended. Spawn a new one, or use the main channel._', { replyTo: msg.id }).catch(() => {})
+      return
+    }
   }
   await deliverToSession(msg, targetSessionId, result.access, effectiveChatId)
 })
